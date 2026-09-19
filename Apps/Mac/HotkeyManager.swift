@@ -88,6 +88,22 @@ final class HotkeyManager: ObservableObject {
         pushToTalkKeyCode = keyCode
         defaults.set(keyCode, forKey: "omil.pttKeyCode")
     }
+
+    /// Human-readable name for the configured push-to-talk modifier.
+    var pushToTalkName: String {
+        switch pushToTalkKeyCode {
+        case 61: return "Right Option (hold)"
+        case 58: return "Left Option (hold)"
+        case 59: return "Left Control (hold)"
+        case 62: return "Right Control (hold)"
+        case 55: return "Left Command (hold)"
+        case 54: return "Right Command (hold)"
+        case 56: return "Left Shift (hold)"
+        case 60: return "Right Shift (hold)"
+        case 63: return "Fn (hold)"
+        default: return "key code \(pushToTalkKeyCode) (hold)"
+        }
+    }
 }
 
 private extension Int {

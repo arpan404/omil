@@ -37,6 +37,7 @@ struct OmilMacApp: App {
 
 struct MenuBarView: View {
     @ObservedObject var controller: DictationController
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -83,8 +84,11 @@ struct MenuBarView: View {
                     Button("Copy") { controller.copyLast() }
                     Button("Insert again") { controller.insertRetainedResult() }
                     Button("Undo") { controller.undoLast() }
-                        .disabled(controller.lastReceipt == nil)
+                        .disabled(!controller.canUndo)
                 }
+                Text(controller.lastDeliveryMethod)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
 
             Divider()
@@ -103,9 +107,18 @@ struct MenuBarView: View {
             Text("Local/offline after assets installed. No account.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+
+            Button("Open recorder window") { openWindow(id: "recorder") }
+            Button("Open history") { openWindow(id: "history") }
         }
         .padding()
         .frame(width: 360)
+        .onAppear {
+            // UI verification hook for build screenshots.
+            if ProcessInfo.processInfo.environment["OMIL_SHOW_RECORDER"] == "1" {
+                openWindow(id: "recorder")
+            }
+        }
     }
 
     var statusTitle: String {
@@ -182,7 +195,7 @@ struct RecorderView: View {
                 Button("Copy") { controller.copyLast() }
                     .disabled(controller.lastCleaned.isEmpty)
                 Button("Undo") { controller.undoLast() }
-                    .disabled(controller.lastReceipt == nil)
+                    .disabled(!controller.canUndo)
             }
             Text(controller.statusMessage)
                 .font(.caption)
@@ -198,22 +211,43 @@ struct HistoryView: View {
     @ObservedObject var controller: DictationController
 
     var body: some View {
-        List(controller.history) { entry in
-            VStack(alignment: .leading, spacing: 4) {
-                Text(entry.cleaned)
-                    .font(.body)
-                    .textSelection(.enabled)
-                Text("Raw: \(entry.raw)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                Text("\(entry.date.formatted()) • \(entry.backend)")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+        NavigationStack {
+            VStack {
+                if controller.history.isEmpty {
+                    ContentUnavailableView(
+                        "No history",
+                        systemImage: "mic.slash",
+                        description: Text("Dictation results appear here when history is on. Raw audio is never stored.")
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    List(controller.history) { entry in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(entry.cleaned)
+                                .font(.body)
+                                .textSelection(.enabled)
+                            Text("Raw: \(entry.raw)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                            Text("\(entry.date.formatted()) • \(entry.backend)")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
             }
-            .padding(.vertical, 4)
+            .navigationTitle("History (kept on this Mac)")
+            .toolbar {
+                Toggle("Keep history", isOn: Binding(
+                    get: { controller.historyEnabled },
+                    set: { controller.setHistoryEnabled($0) }
+                ))
+                Button("Clear") { controller.clearHistory() }
+                    .disabled(controller.history.isEmpty)
+            }
         }
-        .navigationTitle("History (kept on this Mac)")
     }
 }
 
@@ -223,6 +257,35 @@ struct SettingsView: View {
     @ObservedObject var controller: DictationController
     @State private var spoken = ""
     @State private var written = ""
+    @State private var recordingShortcut = false
+    @State private var shortcutMonitor: Any?
+
+    var micStatusText: String {
+        switch controller.micPermission {
+        case .granted: return "granted"
+        case .denied: return "denied — grant access to record"
+        case .unknown: return "not determined yet"
+        }
+    }
+
+    func startShortcutCapture() {
+        recordingShortcut = true
+        // Local monitors dispatch on the main thread, so MainActor access is safe.
+        shortcutMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { e in
+            let code = e.keyCode
+            MainActor.assumeIsolated {
+                HotkeyManager.shared.setPushToTalk(keyCode: Int(code))
+                self.stopShortcutCapture()
+            }
+            return e
+        }
+    }
+
+    func stopShortcutCapture() {
+        recordingShortcut = false
+        if let m = shortcutMonitor { NSEvent.removeMonitor(m) }
+        shortcutMonitor = nil
+    }
 
     var body: some View {
         TabView {
@@ -240,8 +303,13 @@ struct SettingsView: View {
                     .font(.caption)
                 Text("Assets: \(controller.assetState)")
                     .font(.caption)
-                Button("Refresh model status") {
-                    Task { await controller.refreshBackendStatus() }
+                HStack {
+                    Button("Refresh model status") {
+                        Task { await controller.refreshBackendStatus() }
+                    }
+                    Button("Download system assets") {
+                        controller.downloadAssets()
+                    }
                 }
                 Text("Changing transcription never changes cleanup behavior.")
                     .font(.caption)
@@ -251,19 +319,68 @@ struct SettingsView: View {
             .padding()
 
             Form {
-                Text("Push-to-talk: hold Right Option. Toggle: Ctrl+Option+O.")
-                Text("Microphone: \(controller.axTrusted ? "Accessibility granted" : "grant Accessibility for direct insertion")")
-                if !controller.axTrusted {
-                    Button("Open Accessibility settings") {
-                        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
+                Section("Microphone") {
+                    Text("Status: \(micStatusText)")
+                    HStack {
+                        Button("Request microphone access") {
+                            controller.requestMic()
+                        }
+                        .disabled(controller.micPermission == .granted)
+                        Button("Open Microphone settings") {
+                            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")!)
+                        }
                     }
+                    Text("Recording is visible in the menu bar and recorder window. Raw audio is never stored.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
-                Button("Open Microphone settings") {
-                    NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")!)
+
+                Section("Direct insertion (Accessibility)") {
+                    Text("Status: \(controller.axTrusted ? "granted — Omil can insert into the focused field" : "not granted — Omil will keep results for copy/paste")")
+                    HStack {
+                        Button("Ask for access…") {
+                            controller.requestAXTrust()
+                        }
+                        .disabled(controller.axTrusted)
+                        Button("Check again") {
+                            controller.refreshMicPermission()
+                        }
+                        Button("Open Accessibility settings") {
+                            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
+                        }
+                    }
+                    Text("Undo reverses only Omil's insertion, and refuses when you typed after it.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Section("Shortcuts") {
+                    HStack {
+                        Text("Push-to-talk: \(HotkeyManager.shared.pushToTalkName)")
+                        Spacer()
+                        if recordingShortcut {
+                            Button("Cancel") { stopShortcutCapture() }
+                        } else {
+                            Button("Change…") { startShortcutCapture() }
+                        }
+                    }
+                    if recordingShortcut {
+                        Text("Press a modifier key (Option, Control, Command, Shift, or Fn)…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Toggle("Toggle shortcut (Ctrl+Option+O)", isOn: Binding(
+                        get: { HotkeyManager.shared.toggleEnabled },
+                        set: { HotkeyManager.shared.toggleEnabled = $0 }
+                    ))
+                    Text("Background shortcuts need Input Monitoring permission. The Start/Stop buttons always work.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
             .tabItem { Label("Permissions", systemImage: "mic.badge.plus") }
             .padding()
+            .onAppear { controller.refreshMicPermission() }
 
             VStack(alignment: .leading) {
                 Text("Personal dictionary (confirmed substitutions only)")

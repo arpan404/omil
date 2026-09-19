@@ -36,6 +36,12 @@ struct OmilEval {
             case "--probe":
                 await probe()
                 return
+            case "--bench":
+                await bench()
+                return
+            case "--asr-eval":
+                await asrEval()
+                return
             default:
                 break
             }
@@ -106,6 +112,110 @@ struct OmilEval {
         return Double(a) / Double(b) * 100
     }
 
+    /// Headless benchmark: cleanup latency per corpus case (avg/p95) plus a
+    /// mock-backend session round trip (stop -> committed result). The session
+    /// number includes the bounded drain loop, NOT audio capture or real ASR.
+    /// Runtime environment probe: device, OS, backend availability, assets.
+    static func bench() async {
+        let url = URL(fileURLWithPath: "Tests/OmilCoreTests/Fixtures/corpus.json")
+        guard let corpus = try? CorrectionCorpus.load(from: url) else {
+            fputs("omil-eval: corpus not found at \(url.path)\n", stderr)
+            exit(2)
+        }
+        let pipeline = CleanupPipeline()
+        var lat: [Double] = []
+        for c in corpus.cases {
+            let snap = SnapshotBuilder().makeSnapshot(
+                sessionId: SessionID(), revision: 1, rawText: c.rawTranscript,
+                backend: .mock(name: "bench"), locale: c.locale)
+            let t0 = Date()
+            _ = pipeline.clean(snapshot: snap)
+            lat.append(Date().timeIntervalSince(t0))
+        }
+        lat.sort()
+        let avg = lat.reduce(0, +) / Double(max(1, lat.count))
+        let p95 = lat[min(lat.count - 1, Int(Double(lat.count) * 0.95))]
+        print(String(format: "cleanup: n=%d avg=%.4fs p95=%.4fs (text-only, M4 Max, no ASR)",
+                     lat.count, avg, p95))
+
+        // Mock streaming session: partials + final through stop -> commit.
+        let t0 = Date()
+        let session = DictationSession()
+        let backend = MockTranscriptionBackend(script: [
+            (false, "make it 42,"), (true, "make it 42, sorry 21"),
+        ])
+        do {
+            try await session.start(backend: backend)
+            await backend.appendAudio(Data(repeating: 0, count: 3200), timestamp: 0.0)
+            await backend.appendAudio(Data(repeating: 0, count: 3200), timestamp: 0.2)
+            await backend.finishStreaming()
+            if let result = await session.stop() {
+                let committed = await session.commitForDelivery()
+                let dt = Date().timeIntervalSince(t0)
+                print("session: cleaned=\"\(result.cleaned.text)\" committed=\(committed != nil)")
+                print(String(format: "session mock round-trip=%.3fs (drain loop included; no audio/ASR)", dt))
+            } else {
+                print("session: no result (cancelled?)")
+                exit(1)
+            }
+        } catch {
+            print("session: failed: \(error)")
+            exit(1)
+        }
+    }
+
+    /// Real-backend check over bundled synthetic fixtures (Samantha TTS).
+    /// Reports cue retention + cleanup accuracy; skips honestly when the
+    /// on-device backend is unavailable. Synthetic only — NOT human eval.
+    static func asrEval() async {
+        let dir = "Tests/OmilCoreTests/Fixtures/audio-synth"
+        let fixtures: [(file: String, intended: String, cues: [String])] = [
+            ("make-it-42", "Make it 42.", []),
+            ("make-it-42-sorry-21", "Make it 21.", ["sorry"]),
+            ("do-not-send", "Do not send 42. Send 21.", []),
+            ("alice-bob", "Send Alice 42 and Bob 24.", ["actually"]),
+        ]
+        #if canImport(Speech)
+        if #available(macOS 26, iOS 26, *) {
+            let probeBackend = AppleSpeechBackend()
+            do {
+                try await probeBackend.prepare()
+            } catch {
+                print("asr-eval: SKIP (backend unavailable: \(error))")
+                return
+            }
+            var retained = 0, totalCues = 0, exact = 0
+            for f in fixtures {
+                let url = URL(fileURLWithPath: "\(dir)/\(f.file).aiff")
+                guard FileManager.default.fileExists(atPath: url.path) else {
+                    print("asr-eval: missing \(url.path)"); continue
+                }
+                let backend = AppleSpeechBackend()
+                try? await backend.prepare()
+                guard let out = try? await backend.transcribeFile(url: url) else {
+                    print("asr-eval: transcription failed for \(f.file)"); continue
+                }
+                let snap = SnapshotBuilder().makeSnapshot(
+                    sessionId: SessionID(), revision: 1, rawText: out.text,
+                    backend: .appleSpeech(configuration: "SpeechTranscriber"), locale: "en-US")
+                let view = CleanupPipeline().clean(snapshot: snap)
+                let ok = view.text == f.intended
+                if ok { exact += 1 }
+                for cue in f.cues {
+                    totalCues += 1
+                    if out.text.lowercased().contains(cue) { retained += 1 }
+                }
+                print("asr-eval[\(f.file)]: asr=\"\(out.text)\" clean=\"\(view.text)\" match=\(ok)")
+            }
+            print("asr-eval: exact=\(exact)/\(fixtures.count) cueRetention=\(retained)/\(totalCues) (SYNTHETIC TTS, not human speech)")
+            if exact != fixtures.count { exit(1) }
+        } else {
+            print("asr-eval: SKIP (OS < 26)")
+        }
+        #else
+        print("asr-eval: SKIP (Speech framework unavailable)")
+        #endif
+    }
     /// Runtime environment probe: device, OS, backend availability, assets.
     static func probe() async {
         let dev = CapabilityMatrix.currentDevice()

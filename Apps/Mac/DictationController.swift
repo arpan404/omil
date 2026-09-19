@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import Combine
 import OmilCore
 
@@ -36,6 +37,12 @@ final class DictationController: ObservableObject {
     @Published var history: [HistoryEntry] = []
     @Published var lastReceipt: InsertionReceipt?
     @Published var lastDeliveryMethod = ""
+    @Published var micPermission: MicPermission = .unknown
+    @Published var historyEnabled = true
+
+    enum MicPermission: String {
+        case unknown, granted, denied
+    }
 
     struct HistoryEntry: Identifiable, Codable {
         var id: UUID = UUID()
@@ -68,6 +75,8 @@ final class DictationController: ObservableObject {
         }
         dictionary = LocalHistory.loadDictionary()
         history = LocalHistory.loadHistory()
+        historyEnabled = UserDefaults.standard.object(forKey: "omil.historyEnabled") as? Bool ?? true
+        if !historyEnabled { history = [] }
         HotkeyManager.shared.onPushStart = { [weak self] in self?.start() }
         HotkeyManager.shared.onPushStop = { [weak self] in self?.stop() }
         HotkeyManager.shared.onToggle = { [weak self] in self?.toggle() }
@@ -76,6 +85,31 @@ final class DictationController: ObservableObject {
     }
 
     var axTrusted: Bool { ax.isTrusted }
+    var canUndo: Bool { lastReceipt?.undoSupported == true }
+
+    func requestAXTrust() {
+        ax.requestTrust()
+    }
+
+    // MARK: Permissions
+
+    func refreshMicPermission() {
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized: micPermission = .granted
+        case .denied, .restricted: micPermission = .denied
+        case .notDetermined: micPermission = .unknown
+        @unknown default: micPermission = .unknown
+        }
+    }
+
+    func requestMic() {
+        Task {
+            let granted = await AudioCapture.requestPermission()
+            await MainActor.run {
+                self.micPermission = granted ? .granted : .denied
+            }
+        }
+    }
 
     // MARK: Status
 
@@ -101,6 +135,25 @@ final class DictationController: ObservableObject {
             }
         }
         return nil
+    }
+
+    /// Explicit system-asset download (also runs automatically at session start).
+    func downloadAssets() {
+        assetState = "Downloading system assets…"
+        Task {
+            if #available(macOS 26, *) {
+                let b = AppleSpeechBackend()
+                do {
+                    try await b.prepare()
+                    await MainActor.run { self.assetState = "Ready" }
+                } catch {
+                    await MainActor.run { self.assetState = "Download failed: \(error)" }
+                }
+            } else {
+                await MainActor.run { self.assetState = "Ready (no download)" }
+            }
+            await self.refreshBackendStatus()
+        }
     }
 
     func makeBackend() -> (any TranscriptionBackend)? {
@@ -132,9 +185,34 @@ final class DictationController: ObservableObject {
 
     func start() {
         guard phase == .idle || phase == .ready || phase == .failed else { return }
+        refreshMicPermission()
+        guard micPermission != .denied else {
+            phase = .failed
+            statusMessage = "Microphone access denied. Grant it in Settings → Permissions, then try again."
+            return
+        }
+        if micPermission == .unknown {
+            // First run: prompt, then auto-start on grant.
+            phase = .preparing
+            statusMessage = "Requesting microphone access…"
+            Task {
+                let granted = await AudioCapture.requestPermission()
+                await MainActor.run {
+                    self.micPermission = granted ? .granted : .denied
+                    if granted {
+                        self.phase = .idle
+                        self.start()
+                    } else {
+                        self.phase = .failed
+                        self.statusMessage = "Microphone access denied. Grant it in Settings → Permissions."
+                    }
+                }
+            }
+            return
+        }
         guard let backend = makeBackend() else {
             phase = .failed
-            statusMessage = "No on-device speech backend. See Model status."
+            statusMessage = "No on-device speech backend. See Settings → General → Download system assets."
             return
         }
         // Capture the intended destination + selection first.
@@ -264,16 +342,34 @@ final class DictationController: ObservableObject {
                 // Fall through to clipboard recovery.
             }
         }
-        // 2. Explicit clipboard recovery: copy + guided paste.
+        // 2. Explicit clipboard recovery. Auto-paste needs Accessibility trust
+        // (CGEvent); without it we copy and guide a manual paste instead.
         let prepared = clipboard.prepare(text: text)
-        clipboard.paste()
+        if axTrusted {
+            clipboard.paste()
+            // Restore prior contents after the host consumed the paste — only
+            // while Omil still owns the clipboard write. Never blocks delivery.
+            let inserter = clipboard
+            DispatchQueue.global().async {
+                let restored = inserter.restoreIfOwned(prepared: prepared)
+                Task { @MainActor in
+                    self.statusMessage = restored
+                        ? "Pasted via clipboard (prior clipboard restored)"
+                        : "Pasted via clipboard"
+                }
+            }
+        }
         let receipt = InsertionReceipt(
             sessionId: committed.sessionId,
             destination: DestinationIdentity(appBundleId: "clipboard", fieldIdentifier: "pasteboard"),
             precondition: pre, insertedText: text, commitSequence: committed.commitSequence,
             undoSupported: false)
-        _ = prepared
-        finishDelivery(text: text, method: "Copied — press ⌘V to paste (prior clipboard restored only if untouched)", receipt: receipt, result: committed)
+        finishDelivery(
+            text: text,
+            method: axTrusted
+                ? "Pasted via clipboard…"
+                : "Copied — press ⌘V to paste (result kept below)",
+            receipt: receipt, result: committed)
     }
 
     private func finishDelivery(text: String, method: String, receipt: InsertionReceipt, result: SessionResult) {
@@ -282,9 +378,28 @@ final class DictationController: ObservableObject {
         lastCleaned = text
         phase = .ready
         statusMessage = method
+        guard historyEnabled else { return }
         let entry = HistoryEntry(raw: result.rawSnapshot.rawText, cleaned: text, backend: result.backend.displayName)
         history.insert(entry, at: 0)
-        LocalHistory.saveHistory(Array(history.prefix(50)))
+        history = Array(history.prefix(50))
+        LocalHistory.saveHistory(history)
+    }
+
+    // MARK: History controls
+
+    func setHistoryEnabled(_ on: Bool) {
+        historyEnabled = on
+        UserDefaults.standard.set(on, forKey: "omil.historyEnabled")
+        if !on {
+            history = []
+            LocalHistory.saveHistory([])
+        }
+    }
+
+    func clearHistory() {
+        history = []
+        LocalHistory.saveHistory([])
+        statusMessage = "History cleared from this Mac"
     }
 
     func insertRetainedResult() {
@@ -337,10 +452,14 @@ final class DictationController: ObservableObject {
 
 enum DiffUtil {
     /// Simple word-level diff for the Raw/Cleaned/Diff inspector.
+    /// Capped so pathological inputs cannot hang the UI.
     static func diff(raw: String, cleaned: String) -> String {
         if raw == cleaned { return "(no changes)" }
-        let a = raw.split(separator: " ").map(String.init)
-        let b = cleaned.split(separator: " ").map(String.init)
+        var a = raw.split(separator: " ").map(String.init)
+        var b = cleaned.split(separator: " ").map(String.init)
+        if a.count > 2000 || b.count > 2000 {
+            a = Array(a.prefix(2000)); b = Array(b.prefix(2000))
+        }
         // LCS-based minimal diff.
         let n = a.count, m = b.count
         var dp = Array(repeating: Array(repeating: 0, count: m + 1), count: n + 1)
