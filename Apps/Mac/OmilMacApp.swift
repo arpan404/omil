@@ -3,6 +3,7 @@ import OmilCore
 
 // MARK: - Omil Mac app (menu bar agent, owns the inference server)
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     weak var controller: DictationController?
 
@@ -22,7 +23,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSLog("Omil: main window never appeared")
             return
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 500_000_000)
             self?.attemptOrderFront(tries: tries - 1)
         }
     }
