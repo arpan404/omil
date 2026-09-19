@@ -11,27 +11,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller?.startup()
         // Agent apps (LSUIElement) don't activate on their own — bring the
         // main window forward explicitly so first launch shows the app.
+        // Retry: the SwiftUI scene may not exist yet on first tick.
         NSApp.activate(ignoringOtherApps: true)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            self.orderMainWindowFront()
+        attemptOrderFront(tries: 20)
+    }
+
+    private func attemptOrderFront(tries: Int) {
+        if orderMainWindowFront() { return }
+        guard tries > 0 else {
+            NSLog("Omil: main window never appeared")
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.attemptOrderFront(tries: tries - 1)
         }
     }
 
     /// openWindow is unreliable from MenuBarExtra content — order the
     /// SwiftUI Window scene's NSWindow forward directly.
-    func openMainWindow() {
+    /// - Returns: whether a main window was found.
+    @discardableResult
+    func openMainWindow() -> Bool {
         NSLog("Omil: Open Omil pressed")
-        orderMainWindowFront()
+        return orderMainWindowFront()
     }
 
-    private func orderMainWindowFront() {
+    @discardableResult
+    private func orderMainWindowFront() -> Bool {
         NSApp.activate(ignoringOtherApps: true)
         if let w = NSApp.windows.first(where: { $0.title == "Omil" && $0.canBecomeMain }) {
             w.makeKeyAndOrderFront(nil)
+            NSLog("Omil: main window front")
+            return true
         } else if let w = NSApp.windows.first(where: { $0.title == "Omil" }) {
             w.orderFrontRegardless()
+            NSLog("Omil: main window front (regardless)")
+            return true
         } else {
             NSLog("Omil: main window not found among %d windows", NSApp.windows.count)
+            return false
         }
     }
 
@@ -142,10 +160,19 @@ struct MenuBarView: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
             if !controller.assets.allReady {
-                Text("Prerequisites missing — open Omil → Models → Install prerequisites, then try Start.")
+                Text("Prerequisites missing — the server has nothing to run with yet.")
                     .font(.caption)
                     .foregroundStyle(.orange)
+                Button(controller.assets.isInstalling ? "Installing… (see Models tab for progress)" : "Install prerequisites (~4.3 GB)") {
+                    controller.assets.installPrerequisites {
+                        Task { @MainActor in controller.adoptServerToken() }
+                    }
+                }
+                .disabled(controller.assets.isInstalling || controller.assets.allReady)
             }
+            Text("Engine: \(controller.server.status.label)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
             Text("Local/offline after assets installed. No account.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
