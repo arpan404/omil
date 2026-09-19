@@ -21,3 +21,8 @@ OmilMac.app/
 server/data/models/
 server/data/omil-token
 server/node_modules/
+
+# Compiled server engine (built via scripts/build-server.sh, embedded at build time)
+server/dist/
+server/data/selected-models.json
+server/data/system-prompt.md

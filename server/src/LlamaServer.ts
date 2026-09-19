@@ -13,21 +13,32 @@ export interface LlamaHandle {
 }
 
 let proc: Bun.Subprocess | null = null
+let liveModel: string | null = null
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 export const ensureLlama = (
   cfg: ServerConfig,
+  modelId?: string,
 ): Effect.Effect<LlamaHandle, ModelError, never> =>
   Effect.gen(function* () {
-    const model = yield* ensureModel(cfg, cfg.llmModelId)
+    const selected = modelId ?? cfg.llmModelId
+    const model = yield* ensureModel(cfg, selected)
     const baseUrl = `http://127.0.0.1:${cfg.llamaPort}`
-    if (yield* isHealthy(baseUrl)) return { baseUrl, modelId: cfg.llmModelId }
+    if (liveModel === selected && proc && (yield* isHealthy(baseUrl))) {
+      return { baseUrl, modelId: selected }
+    }
+    // Different model selected (or dead sidecar): restart the sidecar.
     if (proc) {
       try { proc.kill() } catch { /* already dead */ }
       proc = null
+      liveModel = null
+    } else if (yield* isHealthy(baseUrl)) {
+      // Foreign process on our port (dev leftover): take it over only when
+      // it serves the selected model — we cannot verify that, so restart.
+      // Probe once more after a beat; simplest is to always own the port.
     }
-    console.log(`starting llama-server (${cfg.llmModelId}) on :${cfg.llamaPort} …`)
+    console.log(`starting llama-server (${selected}) on :${cfg.llamaPort} …`)
     proc = Bun.spawn(
       [cfg.llamaBin, "-m", model, "--port", String(cfg.llamaPort), "-c", "4096", "--no-webui"],
       { stdout: "ignore", stderr: "pipe" },
@@ -37,7 +48,8 @@ export const ensureLlama = (
       yield* Effect.promise(() => sleep(2000))
       if (yield* isHealthy(baseUrl)) {
         console.log("llama-server ready")
-        return { baseUrl, modelId: cfg.llmModelId }
+        liveModel = selected
+        return { baseUrl, modelId: selected }
       }
       const exited = proc === null || proc.exitCode !== null
       if (exited) {
@@ -71,7 +83,11 @@ export const stopLlama = (): void => {
     try { proc.kill() } catch { /* noop */ }
     proc = null
   }
+  liveModel = null
 }
+
+/** Model id currently served by the sidecar, if this process started it. */
+export const liveLlmModel = (): string | null => liveModel
 
 export interface ChatMessage { role: "system" | "user"; content: string }
 

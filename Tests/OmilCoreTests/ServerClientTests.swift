@@ -52,3 +52,41 @@ struct ServerClientTests {
         #expect(b.identity == .server)
     }
 }
+
+@Suite("Server catalog consistency")
+struct ServerCatalogTests {
+    // Every downloadable weight file must map to the server's model id —
+    // the server rejects unknown IDs with 400, so a missing mapping breaks
+    // model switching. (Cross-check server/src/Config.ts MODELS on change.)
+    @Test func everyWhisperFileMaps() {
+        for f in ServerCatalog.whisperFiles {
+            #expect(ServerCatalog.whisperIdForFile[f] != nil, "no server id for \(f)")
+            #expect(ServerAssetsMirror.pinExists(f), "no download pin for \(f)")
+        }
+    }
+
+    @Test func everyLlmFileMaps() {
+        for f in ServerCatalog.llmFiles {
+            #expect(ServerCatalog.llmIdForFile[f] != nil, "no server id for \(f)")
+            #expect(ServerAssetsMirror.pinExists(f), "no download pin for \(f)")
+        }
+    }
+
+    @Test func defaultsAreValid() {
+        #expect(ServerCatalog.whisperIdForFile[ServerCatalog.defaultWhisperFile] == "whisper-large-v3-turbo")
+        #expect(ServerCatalog.llmIdForFile[ServerCatalog.defaultLlmFile] == "qwen3-4b-instruct")
+    }
+}
+
+/// Download pins live in the Mac app (ServerAssets). This mirror records the
+/// pinned set so core tests fail if the catalog drifts from the downloader.
+enum ServerAssetsMirror {
+    static let pinnedIds: Set<String> = [
+        "whisper-bin", "llama-bin",
+        "ggml-tiny.bin", "ggml-base.bin", "ggml-small.bin",
+        "ggml-medium.bin", "ggml-large-v3-turbo.bin", "ggml-large-v3.bin",
+        "Qwen3-0.6B-Q4_K_M.gguf", "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+        "Qwen3-8B-Q4_K_M.gguf",
+    ]
+    static func pinExists(_ id: String) -> Bool { pinnedIds.contains(id) }
+}

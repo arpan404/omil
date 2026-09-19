@@ -6,5 +6,10 @@
 	     Accessibility-based insertion work. No special entitlements required. -->
 	<key>com.apple.security.device.audio-input</key>
 	<true/>
+	<!-- App-managed inference sidecars (whisper.cpp/llama.cpp bottles) carry
+	     third-party signatures: allow them + their dylibs to load. Required
+	     for Release (hardened runtime); harmless for ad-hoc dev builds. -->
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
 </dict>
 </plist>

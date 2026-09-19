@@ -50,9 +50,29 @@ cd server && bun test                # 13 tests
 
 ## Mac app (direct-distribution build)
 
-Ad-hoc signed local build (no provisioning required):
+One command (server binary → Xcode project → ad-hoc build):
 
 ```sh
+./scripts/bootstrap-mac.sh
+open ~/Library/Developer/Xcode/DerivedData/Omil-*/Build/Products/Debug/OmilMac.app
+```
+
+What bootstrap does: `scripts/build-server.sh` typechecks, tests, and
+compiles `server/dist/omil-server` (standalone, no Bun at runtime);
+`xcodegen generate` embeds it in the app; `xcodebuild` builds ad-hoc signed.
+
+The Mac app owns the inference server: it launches the embedded engine at
+startup, restarts it on crashes, and stops it on quit. First launch shows
+Settings → General → **Install prerequisites** (one button): whisper.cpp +
+llama.cpp sidecars (prebuilt Apple-silicon bottles fetched directly, SHA
+verified, no Homebrew needed) plus the selected Whisper/Qwen weights with
+progress. Switch Whisper/LLM models or override the rewrite prompt in the
+same section; the server switches without reinstalling the app.
+
+Manual equivalent of bootstrap:
+
+```sh
+./scripts/build-server.sh
 xcodegen generate   # only after editing project.yml
 xcodebuild -project Omil.xcodeproj -scheme OmilMac -configuration Debug \
   -destination 'platform=macOS' \

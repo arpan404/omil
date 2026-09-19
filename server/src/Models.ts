@@ -78,7 +78,8 @@ export const checkModelReady = (
         if (f.size !== pinned.bytes) return false
         return (await sha256File(modelPath(cfg, id))) === pinned.sha256
       }
-      return sizeMatches(spec.expectedBytes, f.size)
+      if (spec.expectedBytes !== null) return sizeMatches(spec.expectedBytes, f.size)
+      return true // unpinned catalog entry: presence is readiness; verified on use
     } catch {
       return false
     }
@@ -111,7 +112,10 @@ export const ensureModel = (
       }
       // No pin yet: a size mismatch means a stale partial (e.g. killed
       // download) — remove it and download fresh below.
-      if (!sizeMatches(spec.expectedBytes, size)) {
+      const sizeOk = spec.expectedBytes !== null
+        ? sizeMatches(spec.expectedBytes, size)
+        : true // unpinned: pin whatever is here (TOFU), server re-verifies on use
+      if (!sizeOk) {
         console.log(`${spec.filename}: removing stale partial (${(size / 1e6).toFixed(1)} MB)`)
         yield* Effect.promise(() => rm(dest, { force: true }))
       } else {
@@ -124,14 +128,14 @@ export const ensureModel = (
     }
 
     // Download.
-    console.log(`downloading ${spec.id} (${(spec.expectedBytes / 1e9).toFixed(2)} GB) from ${spec.url}`)
+    console.log(`downloading ${spec.id}${spec.expectedBytes !== null ? ` (${(spec.expectedBytes / 1e9).toFixed(2)} GB)` : ""} from ${spec.url}`)
     const res = yield* Effect.promise(() => fetch(spec.url) as Promise<Response>)
     if (!res.ok || !res.body) {
       return yield* Effect.fail(new ModelError(`download failed: HTTP ${res.status}`))
     }
     const writer = file.writer()
     let received = 0
-    const total = Number(res.headers.get("content-length") ?? spec.expectedBytes)
+    const total = Number(res.headers.get("content-length") ?? spec.expectedBytes ?? 0)
     const reader = res.body.getReader()
     for (;;) {
       const { done, value } = yield* Effect.promise(() => reader.read() as Promise<ReadableStreamReadResult<Uint8Array>>)
@@ -139,14 +143,17 @@ export const ensureModel = (
       writer.write(value)
       received += value.byteLength
       if (received % (64 * 1024 * 1024) < value.byteLength) {
-        console.log(`  ${(received / 1e9).toFixed(2)} / ${(total / 1e9).toFixed(2)} GB`)
+        console.log(total > 0
+          ? `  ${(received / 1e9).toFixed(2)} / ${(total / 1e9).toFixed(2)} GB`
+          : `  ${(received / 1e9).toFixed(2)} GB`)
       }
     }
     writer.end()
     yield* Effect.promise(() => Promise.resolve(writer.flush()))
-    if (!sizeMatches(spec.expectedBytes, received)) {
+    const contentLength = Number(res.headers.get("content-length") ?? 0)
+    if (!sizeMatches(spec.expectedBytes, received, contentLength)) {
       return yield* Effect.fail(
-        new ModelError(`download incomplete: got ${received} bytes, expected ~${spec.expectedBytes}`),
+        new ModelError(`download incomplete: got ${received} bytes` + (spec.expectedBytes !== null ? `, expected ~${spec.expectedBytes}` : `, server reported ${contentLength}`)),
       )
     }
     const sha = yield* Effect.promise(() => sha256File(dest))
@@ -156,7 +163,8 @@ export const ensureModel = (
     return dest
   })
 
-function sizeMatches(expected: number, actual: number): boolean {
-  // Weight files vary by release; accept within 5%.
-  return Math.abs(actual - expected) / expected < 0.05
+function sizeMatches(expected: number | null, actual: number, contentLength?: number): boolean {
+  if (expected !== null) return Math.abs(actual - expected) / expected < 0.05
+  // Unpinned catalog entry: require byte-exact match with the download itself.
+  return contentLength !== undefined && contentLength > 0 && actual === contentLength
 }

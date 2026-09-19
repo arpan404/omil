@@ -17,14 +17,16 @@ export interface Transcript {
   readonly model: string
 }
 
-/** Whisper large transcription via the whisper.cpp sidecar. Batch per utterance. */
+/** Whisper transcription via the whisper.cpp sidecar. Batch per utterance. */
 export const transcribeFile = (
   cfg: ServerConfig,
   audioPath: string,
   language = "en",
+  modelId?: string,
 ): Effect.Effect<Transcript, ModelError, never> =>
   Effect.gen(function* () {
-    const model = yield* ensureModel(cfg, cfg.whisperModelId)
+    const selected = modelId ?? cfg.whisperModelId
+    const model = yield* ensureModel(cfg, selected)
     const dir = yield* Effect.promise(() => mkdtemp(path.join(tmpdir(), "omil-whisper-")))
     try {
       const base = path.join(dir, "out")
@@ -44,7 +46,7 @@ export const transcribeFile = (
       }
       const raw = yield* Effect.promise(() => readFile(`${base}.json`, "utf8").catch(() => ""))
       if (!raw) return yield* Effect.fail(new ModelError("whisper-cli produced no JSON output"))
-      return parseWhisperJson(raw, cfg.whisperModelId)
+      return parseWhisperJson(raw, selected)
     } finally {
       yield* Effect.promise(() => rm(dir, { recursive: true, force: true }))
     }

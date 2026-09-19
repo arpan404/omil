@@ -43,6 +43,11 @@ final class DictationController: ObservableObject {
     @Published var serverCleanupEnabled = true
     @Published var serverNote = ""
     @Published var serverHealth = "Unknown"
+    @Published var whisperFile = "ggml-large-v3-turbo.bin"
+    @Published var llmFile = "Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
+    @Published var promptText = ""
+    @Published var promptCustom = false
+    @Published var serverOpNote = ""
 
     enum MicPermission: String {
         case unknown, granted, denied
@@ -68,6 +73,9 @@ final class DictationController: ObservableObject {
     private var sessionSeq = 0
     private var eventTask: Task<Void, Never>?
     private var dictionary = PersonalDictionary()
+    // The Mac app owns the inference server lifecycle + prerequisites.
+    let assets = ServerAssets()
+    let server = ServerLifecycle()
 
     init() {
         if let raw = UserDefaults.standard.string(forKey: "omil.mode"), let m = CleanupMode(rawValue: raw) {
@@ -85,12 +93,28 @@ final class DictationController: ObservableObject {
            let cfg = try? JSONDecoder().decode(ServerConfig.self, from: data) {
             serverConfig = cfg
         }
+        whisperFile = UserDefaults.standard.string(forKey: "omil.whisperFile") ?? whisperFile
+        llmFile = UserDefaults.standard.string(forKey: "omil.llmFile") ?? llmFile
         serverCleanupEnabled = UserDefaults.standard.object(forKey: "omil.serverCleanup") as? Bool ?? true
         HotkeyManager.shared.onPushStart = { [weak self] in self?.start() }
         HotkeyManager.shared.onPushStop = { [weak self] in self?.stop() }
         HotkeyManager.shared.onToggle = { [weak self] in self?.toggle() }
         HotkeyManager.shared.start()
         Task { await refreshBackendStatus() }
+        // Own the server: launch at startup, auto-adopt its LAN token.
+        server.start { [weak self] token in
+            Task { @MainActor in
+                guard let self else { return }
+                if self.serverConfig.token != token {
+                    self.serverConfig.token = token
+                    self.saveServerConfig()
+                }
+            }
+        }
+    }
+
+    func shutdownServer() {
+        server.stop()
     }
 
     var axTrusted: Bool { ax.isTrusted }
@@ -144,6 +168,118 @@ final class DictationController: ObservableObject {
         }
         UserDefaults.standard.set(serverCleanupEnabled, forKey: "omil.serverCleanup")
         Task { await refreshServerHealth() }
+    }
+
+    private func serverRequest(path: String, method: String = "GET", jsonBody: [String: Any]? = nil) -> URLRequest? {
+        var comps = URLComponents()
+        comps.scheme = "http"
+        comps.host = serverConfig.host.isEmpty ? nil : serverConfig.host
+        comps.port = serverConfig.port
+        guard let base = comps.url else { return nil }
+        var req = URLRequest(url: base.appendingPathComponent(path))
+        req.httpMethod = method
+        req.setValue("Bearer \(serverConfig.token)", forHTTPHeaderField: "Authorization")
+        req.timeoutInterval = 60
+        if let jsonBody {
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.httpBody = try? JSONSerialization.data(withJSONObject: jsonBody)
+        }
+        return req
+    }
+
+    /// Persist model selection, download the newly selected weights when
+    /// missing, then tell the server to switch (llama sidecar restarts lazily).
+    func selectModels() {
+        UserDefaults.standard.set(whisperFile, forKey: "omil.whisperFile")
+        UserDefaults.standard.set(llmFile, forKey: "omil.llmFile")
+        assets.refreshState()
+        serverOpNote = "Switching models…"
+        Task {
+            for file in [whisperFile, llmFile] {
+                if assets.states[file]?.isReady != true, ServerAssets.pin(id: file) != nil {
+                    let ok = await withCheckedContinuation { cont in
+                        assets.installModel(id: file) { cont.resume(returning: $0) }
+                    }
+                    if !ok {
+                        await MainActor.run { self.serverOpNote = "Download failed for \(file) — see asset state" }
+                        return
+                    }
+                }
+            }
+            guard let whisperId = ServerAssets.whisperIdForFile[whisperFile],
+                  let llmId = ServerAssets.llmIdForFile[llmFile],
+                  let req = serverRequest(path: "/v1/models/select", method: "POST",
+                                           jsonBody: ["whisper": whisperId, "llm": llmId]) else {
+                await MainActor.run { self.serverOpNote = "Server not configured" }
+                return
+            }
+            do {
+                let (data, response) = try await URLSession.shared.data(for: req)
+                guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+                    await MainActor.run { self.serverOpNote = "Server rejected selection" }
+                    return
+                }
+                let note = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["note"] as? String ?? "switched"
+                await MainActor.run {
+                    self.serverOpNote = "Models switched (\(note)). Qwen restarts on next cleanup."
+                    Task { await self.refreshServerHealth() }
+                }
+            } catch {
+                await MainActor.run { self.serverOpNote = "Selection failed: server unreachable?" }
+            }
+        }
+    }
+
+    // MARK: Prompt override
+
+    func loadPrompt() {
+        guard let req = serverRequest(path: "/v1/prompt") else { return }
+        Task {
+            do {
+                let (data, response) = try await URLSession.shared.data(for: req)
+                guard (response as? HTTPURLResponse)?.statusCode == 200,
+                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+                await MainActor.run {
+                    self.promptText = (json["text"] as? String) ?? ""
+                    self.promptCustom = (json["isCustom"] as? Bool) ?? false
+                }
+            } catch { /* server not up yet */ }
+        }
+    }
+
+    func savePrompt() {
+        guard promptText.trimmingCharacters(in: .whitespacesAndNewlines).count >= 50,
+              let req = serverRequest(path: "/v1/prompt", method: "POST", jsonBody: ["text": promptText]) else {
+            serverOpNote = "Prompt too short (min 50 chars)"
+            return
+        }
+        Task {
+            do {
+                let (_, response) = try await URLSession.shared.data(for: req)
+                await MainActor.run {
+                    if (response as? HTTPURLResponse)?.statusCode == 200 {
+                        self.promptCustom = true
+                        self.serverOpNote = "Custom prompt saved — used from the next cleanup"
+                    } else {
+                        self.serverOpNote = "Prompt rejected by server"
+                    }
+                }
+            } catch {
+                await MainActor.run { self.serverOpNote = "Prompt save failed: server unreachable?" }
+            }
+        }
+    }
+
+    func resetPrompt() {
+        guard let req = serverRequest(path: "/v1/prompt", method: "DELETE") else { return }
+        Task {
+            _ = try? await URLSession.shared.data(for: req)
+            await MainActor.run {
+                self.promptCustom = false
+                self.loadPrompt()
+                self.serverOpNote = "Prompt reset to default"
+            }
+        }
     }
 
     func refreshServerHealth() async {

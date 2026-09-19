@@ -26,6 +26,10 @@ unit tests.
 | Whisper latency, short clips, warm | 2–4 s | wall clock, M4 Max |
 | Qwen cleanup latency, warm llama-server | 0–1 s | wall clock (first boot loads 2.5 GB model, tens of seconds) |
 | Cold model downloads | ~1.6 GB Whisper + ~2.5 GB Qwen, SHA-pinned TOFU | `bun src/main.ts --download-models` |
+| Model catalog | 6 Whisper sizes + 3 Qwen sizes listed, select validated | `/v1/models`, `/v1/models/select` live (incl. 400 on unknown id) |
+| Prompt override | set → used (flagged) → reset round-trip | `/v1/prompt` live |
+| Compiled engine (`bun build --compile`, 62 MB) | boots standalone, token auth, transcribe works | embedded binary on :3229 vs fresh data dir |
+| App-owned sidecars | implemented, not yet exercised end-to-end | needs a clean-machine (or wiped bin dir) install test |
 
 Qwen evidence: zero-shot+few-shot proposes correct simple repairs but fails
 reversals and scoped restatements and once proposed a scope-violating deletion
@@ -68,6 +72,10 @@ numbers above are component measurements with stated exclusions.
 ## Known limits / unverified (need physical devices)
 
 - No human-speech evaluation yet — synthetic TTS only, labeled as such.
+- App-owned sidecar install (bottle download → verify → smoke check) is
+  implemented but untested on a clean machine; sidecar bottles target macOS
+  Tahoe+ while the app floor is macOS 14 (older Macs keep the Apple/legacy
+  fallback).
 - No microphone recording test through the Swift apps (no mic in this environment).
 - No AX insertion test against a live host app (needs granted Accessibility trust).
 - No iPhone→Mac round trip on device (needs LAN + token setup, provisioning for keyboard).

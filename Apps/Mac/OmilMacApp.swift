@@ -1,11 +1,25 @@
 import SwiftUI
 import OmilCore
 
-// MARK: - Omil Mac app (menu bar agent)
+// MARK: - Omil Mac app (menu bar agent, owns the inference server)
+
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    weak var controller: DictationController?
+
+    func applicationWillTerminate(_ notification: Notification) {
+        controller?.shutdownServer()
+    }
+}
 
 @main
 struct OmilMacApp: App {
     @StateObject private var controller = DictationController()
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
+
+    init() {
+        // Wire terminate-time server shutdown (both wrappers exist by now).
+        _delegate.wrappedValue.controller = _controller.wrappedValue
+    }
 
     var body: some Scene {
         MenuBarExtra {
@@ -251,6 +265,28 @@ struct HistoryView: View {
     }
 }
 
+// MARK: - Asset state row
+
+func assetStateView(_ state: ServerAssets.AssetState) -> some View {
+    Group {
+        switch state {
+        case .missing:
+            Text("Not installed").font(.caption).foregroundStyle(.secondary)
+        case .downloading(let p):
+            ProgressView(value: p).frame(width: 120)
+        case .verifying:
+            Text("Verifying…").font(.caption).foregroundStyle(.secondary)
+        case .extracting:
+            Text("Installing…").font(.caption).foregroundStyle(.secondary)
+        case .ready:
+            Label("Ready", systemImage: "checkmark.circle.fill")
+                .font(.caption).foregroundStyle(.green)
+        case .failed(let r):
+            Text(r).font(.caption).foregroundStyle(.red).lineLimit(2)
+        }
+    }
+}
+
 // MARK: - Settings
 
 struct SettingsView: View {
@@ -313,9 +349,85 @@ struct SettingsView: View {
                     }
                 }
                 Divider()
-                Text("Omil inference core (your Mac)")
+                Text("Omil inference core (owned by this app)")
                     .font(.headline)
-                Text("iPhone/iPad point at this Mac. Audio stays on your LAN — never a third party. Token: server prints it on first boot (`server/data/omil-token`).")
+                Text("Engine: \(controller.server.status.label)")
+                    .font(.caption)
+                HStack {
+                    Button("Restart server") { controller.server.restart() }
+                    Button("Reveal server log") {
+                        NSWorkspace.shared.activateFileViewerSelecting([ServerAssets.logURL])
+                    }
+                }
+                Divider()
+                Text("Prerequisites — one install")
+                    .font(.headline)
+                Text("Sidecar engines + the selected Whisper and Qwen weights, downloaded and verified automatically. No Homebrew needed.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Picker("Whisper model", selection: $controller.whisperFile) {
+                    ForEach(ServerAssets.whisperOptions, id: \.id) { opt in
+                        Text("\(opt.displayName) (~\(opt.approxMB) MB)").tag(opt.id)
+                    }
+                }
+                .onChange(of: controller.whisperFile) { controller.selectModels() }
+                Picker("Rewrite model", selection: $controller.llmFile) {
+                    ForEach(ServerAssets.llmOptions, id: \.id) { opt in
+                        Text("\(opt.displayName) (~\(opt.approxMB) MB)").tag(opt.id)
+                    }
+                }
+                .onChange(of: controller.llmFile) { controller.selectModels() }
+                if !controller.serverOpNote.isEmpty {
+                    Text(controller.serverOpNote)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(controller.assets.requiredPins, id: \.id) { pin in
+                    HStack {
+                        VStack(alignment: .leading) {
+                            Text(pin.displayName).font(.body)
+                            Text("\(pin.version)").font(.caption2).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        assetStateView(controller.assets.states[pin.id] ?? .missing)
+                    }
+                }
+                HStack {
+                    Button(controller.assets.allReady ? "Prerequisites installed" : "Install prerequisites") {
+                        controller.assets.installPrerequisites {
+                            Task { @MainActor in
+                                controller.server.start { token in
+                                    Task { @MainActor in
+                                        if controller.serverConfig.token != token {
+                                            controller.serverConfig.token = token
+                                            controller.saveServerConfig()
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    .disabled(controller.assets.isInstalling || controller.assets.allReady)
+                    Button("Recheck") { controller.assets.refreshState() }
+                }
+                Divider()
+                Text("Rewrite prompt (Qwen system prompt)")
+                    .font(.headline)
+                Text(controller.promptCustom ? "Custom prompt active." : "Using the default prompt.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                TextEditor(text: $controller.promptText)
+                    .font(.system(.body, design: .monospaced))
+                    .frame(minHeight: 140)
+                    .border(Color.secondary.opacity(0.3))
+                HStack {
+                    Button("Load current") { controller.loadPrompt() }
+                    Button("Save custom prompt") { controller.savePrompt() }
+                    Button("Reset to default") { controller.resetPrompt() }
+                }
+                .onAppear { controller.loadPrompt() }
+                Divider()
+                Text("This Mac connects to its own server automatically. iPhone/iPad use the Mac's LAN address + the token below.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 HStack {
@@ -323,8 +435,11 @@ struct SettingsView: View {
                     TextField("Port", value: $controller.serverConfig.port, format: .number)
                         .frame(width: 80)
                 }
-                SecureField("Server token", text: $controller.serverConfig.token)
                 HStack {
+                    Text("Token: managed automatically")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
                     Button("Save & test server") {
                         controller.saveServerConfig()
                     }

@@ -33,6 +33,8 @@ Correct output: {"edits": [{"op": "replaceFromSource", "targetTokenIds": ["a-2",
 Example — preserve. "Do not send 42. Send 21." has NO cue (no sorry/actually cue between compatible values). Correct output: {"edits": []}
 "I am sorry about the delay." — "sorry" has no number/name/day on its left, so it is an ordinary apology. Correct output: {"edits": []}`
 
+export const DEFAULT_SYSTEM_PROMPT = SYSTEM_PROMPT
+
 export interface CleanupInput {
   readonly text: string
   readonly mode: "verbatim" | "clean"
@@ -42,6 +44,7 @@ export interface CleanupInput {
 export const cleanWithQwen = (
   handle: LlamaHandle,
   input: CleanupInput,
+  systemPrompt?: string,
 ): Effect.Effect<CleanedResult, ModelError, never> =>
   Effect.gen(function* () {
     const snapshotId = crypto.randomUUID()
@@ -66,7 +69,7 @@ export const cleanWithQwen = (
     abstentions.push(...det.abstentions)
 
     // Qwen proposes repairs; invalid proposals are dropped, never applied loosely.
-    const proposed: ProposedEdit[] = yield* proposeRepairs(handle, snap, input.dictionary ?? {}).pipe(
+    const proposed: ProposedEdit[] = yield* proposeRepairs(handle, snap, input.dictionary ?? {}, systemPrompt).pipe(
       Effect.catchAll((e) => {
         abstentions.push({
           reason: "modelUnavailable",
@@ -207,10 +210,11 @@ function proposeRepairs(
   handle: LlamaHandle,
   snap: Snapshot,
   dictionary: Record<string, string>,
+  systemPrompt?: string,
 ): Effect.Effect<ProposedEdit[], ModelError, never> {
   const tokenLines = snap.tokens.map((t) => `${t.id} [${t.kind}${t.isProtected ? ",protected" : ""}] "${t.text}"`).join("\n")
   const messages: ChatMessage[] = [
-    { role: "system", content: SYSTEM_PROMPT },
+    { role: "system", content: systemPrompt ?? SYSTEM_PROMPT },
     {
       role: "user",
       content: `Transcript tokens:\n${tokenLines}\n\nRaw: "${snap.tokens.map((t) => t.text).join(" ")}"\nDictionary (confirmed only): ${JSON.stringify(dictionary)}\nReply with the JSON object.`,

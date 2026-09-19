@@ -4,6 +4,7 @@ import { BunHttpServer, BunRuntime } from "@effect/platform-bun"
 import { loadConfig } from "./Config"
 import { loadOrCreateToken } from "./Auth"
 import { ensureModel } from "./Models"
+import { loadSelection } from "./ServerState"
 import { makeRouter, stopLlama, type ApiContext } from "./Api"
 
 /**
@@ -19,16 +20,36 @@ import { makeRouter, stopLlama, type ApiContext } from "./Api"
 
 const program = Effect.gen(function* () {
   const cfg = yield* loadConfig
+  // Reclaim a stale llama sidecar port left by a killed predecessor
+  // (single-user Mac; the app owns this port).
+  yield* Effect.promise(async () => {
+    try {
+      const res = Bun.spawnSync(["sh", "-c", `lsof -ti tcp:${cfg.llamaPort} 2>/dev/null`])
+      const out = typeof res.stdout === "string" ? res.stdout : Buffer.from(res.stdout as Uint8Array).toString()
+      for (const pid of out.split(/\s+/).filter(Boolean)) {
+        if (/^\d+$/.test(pid) && Number(pid) !== process.pid) {
+          try { process.kill(Number(pid)) } catch { /* already gone */ }
+        }
+      }
+    } catch { /* lsof unavailable */ }
+  })
   // Detached prefetch: `bun src/main.ts --download-models` ensures both
   // weight files, then exits. Survives client disconnects.
   if (process.argv.includes("--download-models")) {
-    yield* ensureModel(cfg, cfg.whisperModelId)
-    yield* ensureModel(cfg, cfg.llmModelId)
+    const sel = yield* Effect.promise(() => loadSelection(cfg.dataDir))
+    const orExit = (label: string) => (e: { reason: string }) =>
+      Effect.sync((): never => {
+        console.error(`${label} failed: ${e.reason}`)
+        return process.exit(1)
+      })
+    yield* ensureModel(cfg, sel.whisper).pipe(Effect.catchAll(orExit("whisper")))
+    yield* ensureModel(cfg, sel.llm).pipe(Effect.catchAll(orExit("llm")))
     console.log("all models ready")
     return
   }
   const token = yield* loadOrCreateToken(cfg.dataDir)
-  const ctx: ApiContext = { cfg, token, llama: null }
+  const selection = yield* Effect.promise(() => loadSelection(cfg.dataDir))
+  const ctx: ApiContext = { cfg, token, selection, llama: null }
   console.log(`Omil inference core: http://${cfg.host}:${cfg.port}`)
   console.log(`whisper=${cfg.whisperModelId} llm=${cfg.llmModelId} (downloaded on first use)`)
   yield* Effect.addFinalizer(() => Effect.sync(() => stopLlama()))
