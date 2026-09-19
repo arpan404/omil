@@ -6,6 +6,18 @@ import OmilCore
 final class AppDelegate: NSObject, NSApplicationDelegate {
     weak var controller: DictationController?
 
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSLog("Omil launched")
+        // Agent apps (LSUIElement) don't activate on their own — bring the
+        // main window forward explicitly so first launch shows the app.
+        NSApp.activate(ignoringOtherApps: true)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            if let w = NSApp.windows.first(where: { $0.title == "Omil" }) {
+                w.makeKeyAndOrderFront(nil)
+            }
+        }
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         controller?.shutdownServer()
     }
