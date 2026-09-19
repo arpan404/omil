@@ -305,12 +305,33 @@ public struct CleanupPipeline: Sendable {
         }
 
         // Comma-drop: kept comma adjacent to a skipped cue/filler token.
+        // Period-drop: kept sentence boundary adjacent to a skipped cue or to
+        // a token deleted as a repair reparandum ("Make it 42. Sorry, 21."
+        // must not leave "Make it. 21."). Filler-adjacent periods are kept.
+        let repairDeletedIdx: Set<Int> = Set(accepted.flatMap { edit -> [Int] in
+            switch edit.op {
+            case .replaceFromSource, .selectCandidate:
+                return edit.targetTokenIds.compactMap { snapshot.indexOf(id: $0) }
+            default:
+                return []
+            }
+        })
         var dropComma = Set<Int>()
-        for i in tokens.indices where tokens[i].kind == .punctuation && tokens[i].text == "," {
-            if skippedIds.contains(tokens[i].id) { continue }
+        var dropSentence = Set<Int>()
+        for i in tokens.indices where tokens[i].kind == .punctuation {
+            if skippedIdx.contains(i) { continue }
             let leftSkippedCue = i > 0 && skippedIdx.contains(i-1) && (skippedKinds[i-1] == .cue || skippedKinds[i-1] == .filler)
             let rightSkippedCue = i + 1 < tokens.count && skippedIdx.contains(i+1) && (skippedKinds[i+1] == .cue || skippedKinds[i+1] == .filler)
-            if leftSkippedCue || rightSkippedCue { dropComma.insert(i) }
+            if tokens[i].text == "," {
+                if leftSkippedCue || rightSkippedCue { dropComma.insert(i) }
+                continue
+            }
+            if tokens[i].text == "." || tokens[i].text == "?" || tokens[i].text == "!" {
+                let adj: [Int] = [i - 1, i + 1].filter { $0 >= 0 && $0 < tokens.count }
+                let cueAdj = adj.contains { skippedIdx.contains($0) && skippedKinds[$0] == .cue }
+                let repAdj = adj.contains { repairDeletedIdx.contains($0) }
+                if cueAdj || repAdj { dropSentence.insert(i) }
+            }
         }
 
         var parts: [String] = []
@@ -326,7 +347,7 @@ public struct CleanupPipeline: Sendable {
             if skippedIdx.contains(i) && sub[i] == nil {
                 continue // deleted
             }
-            if dropComma.contains(i) { continue }
+            if dropComma.contains(i) || dropSentence.contains(i) { continue }
             if let s = sub[i] {
                 if !s.isEmpty {
                     parts.append(s)

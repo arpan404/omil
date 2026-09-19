@@ -11,12 +11,18 @@ import Speech
 // Audio format is negotiated per backend via bestAvailableAudioFormat /
 // availableCompatibleAudioFormats; SpeechAnalyzer does not resample for us.
 
-public struct AppleSpeechStatus: Hashable, Sendable {
-    public var speechTranscriberAvailable: Bool
+public struct AppleSpeechStatus: Hashable, Sendable {    public var speechTranscriberAvailable: Bool
     public var dictationAvailable: Bool
     public var sfOnDeviceAvailable: Bool
     public var installedLocales: [String]
     public var detail: String
+    public init(speechTranscriberAvailable: Bool, dictationAvailable: Bool, sfOnDeviceAvailable: Bool, installedLocales: [String], detail: String) {
+        self.speechTranscriberAvailable = speechTranscriberAvailable
+        self.dictationAvailable = dictationAvailable
+        self.sfOnDeviceAvailable = sfOnDeviceAvailable
+        self.installedLocales = installedLocales
+        self.detail = detail
+    }
 }
 
 #if canImport(Speech)
@@ -203,6 +209,31 @@ public actor AppleSpeechBackend: TranscriptionBackend {
 
     /// Negotiated input format for the installed assets. Query after prepare().
     public func audioFormat() async -> AVAudioFormat? { negotiatedFormat }
+
+    /// File-based transcription (recorded evaluation sets, offline tests).
+    /// Returns finalized text in order. Requires prepare() first.
+    public func transcribeFile(url: URL) async throws -> TranscribedFile {
+        let file = try AVAudioFile(forReading: url)
+        let analyzer = try await SpeechAnalyzer(
+            inputAudioFile: file, modules: [transcriber] as [any SpeechModule],
+            finishAfterFile: true)
+        _ = analyzer
+        var finals: [String] = []
+        var allAlts: [[String]] = []
+        for try await result in transcriber.results {
+            if result.isFinal {
+                finals.append(String(result.text.characters))
+                allAlts.append(result.alternatives.map { String($0.characters) })
+            }
+        }
+        return TranscribedFile(text: finals.joined(separator: " "), alternatives: allAlts)
+    }
+
+    /// One-line format description for diagnostics (avoids exposing AVFAudio types).
+    public func diagnosticFormat() async -> String? {
+        guard let f = negotiatedFormat else { return nil }
+        return "\(f.sampleRate)Hz x\(f.channelCount) \(f.commonFormat.rawValue)"
+    }
 
     // MARK: PCM helpers
 

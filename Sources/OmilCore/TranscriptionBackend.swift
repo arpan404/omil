@@ -133,6 +133,17 @@ public actor MockTranscriptionBackend: TranscriptionBackend {
     }
 }
 
+// MARK: - File transcription result
+
+public struct TranscribedFile: Sendable {
+    public var text: String
+    public var alternatives: [[String]]
+    public init(text: String, alternatives: [[String]] = []) {
+        self.text = text
+        self.alternatives = alternatives
+    }
+}
+
 // MARK: - TranscriptAssembler
 
 /// Merges volatile + finalized backend segments into immutable snapshots.

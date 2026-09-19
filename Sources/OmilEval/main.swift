@@ -33,6 +33,9 @@ struct OmilEval {
                 strictMandatory = false
             case "--debug":
                 debugText = args.first; args = args.dropFirst()
+            case "--probe":
+                await probe()
+                return
             default:
                 break
             }
@@ -101,6 +104,38 @@ struct OmilEval {
     static func pct(_ a: Int, _ b: Int) -> Double {
         guard b > 0 else { return 0 }
         return Double(a) / Double(b) * 100
+    }
+
+    /// Runtime environment probe: device, OS, backend availability, assets.
+    static func probe() async {
+        let dev = CapabilityMatrix.currentDevice()
+        print("device model=\(dev.model) os=\(dev.os) memoryGB=\(dev.memoryGB)")
+        let status = await SpeechSupportProbe().probe()
+        print("speechTranscriberAvailable=\(status.speechTranscriberAvailable)")
+        print("dictationAvailable=\(status.dictationAvailable)")
+        print("sfOnDeviceAvailable=\(status.sfOnDeviceAvailable)")
+        print("installedLocales=\(status.installedLocales.joined(separator: ","))")
+        print("detail=\(status.detail)")
+        let matrix = CapabilityMatrix()
+        for state in ["foreground", "background"] {
+            let e = matrix.eligible(status: status, memoryGB: dev.memoryGB, executionState: state)
+            print("eligible[\(state)]=\(e.supported) notes=\(e.notes)")
+        }
+        #if canImport(Speech)
+        if #available(macOS 26, iOS 26, *) {
+            let b = AppleSpeechBackend()
+            do {
+                try await b.prepare()
+                print("applePrepare=ok")
+            } catch {
+                print("applePrepare=failed: \(error)")
+            }
+            print("assetState=\(await b.currentAssetState())")
+            print("negotiatedFormat=\(await b.diagnosticFormat() ?? "none")")
+        } else {
+            print("applePrepare=skipped (OS < 26)")
+        }
+        #endif
     }
 
     static func debug(text: String) {

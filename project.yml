@@ -1,0 +1,83 @@
+name: Omil
+options:
+  bundleIdPrefix: com.omil
+  deploymentTarget:
+    macOS: "14.0"
+    iOS: "17.0"
+  createIntermediateGroups: true
+
+packages:
+  OmilCore:
+    path: .
+
+settings:
+  base:
+    DEVELOPMENT_TEAM: BVT55BT25R
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+
+targets:
+  OmilMac:
+    type: application
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Apps/Mac
+    dependencies:
+      - package: OmilCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.omil.mac
+        INFOPLIST_FILE: Apps/Mac/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Apps/Mac/OmilMac.entitlements
+        LSUIELEMENT: YES
+    scheme:
+      environmentVariables:
+        OMIL_LOG: "1"
+
+  OmilIOS:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: Apps/iOS
+    dependencies:
+      - package: OmilCore
+      - target: OmilKeyboard
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.omil.ios
+        INFOPLIST_FILE: Apps/iOS/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Apps/iOS/OmilIOS.entitlements
+        TARGETED_DEVICE_FAMILY: "1,2"
+
+  OmilKeyboard:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: Apps/Keyboard
+    dependencies:
+      - package: OmilCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.omil.ios.keyboard
+        INFOPLIST_FILE: Apps/Keyboard/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Apps/Keyboard/OmilKeyboard.entitlements
+
+schemes:
+  OmilMac:
+    build:
+      targets:
+        OmilMac: all
+    run:
+      config: Debug
+  OmilIOS:
+    build:
+      targets:
+        OmilIOS: all
+    run:
+      config: Debug
