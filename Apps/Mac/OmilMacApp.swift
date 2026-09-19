@@ -8,6 +8,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSLog("Omil launched")
+        controller?.startup()
         // Agent apps (LSUIElement) don't activate on their own — bring the
         // main window forward explicitly so first launch shows the app.
         NSApp.activate(ignoringOtherApps: true)
@@ -19,6 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// openWindow is unreliable from MenuBarExtra content — order the
     /// SwiftUI Window scene's NSWindow forward directly.
     func openMainWindow() {
+        NSLog("Omil: Open Omil pressed")
         orderMainWindowFront()
     }
 

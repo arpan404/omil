@@ -96,6 +96,12 @@ final class DictationController: ObservableObject {
         whisperFile = UserDefaults.standard.string(forKey: "omil.whisperFile") ?? whisperFile
         llmFile = UserDefaults.standard.string(forKey: "omil.llmFile") ?? llmFile
         serverCleanupEnabled = UserDefaults.standard.object(forKey: "omil.serverCleanup") as? Bool ?? true
+    }
+
+    /// Post-launch startup (called from AppDelegate): hotkeys, backend probe,
+    /// owned server. Kept out of init so launch stays fast and diagnosable.
+    func startup() {
+        NSLog("Omil: startup")
         HotkeyManager.shared.onPushStart = { [weak self] in self?.start() }
         HotkeyManager.shared.onPushStop = { [weak self] in self?.stop() }
         HotkeyManager.shared.onToggle = { [weak self] in self?.toggle() }
@@ -103,6 +109,7 @@ final class DictationController: ObservableObject {
         Task { await refreshBackendStatus() }
         // Own the server: launch at startup, auto-adopt its LAN token.
         adoptServerToken()
+        NSLog("Omil: startup done")
     }
 
     /// (Re)starts the owned server, adopting its token into the local config.
@@ -369,6 +376,7 @@ final class DictationController: ObservableObject {
     // MARK: Recording
 
     func toggle() {
+        NSLog("Omil: toggle pressed, phase=%@", phase.rawValue)
         switch phase {
         case .idle, .ready, .failed: start()
         case .recording: stop()
@@ -377,6 +385,7 @@ final class DictationController: ObservableObject {
     }
 
     func start() {
+        NSLog("Omil: start pressed, phase=%@", phase.rawValue)
         guard phase == .idle || phase == .ready || phase == .failed else { return }
         refreshMicPermission()
         guard micPermission != .denied else {
