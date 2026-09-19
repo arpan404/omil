@@ -1,0 +1,17 @@
+{
+  "name": "omil-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Omil inference core: Whisper transcription + Qwen cleanup over a LAN API. Swift apps are thin clients.",
+  "type": "module",
+  "scripts": {
+    "start": "bun src/main.ts",
+    "dev": "bun --watch src/main.ts",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@effect/platform": "latest",
+    "@effect/platform-bun": "latest",
+    "effect": "latest"
+  }
+}

@@ -26,7 +26,7 @@ final class DictationController: ObservableObject {
     @Published var cleanupMode: CleanupMode = .clean {
         didSet { UserDefaults.standard.set(cleanupMode.rawValue, forKey: "omil.mode") }
     }
-    @Published var backendPreference: BackendChoice = .automatic {
+    @Published var backendPreference: BackendChoice = .omilServer {
         didSet {
             if let data = try? JSONEncoder().encode(backendPreference) {
                 UserDefaults.standard.set(data, forKey: "omil.backend")
@@ -39,6 +39,10 @@ final class DictationController: ObservableObject {
     @Published var lastDeliveryMethod = ""
     @Published var micPermission: MicPermission = .unknown
     @Published var historyEnabled = true
+    @Published var serverConfig = ServerConfig()
+    @Published var serverCleanupEnabled = true
+    @Published var serverNote = ""
+    @Published var serverHealth = "Unknown"
 
     enum MicPermission: String {
         case unknown, granted, denied
@@ -77,6 +81,11 @@ final class DictationController: ObservableObject {
         history = LocalHistory.loadHistory()
         historyEnabled = UserDefaults.standard.object(forKey: "omil.historyEnabled") as? Bool ?? true
         if !historyEnabled { history = [] }
+        if let data = UserDefaults.standard.data(forKey: "omil.serverConfig"),
+           let cfg = try? JSONDecoder().decode(ServerConfig.self, from: data) {
+            serverConfig = cfg
+        }
+        serverCleanupEnabled = UserDefaults.standard.object(forKey: "omil.serverCleanup") as? Bool ?? true
         HotkeyManager.shared.onPushStart = { [weak self] in self?.start() }
         HotkeyManager.shared.onPushStop = { [weak self] in self?.stop() }
         HotkeyManager.shared.onToggle = { [weak self] in self?.toggle() }
@@ -118,9 +127,50 @@ final class DictationController: ObservableObject {
         let resolved = selector.resolve(status: status, preference: backendPreference)
         backendDescription = selector.describe(status: status, resolved: resolved)
         switch resolved {
+        case .omilServer:
+            assetState = "Checking server…"
+            Task { await self.refreshServerHealth() }
         case .appleSpeech: assetState = (await appleAssetState() ?? "Ready")
         case .legacySFSpeech: assetState = "Ready (no download)"
         case .unavailable(let r): assetState = r
+        }
+    }
+
+    // MARK: Server core
+
+    func saveServerConfig() {
+        if let data = try? JSONEncoder().encode(serverConfig) {
+            UserDefaults.standard.set(data, forKey: "omil.serverConfig")
+        }
+        UserDefaults.standard.set(serverCleanupEnabled, forKey: "omil.serverCleanup")
+        Task { await refreshServerHealth() }
+    }
+
+    func refreshServerHealth() async {
+        let probe = ServerTranscriptionBackend(config: serverConfig)
+        let health = await probe.serverHealth()
+        await MainActor.run {
+            self.serverHealth = health
+            if self.backendPreference == .omilServer {
+                self.assetState = health
+            }
+        }
+    }
+
+    /// Qwen cleanup post-pass over the finalized raw transcript. The local
+    /// deterministic engine always runs first (journal + fallback); the server
+    /// result replaces the delivered text only on success.
+    func serverClean(rawText: String) async -> (text: String, note: String) {
+        guard serverCleanupEnabled, cleanupMode == .clean else {
+            return (rawText, "local rules (server cleanup off or verbatim mode)")
+        }
+        let client = ServerCleanupClient(config: serverConfig, dictionary: dictionary)
+        do {
+            let r = try await client.clean(text: rawText, mode: cleanupMode)
+            let note = "Qwen cleanup via server: \(r.acceptedEdits.count) edits, \(r.abstentions.count) abstentions (\(r.rulesVersion))"
+            return (r.text, note)
+        } catch {
+            return (rawText, "Server cleanup unavailable (\(error)); used local rules")
         }
     }
 
@@ -159,6 +209,8 @@ final class DictationController: ObservableObject {
     func makeBackend() -> (any TranscriptionBackend)? {
         let resolved = selector.resolve(status: status, preference: backendPreference)
         switch resolved {
+        case .omilServer:
+            return ServerTranscriptionBackend(config: serverConfig)
         case .appleSpeech:
             if #available(macOS 26, *) { return AppleSpeechBackend() }
             return nil
@@ -330,7 +382,17 @@ final class DictationController: ObservableObject {
             }
             return
         }
-        let text = committed.cleaned.text
+        let text: String
+        let note: String
+        if committed.cleaned.text.isEmpty {
+            text = committed.cleaned.text
+            note = "empty result"
+        } else {
+            let cleaned = await serverClean(rawText: committed.rawSnapshot.rawText)
+            text = cleaned.text.isEmpty ? committed.cleaned.text : cleaned.text
+            note = cleaned.note
+        }
+        serverNote = note
         let pre = self.precondition ?? SelectionPrecondition()
         // 1. Try direct AX insertion with revalidation.
         if axTrusted, case .ok = ax.revalidate(precondition: pre) {

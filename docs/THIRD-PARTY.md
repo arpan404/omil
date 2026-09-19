@@ -1,9 +1,23 @@
 # Third-party acknowledgements
 
-Omil has **zero SwiftPM dependencies**. All recognition and UI uses Apple
-system frameworks (Speech, AVFAudio/AVFoundation, SwiftUI, AppKit/UIKit).
+## Inference core (user's Mac, downloaded on first server boot)
 
-## System speech backends (no bundled weights)
+| Artifact | Source | License |
+| --- | --- | --- |
+| Whisper large-v3-turbo weights (`ggml-large-v3-turbo.bin`, whisper.cpp format) | https://huggingface.co/ggerganov/whisper.cpp | OpenAI Whisper weights: MIT (code + weights per OpenAI Whisper repo) |
+| Qwen3-4B-Instruct-2507 (`Q4_K_M` GGUF) | https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF (quant of Apache-2.0 weights; Qwen's own GGUF repo is access-gated, so the public unsloth mirror is used) | Apache 2.0 |
+| whisper.cpp binaries (`whisper-cli`, etc.) | `brew install whisper-cpp` | MIT |
+| llama.cpp binaries (`llama-server`) | `brew install llama.cpp` | MIT |
+
+Effect/TypeScript runtime deps (`effect`, `@effect/platform`,
+`@effect/platform-bun`) are MIT. Pinned versions live in
+`server/bun.lock` when generated (`bun install`).
+
+Weight files are versioned + SHA-256-pinned on first download
+(`server/data/models/manifest.local.json`, trust-on-first-use, verified on
+every boot, removable by deleting `server/data/models/`).
+
+## System speech backends (offline fallback, no bundled weights)
 
 | Backend | Source | License / terms |
 | --- | --- | --- |

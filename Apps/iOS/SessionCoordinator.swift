@@ -25,6 +25,13 @@ final class SessionCoordinator: ObservableObject {
     @Published var assetState = "Unknown"
     @Published var cleanupMode: CleanupMode = .clean
     @Published var keyboardHint = ""
+    // Server core (user's Mac). Thin client: capture + display + handoff.
+    // Full mobile pass comes after Mac validation.
+    @Published var backendPreference: BackendChoice = .omilServer
+    @Published var serverConfig = ServerConfig(host: "", port: 3217)
+    @Published var serverCleanupEnabled = true
+    @Published var serverHealth = "Unknown"
+    @Published var serverNote = ""
 
     let store: ResultStore
     private var session: DictationSession?
@@ -43,14 +50,57 @@ final class SessionCoordinator: ObservableObject {
             cleanupMode = m
         }
         dictionary = Self.loadDictionary()
+        if let data = UserDefaults.standard.data(forKey: "omil.serverConfig"),
+           let cfg = try? JSONDecoder().decode(ServerConfig.self, from: data) {
+            serverConfig = cfg
+        }
+        if let data = UserDefaults.standard.data(forKey: "omil.backend"),
+           let pref = try? JSONDecoder().decode(BackendChoice.self, from: data) {
+            backendPreference = pref
+        }
+        serverCleanupEnabled = UserDefaults.standard.object(forKey: "omil.serverCleanup") as? Bool ?? true
         Task { await refreshStatus() }
+    }
+
+    func saveServerConfig() {
+        if let data = try? JSONEncoder().encode(serverConfig) {
+            UserDefaults.standard.set(data, forKey: "omil.serverConfig")
+        }
+        if let data = try? JSONEncoder().encode(backendPreference) {
+            UserDefaults.standard.set(data, forKey: "omil.backend")
+        }
+        UserDefaults.standard.set(serverCleanupEnabled, forKey: "omil.serverCleanup")
+        Task { await refreshServerHealth() }
+    }
+
+    func refreshServerHealth() async {
+        let probeBackend = ServerTranscriptionBackend(config: serverConfig)
+        let health = await probeBackend.serverHealth()
+        await MainActor.run { self.serverHealth = health }
+    }
+
+    func serverClean(rawText: String) async -> (text: String, note: String) {
+        guard serverCleanupEnabled, cleanupMode == .clean else {
+            return (rawText, "local rules")
+        }
+        let client = ServerCleanupClient(config: serverConfig, dictionary: dictionary)
+        do {
+            let r = try await client.clean(text: rawText, mode: cleanupMode)
+            return (r.text, "Qwen cleanup via server (\(r.acceptedEdits.count) edits)")
+        } catch {
+            return (rawText, "Server cleanup unavailable (\(error)); used local rules")
+        }
     }
 
     func refreshStatus() async {
         status = await probe.probe()
-        let resolved = selector.resolve(status: status, preference: .automatic)
+        let resolved = selector.resolve(status: status, preference: backendPreference)
         backendDescription = selector.describe(status: status, resolved: resolved)
         switch resolved {
+        case .omilServer:
+            assetState = "Checking server…"
+            await refreshServerHealth()
+            assetState = serverHealth
         case .appleSpeech: assetState = "Ready (system-managed assets)"
         case .legacySFSpeech: assetState = "Ready (no download)"
         case .unavailable(let r): assetState = r
@@ -67,7 +117,9 @@ final class SessionCoordinator: ObservableObject {
     }
 
     private func makeBackend() -> (any TranscriptionBackend)? {
-        switch selector.resolve(status: status, preference: .automatic) {
+        switch selector.resolve(status: status, preference: backendPreference) {
+        case .omilServer:
+            return ServerTranscriptionBackend(config: serverConfig)
         case .appleSpeech:
             if #available(iOS 26, *) { return AppleSpeechBackend() }
             return nil
@@ -219,13 +271,16 @@ final class SessionCoordinator: ObservableObject {
             }
             return
         }
+        let cleaned = await self.serverClean(rawText: committed.rawSnapshot.rawText)
+        let finalText = cleaned.text.isEmpty ? committed.cleaned.text : cleaned.text
+        await MainActor.run { self.serverNote = cleaned.note }
         if let s = shared {
             store.publishResult(
-                s.sessionId, cleaned: committed.cleaned.text,
+                s.sessionId, cleaned: finalText,
                 raw: committed.rawSnapshot.rawText, sequence: 1)
         }
         await MainActor.run {
-            self.lastCleaned = committed.cleaned.text
+            self.lastCleaned = finalText
             self.phase = .ready
             self.statusMessage = "Done — switch to the Omil keyboard and tap Insert, or copy below."
             self.refreshKeyboardHint()

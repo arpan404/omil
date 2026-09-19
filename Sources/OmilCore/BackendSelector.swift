@@ -8,11 +8,13 @@ import Foundation
 
 public enum BackendChoice: String, Sendable, Codable {
     case automatic
+    case omilServer
     case appleSpeech
     case legacySFSpeech
 }
 
 public enum ResolvedBackend: Sendable {
+    case omilServer
     case appleSpeech
     case legacySFSpeech
     case unavailable(reason: String)
@@ -23,6 +25,10 @@ public struct BackendSelector: Sendable {
 
     public func resolve(status: AppleSpeechStatus, preference: BackendChoice) -> ResolvedBackend {
         switch preference {
+        case .omilServer:
+            // Reachability is checked at prepare()/start with a clear error;
+            // resolving is unconditional so the server stays the default.
+            return .omilServer
         case .appleSpeech:
             guard status.speechTranscriberAvailable else {
                 return .unavailable(reason: "Apple SpeechTranscriber unavailable: \(status.detail)")
@@ -43,6 +49,8 @@ public struct BackendSelector: Sendable {
     /// Display name + asset/download disclosure for settings.
     public func describe(status: AppleSpeechStatus, resolved: ResolvedBackend) -> String {
         switch resolved {
+        case .omilServer:
+            return "Omil server (Whisper large + Qwen 4B on your Mac)"
         case .appleSpeech:
             return "System (Apple Speech, on-device, system-managed assets)"
         case .legacySFSpeech:

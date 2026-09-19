@@ -295,7 +295,8 @@ struct SettingsView: View {
                     Text("Verbatim").tag(CleanupMode.verbatim)
                 }
                 Picker("Transcription", selection: $controller.backendPreference) {
-                    Text("Automatic (recommended)").tag(BackendChoice.automatic)
+                    Text("Omil server (Whisper + Qwen, recommended)").tag(BackendChoice.omilServer)
+                    Text("Automatic (on-device)").tag(BackendChoice.automatic)
                     Text("System speech").tag(BackendChoice.appleSpeech)
                     Text("Legacy on-device").tag(BackendChoice.legacySFSpeech)
                 }
@@ -310,6 +311,35 @@ struct SettingsView: View {
                     Button("Download system assets") {
                         controller.downloadAssets()
                     }
+                }
+                Divider()
+                Text("Omil inference core (your Mac)")
+                    .font(.headline)
+                Text("iPhone/iPad point at this Mac. Audio stays on your LAN — never a third party. Token: server prints it on first boot (`server/data/omil-token`).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack {
+                    TextField("Host (Mac IP)", text: $controller.serverConfig.host)
+                    TextField("Port", value: $controller.serverConfig.port, format: .number)
+                        .frame(width: 80)
+                }
+                SecureField("Server token", text: $controller.serverConfig.token)
+                HStack {
+                    Button("Save & test server") {
+                        controller.saveServerConfig()
+                    }
+                    Text(controller.serverHealth)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Toggle("Qwen cleanup via server", isOn: Binding(
+                    get: { controller.serverCleanupEnabled },
+                    set: { controller.serverCleanupEnabled = $0; controller.saveServerConfig() }
+                ))
+                if !controller.serverNote.isEmpty {
+                    Text(controller.serverNote)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 Text("Changing transcription never changes cleanup behavior.")
                     .font(.caption)

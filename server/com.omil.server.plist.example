@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.omil.server</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Users/arpanbhandari/.bun/bin/bun</string>
+		<string>/Users/arpanbhandari/Code/omil/server/src/main.ts</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>/Users/arpanbhandari/Code/omil/server</string>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>StandardOutPath</key>
+	<string>/tmp/omil-server.log</string>
+	<key>StandardErrorPath</key>
+	<string>/tmp/omil-server.log</string>
+</dict>
+</plist>
+<!--
+Install: cp server/com.omil.server.plist.example ~/Library/LaunchAgents/com.omil.server.plist
+         (edit the two paths first) && launchctl load ~/Library/LaunchAgents/com.omil.server.plist
+-->

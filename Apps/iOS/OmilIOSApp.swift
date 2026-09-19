@@ -175,11 +175,36 @@ struct SettingsView: View {
                 }
             }
             Section("Speech backend") {
+                Picker("Backend", selection: $coordinator.backendPreference) {
+                    Text("Omil server (your Mac)").tag(BackendChoice.omilServer)
+                    Text("Automatic (on-device)").tag(BackendChoice.automatic)
+                    Text("System speech").tag(BackendChoice.appleSpeech)
+                    Text("Legacy on-device").tag(BackendChoice.legacySFSpeech)
+                }
+                .onChange(of: coordinator.backendPreference) { coordinator.saveServerConfig() }
                 Text(coordinator.backendDescription).font(.caption)
                 Text("Assets: \(coordinator.assetState)").font(.caption)
                 Button("Refresh") {
                     Task { await coordinator.refreshStatus() }
                 }
+            }
+            Section("Omil server (your Mac)") {
+                Text("Enter your Mac's LAN address and the token the server printed on first boot. Audio stays on your LAN.")
+                    .font(.caption)
+                TextField("Mac host/IP", text: $coordinator.serverConfig.host)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                HStack {
+                    TextField("Port", value: $coordinator.serverConfig.port, format: .number)
+                        .keyboardType(.numberPad)
+                    SecureField("Token", text: $coordinator.serverConfig.token)
+                }
+                Button("Save & test server") { coordinator.saveServerConfig() }
+                Text(coordinator.serverHealth).font(.caption)
+                Toggle("Qwen cleanup via server", isOn: Binding(
+                    get: { coordinator.serverCleanupEnabled },
+                    set: { coordinator.serverCleanupEnabled = $0; coordinator.saveServerConfig() }
+                ))
             }
             Section("Personal dictionary") {
                 HStack {

@@ -114,6 +114,7 @@ public enum BackendIdentity: Hashable, Codable, Sendable {
     case appleSpeech(configuration: String)
     case sfspeech(locale: String)
     case mock(name: String)
+    case server
     case unknown(name: String)
 
     public var displayName: String {
@@ -121,6 +122,7 @@ public enum BackendIdentity: Hashable, Codable, Sendable {
         case .appleSpeech(let c): return "AppleSpeech(\(c))"
         case .sfspeech(let l): return "SFSpeech(\(l))"
         case .mock(let n): return "Mock(\(n))"
+        case .server: return "OmilServer(Whisper+Qwen)"
         case .unknown(let n): return n
         }
     }

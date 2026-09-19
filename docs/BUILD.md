@@ -21,13 +21,32 @@
 
 ```sh
 swift build
-swift test                       # 42 tests, all headless
+swift test                       # 47 tests, all headless
 swift run omil-eval --corpus Tests/OmilCoreTests/Fixtures/corpus.json
 swift run omil-eval --bench      # cleanup latency + mock session round trip
 swift run omil-eval --probe      # device, backend availability, negotiated format
-swift run omil-eval --asr-eval   # real on-device inference over synthetic TTS
+swift run omil-eval --asr-eval   # on-device Apple inference over synthetic TTS
 swift run omil-eval --debug "make it 42, sorry 21"   # tokens + edits + journal
 ```
+
+## Omil server core (inference; runs on your Mac)
+
+```sh
+brew install whisper-cpp llama.cpp   # sidecar binaries (one time)
+cd server && bun install
+bun src/main.ts --download-models    # ~1.6 GB + ~2.5 GB, first run only (detached-safe)
+bun src/main.ts                      # http://127.0.0.1:3217; prints LAN token on first boot
+cd server && bun test                # 13 tests
+```
+
+- `GET /v1/health` — readiness, no auth, never downloads.
+- `POST /v1/transcribe?language=en` — WAV bytes, Bearer token → transcript + segments.
+- `POST /v1/cleanup` — `{text, mode, dictionary}` → cleaned text + grounded edits + abstentions.
+- Token: `server/data/omil-token` (0600). Rotate by deleting it and restarting.
+- Auto-start: copy `server/com.omil.server.plist.example` to
+  `~/Library/LaunchAgents/` (edit paths), `launchctl load` it.
+- Mac app: Settings → General → Omil inference core (`127.0.0.1`, token).
+  iPhone/iPad: same screen with the Mac's LAN address.
 
 ## Mac app (direct-distribution build)
 
