@@ -1,0 +1,280 @@
+{
+  "version": "omil-corpus-1",
+  "cases": [
+    {
+      "id": "mandatory-plain",
+      "rawTranscript": "make it 42",
+      "intendedOutput": "Make it 42.",
+      "acceptableAlternatives": [],
+      "protectedSpans": ["42"],
+      "locale": "en-US",
+      "tags": ["mandatory", "already-clean"],
+      "split": "dev",
+      "mustEdit": false
+    },
+    {
+      "id": "mandatory-replace",
+      "rawTranscript": "make it 42, sorry 21",
+      "intendedOutput": "Make it 21.",
+      "acceptableAlternatives": [],
+      "protectedSpans": ["21"],
+      "locale": "en-US",
+      "tags": ["mandatory", "replacement"],
+      "split": "dev",
+      "mustEdit": true
+    },
+    {
+      "id": "mandatory-reversal-repeat",
+      "rawTranscript": "make it 42, sorry 21, no no keep it 42",
+      "intendedOutput": "Make it 42.",
+      "acceptableAlternatives": [],
+      "protectedSpans": ["42"],
+      "locale": "en-US",
+      "tags": ["mandatory", "reversal"],
+      "split": "dev",
+      "mustEdit": true
+    },
+    {
+      "id": "mandatory-reversal-original",
+      "rawTranscript": "make it 42, sorry 21, keep the original",
+      "intendedOutput": "Make it 42.",
+      "acceptableAlternatives": [],
+      "protectedSpans": ["42"],
+      "locale": "en-US",
+      "tags": ["mandatory", "reversal"],
+      "split": "dev",
+      "mustEdit": true
+    },
+    {
+      "id": "mandatory-negation",
+      "rawTranscript": "Do not send 42. Send 21.",
+      "intendedOutput": "Do not send 42. Send 21.",
+      "acceptableAlternatives": [],
+      "protectedSpans": ["Do not send 42", "Send 21"],
+      "locale": "en-US",
+      "tags": ["mandatory", "negation", "grounding-counterexample"],
+      "split": "dev",
+      "mustEdit": false
+    },
+    {
+      "id": "mandatory-scope",
+      "rawTranscript": "Send Alice 42 and Bob 21, actually Bob 24.",
+      "intendedOutput": "Send Alice 42 and Bob 24.",
+      "acceptableAlternatives": [],
+      "protectedSpans": ["Alice 42", "Bob 24"],
+      "locale": "en-US",
+      "tags": ["mandatory", "scope", "subject-value"],
+      "split": "dev",
+      "mustEdit": true
+    },
+    {
+      "id": "day-replace",
+      "rawTranscript": "Book it for Tuesday, sorry, Wednesday.",
+      "intendedOutput": "Book it for Wednesday.",
+      "acceptableAlternatives": ["Book it for Wednesday"],
+      "protectedSpans": ["Wednesday"],
+      "locale": "en-US",
+      "tags": ["replacement"],
+      "split": "dev",
+      "mustEdit": true
+    },
+    {
+      "id": "restart-scratch",
+      "rawTranscript": "Send it to Sam, scratch that, send it to Priya.",
+      "intendedOutput": "Send it to Priya.",
+      "acceptableAlternatives": [],
+      "protectedSpans": ["Priya"],
+      "locale": "en-US",
+      "tags": ["restart"],
+      "split": "dev",
+      "mustEdit": true
+    },
+    {
+      "id": "name-replace-structural",
+      "rawTranscript": "Call Sam, sorry, call Pam.",
+      "intendedOutput": "Call Pam.",
+      "acceptableAlternatives": [],
+      "protectedSpans": ["Pam"],
+      "locale": "en-US",
+      "tags": ["replacement", "name"],
+      "split": "heldout",
+      "mustEdit": true
+    },
+    {
+      "id": "numberword-replace-normalize",
+      "rawTranscript": "Schedule it for fifteen, no, fifty minutes.",
+      "intendedOutput": "Schedule it for 50 minutes.",
+      "acceptableAlternatives": [],
+      "protectedSpans": ["50 minutes"],
+      "locale": "en-US",
+      "tags": ["replacement", "normalization"],
+      "split": "heldout",
+      "mustEdit": true
+    },
+    {
+      "id": "version-reversal",
+      "rawTranscript": "Keep version 1.2, sorry 1.3, wait, keep 1.2.",
+      "intendedOutput": "Keep version 1.2.",
+      "acceptableAlternatives": [],
+      "protectedSpans": ["1.2"],
+      "locale": "en-US",
+      "tags": ["reversal", "numbers"],
+      "split": "heldout",
+      "mustEdit": true
+    },
+    {
+      "id": "email-scope",
+      "rawTranscript": "Email john at example dot com, no, jane at example dot com.",
+      "intendedOutput": "Email jane at example dot com.",
+      "acceptableAlternatives": [],
+      "protectedSpans": ["jane at example dot com"],
+      "locale": "en-US",
+      "tags": ["replacement", "scope"],
+      "split": "heldout",
+      "mustEdit": true
+    },
+    {
+      "id": "ordinary-apology",
+      "rawTranscript": "I am sorry about the delay.",
+      "intendedOutput": "I am sorry about the delay.",
+      "acceptableAlternatives": [],
+      "protectedSpans": ["sorry about the delay"],
+      "locale": "en-US",
+      "tags": ["non-correction", "already-clean"],
+      "split": "dev",
+      "mustEdit": false
+    },
+    {
+      "id": "no-worries",
+      "rawTranscript": "No worries.",
+      "intendedOutput": "No worries.",
+      "acceptableAlternatives": [],
+      "protectedSpans": ["No worries"],
+      "locale": "en-US",
+      "tags": ["non-correction", "already-clean"],
+      "split": "dev",
+      "mustEdit": false
+    },
+    {
+      "id": "ambiguous-maybe",
+      "rawTranscript": "Book it for Tuesday, or maybe Wednesday.",
+      "intendedOutput": "Book it for Tuesday, or maybe Wednesday.",
+      "acceptableAlternatives": [],
+      "protectedSpans": ["Tuesday", "Wednesday"],
+      "locale": "en-US",
+      "tags": ["ambiguity", "already-clean"],
+      "split": "dev",
+      "mustEdit": false
+    },
+    {
+      "id": "quoted-correction",
+      "rawTranscript": "She said \"sorry, make it 21.\"",
+      "intendedOutput": "She said \"sorry, make it 21.\"",
+      "acceptableAlternatives": [],
+      "protectedSpans": ["sorry, make it 21"],
+      "locale": "en-US",
+      "tags": ["quoted", "already-clean"],
+      "split": "heldout",
+      "mustEdit": false
+    },
+    {
+      "id": "literal-filler",
+      "rawTranscript": "Do not remove the word um.",
+      "intendedOutput": "Do not remove the word um.",
+      "acceptableAlternatives": [],
+      "protectedSpans": ["word um"],
+      "locale": "en-US",
+      "tags": ["literal-use", "already-clean"],
+      "split": "heldout",
+      "mustEdit": false
+    },
+    {
+      "id": "password-meta",
+      "rawTranscript": "The password is A B, no, I said the words A B.",
+      "intendedOutput": "The password is A B, no, I said the words A B.",
+      "acceptableAlternatives": ["The password is A B. I said the words A B."],
+      "protectedSpans": ["A B"],
+      "locale": "en-US",
+      "tags": ["meta-language", "already-clean"],
+      "split": "heldout",
+      "mustEdit": false
+    },
+    {
+      "id": "long-distance-goback",
+      "rawTranscript": "Use the first title, no, go back to the second one.",
+      "intendedOutput": "Use the first title, no, go back to the second one.",
+      "acceptableAlternatives": [],
+      "protectedSpans": ["first title", "second one"],
+      "locale": "en-US",
+      "tags": ["long-distance", "ambiguity"],
+      "split": "heldout",
+      "mustEdit": false
+    },
+    {
+      "id": "filler-um",
+      "rawTranscript": "um make it 42",
+      "intendedOutput": "Make it 42.",
+      "acceptableAlternatives": [],
+      "protectedSpans": ["42"],
+      "locale": "en-US",
+      "tags": ["filler"],
+      "split": "dev",
+      "mustEdit": true
+    },
+    {
+      "id": "repeat-the",
+      "rawTranscript": "send it to the the team",
+      "intendedOutput": "Send it to the team.",
+      "acceptableAlternatives": [],
+      "protectedSpans": ["the team"],
+      "locale": "en-US",
+      "tags": ["repetition"],
+      "split": "dev",
+      "mustEdit": true
+    },
+    {
+      "id": "normalize-twenty-one",
+      "rawTranscript": "Make it twenty-one.",
+      "intendedOutput": "Make it 21.",
+      "acceptableAlternatives": [],
+      "protectedSpans": ["21"],
+      "locale": "en-US",
+      "tags": ["normalization"],
+      "split": "dev",
+      "mustEdit": true
+    },
+    {
+      "id": "like-lexical",
+      "rawTranscript": "I like apples.",
+      "intendedOutput": "I like apples.",
+      "acceptableAlternatives": [],
+      "protectedSpans": ["like apples"],
+      "locale": "en-US",
+      "tags": ["filler-literal", "already-clean"],
+      "split": "heldout",
+      "mustEdit": false
+    },
+    {
+      "id": "clean-speech-untouched",
+      "rawTranscript": "The quarterly report is ready for review.",
+      "intendedOutput": "The quarterly report is ready for review.",
+      "acceptableAlternatives": [],
+      "protectedSpans": ["quarterly report"],
+      "locale": "en-US",
+      "tags": ["already-clean"],
+      "split": "heldout",
+      "mustEdit": false
+    },
+    {
+      "id": "pause-reversal",
+      "rawTranscript": "Make it 42, sorry 21. Keep the original.",
+      "intendedOutput": "Make it 42.",
+      "acceptableAlternatives": ["Make it 42. Keep the original."],
+      "protectedSpans": ["42"],
+      "locale": "en-US",
+      "tags": ["reversal", "pause-boundary"],
+      "split": "heldout",
+      "mustEdit": true
+    }
+  ]
+}
