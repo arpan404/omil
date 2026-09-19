@@ -102,6 +102,11 @@ final class DictationController: ObservableObject {
         HotkeyManager.shared.start()
         Task { await refreshBackendStatus() }
         // Own the server: launch at startup, auto-adopt its LAN token.
+        adoptServerToken()
+    }
+
+    /// (Re)starts the owned server, adopting its token into the local config.
+    func adoptServerToken() {
         server.start { [weak self] token in
             Task { @MainActor in
                 guard let self else { return }

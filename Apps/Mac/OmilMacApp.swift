@@ -29,16 +29,11 @@ struct OmilMacApp: App {
         }
         .menuBarExtraStyle(.window)
 
-        Window("Omil Recorder", id: "recorder") {
-            RecorderView(controller: controller)
-                .frame(minWidth: 420, minHeight: 300)
+        Window("Omil", id: "main") {
+            MainWindowView(controller: controller)
+                .frame(minWidth: 760, minHeight: 520)
         }
         .windowResizability(.contentSize)
-
-        Window("Omil History", id: "history") {
-            HistoryView(controller: controller)
-                .frame(minWidth: 560, minHeight: 400)
-        }
 
         Settings {
             SettingsView(controller: controller)
@@ -122,15 +117,14 @@ struct MenuBarView: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 
-            Button("Open recorder window") { openWindow(id: "recorder") }
-            Button("Open history") { openWindow(id: "history") }
+            Button("Open Omil") { openWindow(id: "main") }
         }
         .padding()
         .frame(width: 360)
         .onAppear {
             // UI verification hook for build screenshots.
             if ProcessInfo.processInfo.environment["OMIL_SHOW_RECORDER"] == "1" {
-                openWindow(id: "recorder")
+                openWindow(id: "main")
             }
         }
     }
@@ -144,78 +138,6 @@ struct MenuBarView: View {
         case .ready: return "Omil — result ready"
         case .failed: return "Omil — attention needed"
         }
-    }
-}
-
-// MARK: - Recorder window
-
-struct RecorderView: View {
-    @ObservedObject var controller: DictationController
-    @State private var tab = 0
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Circle()
-                    .fill(controller.phase == .recording ? Color.red : Color.gray)
-                    .frame(width: 12, height: 12)
-                    .accessibilityLabel(controller.phase == .recording ? "Recording" : "Not recording")
-                Text(controller.phase == .recording ? "Recording…" : "Omil Dictation")
-                    .font(.title2)
-                Spacer()
-                Text("offline • on-device")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Picker("", selection: $tab) {
-                Text("Draft").tag(0)
-                Text("Raw").tag(1)
-                Text("Cleaned").tag(2)
-                Text("Diff").tag(3)
-            }
-            .pickerStyle(.segmented)
-            .accessibilityLabel("Result view")
-
-            Group {
-                switch tab {
-                case 0:
-                    Text(controller.phase == .recording ? controller.draftText : "Hold Right Option (or press Start) and speak.")
-                        .foregroundStyle(.secondary)
-                case 1:
-                    Text(controller.lastRaw.isEmpty ? "(no transcript yet)" : controller.lastRaw)
-                case 2:
-                    Text(controller.lastCleaned.isEmpty ? "(no result yet)" : controller.lastCleaned)
-                default:
-                    Text(controller.lastDiff.isEmpty ? "(no diff yet)" : controller.lastDiff)
-                        .font(.system(.body, design: .monospaced))
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .textSelection(.enabled)
-            .padding(8)
-            .background(Color(nsColor: .textBackgroundColor))
-            .cornerRadius(8)
-
-            HStack {
-                Button("Start") { controller.start() }
-                    .keyboardShortcut(.return, modifiers: [])
-                    .disabled(controller.phase == .recording || controller.phase == .processing || controller.phase == .preparing)
-                Button("Stop") { controller.stop() }
-                    .disabled(controller.phase != .recording)
-                Button("Cancel") { controller.cancel() }
-                    .disabled(controller.phase != .recording && controller.phase != .processing)
-                Spacer()
-                Button("Copy") { controller.copyLast() }
-                    .disabled(controller.lastCleaned.isEmpty)
-                Button("Undo") { controller.undoLast() }
-                    .disabled(!controller.canUndo)
-            }
-            Text(controller.statusMessage)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .padding()
     }
 }
 
@@ -291,8 +213,6 @@ func assetStateView(_ state: ServerAssets.AssetState) -> some View {
 
 struct SettingsView: View {
     @ObservedObject var controller: DictationController
-    @State private var spoken = ""
-    @State private var written = ""
     @State private var recordingShortcut = false
     @State private var shortcutMonitor: Any?
 
@@ -348,114 +268,9 @@ struct SettingsView: View {
                         controller.downloadAssets()
                     }
                 }
-                Divider()
-                Text("Omil inference core (owned by this app)")
-                    .font(.headline)
-                Text("Engine: \(controller.server.status.label)")
-                    .font(.caption)
-                HStack {
-                    Button("Restart server") { controller.server.restart() }
-                    Button("Reveal server log") {
-                        NSWorkspace.shared.activateFileViewerSelecting([ServerAssets.logURL])
-                    }
-                }
-                Divider()
-                Text("Prerequisites — one install")
-                    .font(.headline)
-                Text("Sidecar engines + the selected Whisper and Qwen weights, downloaded and verified automatically. No Homebrew needed.")
+                Text("Changing transcription never changes cleanup behavior. The owned inference core lives under Models in the main window.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Picker("Whisper model", selection: $controller.whisperFile) {
-                    ForEach(ServerAssets.whisperOptions, id: \.id) { opt in
-                        Text("\(opt.displayName) (~\(opt.approxMB) MB)").tag(opt.id)
-                    }
-                }
-                .onChange(of: controller.whisperFile) { controller.selectModels() }
-                Picker("Rewrite model", selection: $controller.llmFile) {
-                    ForEach(ServerAssets.llmOptions, id: \.id) { opt in
-                        Text("\(opt.displayName) (~\(opt.approxMB) MB)").tag(opt.id)
-                    }
-                }
-                .onChange(of: controller.llmFile) { controller.selectModels() }
-                if !controller.serverOpNote.isEmpty {
-                    Text(controller.serverOpNote)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                ForEach(controller.assets.requiredPins, id: \.id) { pin in
-                    HStack {
-                        VStack(alignment: .leading) {
-                            Text(pin.displayName).font(.body)
-                            Text("\(pin.version)").font(.caption2).foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        assetStateView(controller.assets.states[pin.id] ?? .missing)
-                    }
-                }
-                HStack {
-                    Button(controller.assets.allReady ? "Prerequisites installed" : "Install prerequisites") {
-                        controller.assets.installPrerequisites {
-                            Task { @MainActor in
-                                controller.server.start { token in
-                                    Task { @MainActor in
-                                        if controller.serverConfig.token != token {
-                                            controller.serverConfig.token = token
-                                            controller.saveServerConfig()
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    .disabled(controller.assets.isInstalling || controller.assets.allReady)
-                    Button("Recheck") { controller.assets.refreshState() }
-                }
-                Divider()
-                Text("Rewrite prompt (Qwen system prompt)")
-                    .font(.headline)
-                Text(controller.promptCustom ? "Custom prompt active." : "Using the default prompt.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                TextEditor(text: $controller.promptText)
-                    .font(.system(.body, design: .monospaced))
-                    .frame(minHeight: 140)
-                    .border(Color.secondary.opacity(0.3))
-                HStack {
-                    Button("Load current") { controller.loadPrompt() }
-                    Button("Save custom prompt") { controller.savePrompt() }
-                    Button("Reset to default") { controller.resetPrompt() }
-                }
-                .onAppear { controller.loadPrompt() }
-                Divider()
-                Text("This Mac connects to its own server automatically. iPhone/iPad use the Mac's LAN address + the token below.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                HStack {
-                    TextField("Host (Mac IP)", text: $controller.serverConfig.host)
-                    TextField("Port", value: $controller.serverConfig.port, format: .number)
-                        .frame(width: 80)
-                }
-                HStack {
-                    Text("Token: managed automatically")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Button("Save & test server") {
-                        controller.saveServerConfig()
-                    }
-                    Text(controller.serverHealth)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Toggle("Qwen cleanup via server", isOn: Binding(
-                    get: { controller.serverCleanupEnabled },
-                    set: { controller.serverCleanupEnabled = $0; controller.saveServerConfig() }
-                ))
-                if !controller.serverNote.isEmpty {
-                    Text(controller.serverNote)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
                 Text("Changing transcription never changes cleanup behavior.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -526,31 +341,6 @@ struct SettingsView: View {
             .tabItem { Label("Permissions", systemImage: "mic.badge.plus") }
             .padding()
             .onAppear { controller.refreshMicPermission() }
-
-            VStack(alignment: .leading) {
-                Text("Personal dictionary (confirmed substitutions only)")
-                    .font(.headline)
-                HStack {
-                    TextField("Spoken", text: $spoken)
-                    TextField("Written", text: $written)
-                    Button("Add") {
-                        guard !spoken.isEmpty, !written.isEmpty else { return }
-                        controller.confirmDictionary(spoken: spoken, written: written)
-                        spoken = ""
-                        written = ""
-                    }
-                }
-                List(Array(controller.dictionaryEntries.keys.sorted()), id: \.self) { key in
-                    HStack {
-                        Text(key)
-                        Spacer()
-                        Text(controller.dictionaryEntries[key] ?? "")
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-            .tabItem { Label("Dictionary", systemImage: "book") }
-            .padding()
         }
         .frame(minWidth: 480, minHeight: 420)
     }

@@ -96,23 +96,23 @@ changes are needed. Do NOT publish a release without authorization.
 
 ### Mac test run (for the tester)
 
-1. Launch `OmilMac.app` — the mic icon appears in the menu bar and the
-   recorder window opens.
-2. First Start prompts for **microphone access**; grant it. Without it,
-   Start fails with an actionable message.
-3. Focus a text field in another app (e.g. TextEdit), then Start in Omil
-   (menu bar, recorder window, hold Right Option, or Ctrl+Option+O).
-4. Speak, then Stop. Watch the live draft, then Raw / Cleaned / Diff tabs.
-5. With **Accessibility** granted (Settings → Permissions → Ask for
+1. Launch `OmilMac.app` — the mic icon appears in the menu bar and the main
+   Omil window opens (sidebar: Dictate, History, Dictionary, Models). If no
+   window appears, click the menu-bar icon → Open Omil.
+2. Dictate tab: first Start prompts for **microphone access**; grant it.
+   Without it, Start fails with an actionable message.
+3. Focus a text field in another app (e.g. TextEdit), then Start (big round
+   button, menu bar, hold Right Option, or Ctrl+Option+O). Speak, then Stop.
+   Watch the live draft + timer, then Raw / Cleaned / Diff tabs.
+4. With **Accessibility** granted (Settings → Permissions → Ask for
    access…), text is inserted into the focused field and Undo reverses only
    Omil's insertion. Without it, Omil copies the result and guides manual
    paste — prior clipboard contents are restored only if untouched.
+5. Models tab: **Install prerequisites** (one button), switch Whisper/rewrite
+   models, override the rewrite prompt, restart the owned server, reveal logs.
 6. Try the guards: click elsewhere mid-processing (result retained for
    explicit "Insert again"), Cancel mid-recording (nothing inserted),
    type after insertion then Undo (refused).
-7. Settings → General → Download system assets (explicit, versioned).
-   Settings → Dictionary for confirmed substitutions. History tab for
-   retention toggle + Clear (raw audio is never stored).
 
 ### Mac first-run permissions (all runtime-prompted, all optional-degradable)
 
