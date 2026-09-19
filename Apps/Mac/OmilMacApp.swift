@@ -12,9 +12,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // main window forward explicitly so first launch shows the app.
         NSApp.activate(ignoringOtherApps: true)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            if let w = NSApp.windows.first(where: { $0.title == "Omil" }) {
-                w.makeKeyAndOrderFront(nil)
-            }
+            self.orderMainWindowFront()
+        }
+    }
+
+    /// openWindow is unreliable from MenuBarExtra content — order the
+    /// SwiftUI Window scene's NSWindow forward directly.
+    func openMainWindow() {
+        orderMainWindowFront()
+    }
+
+    private func orderMainWindowFront() {
+        NSApp.activate(ignoringOtherApps: true)
+        if let w = NSApp.windows.first(where: { $0.title == "Omil" && $0.canBecomeMain }) {
+            w.makeKeyAndOrderFront(nil)
+        } else if let w = NSApp.windows.first(where: { $0.title == "Omil" }) {
+            w.orderFrontRegardless()
+        } else {
+            NSLog("Omil: main window not found among %d windows", NSApp.windows.count)
         }
     }
 
@@ -58,7 +73,6 @@ struct OmilMacApp: App {
 
 struct MenuBarView: View {
     @ObservedObject var controller: DictationController
-    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -125,20 +139,25 @@ struct MenuBarView: View {
             Text("Backend: \(controller.backendDescription)")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+            if !controller.assets.allReady {
+                Text("Prerequisites missing — open Omil → Models → Install prerequisites, then try Start.")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
             Text("Local/offline after assets installed. No account.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 
-            Button("Open Omil") { openWindow(id: "main") }
+            Button("Open Omil") {
+                (NSApp.delegate as? AppDelegate)?.openMainWindow()
+            }
+            Button("Copy diagnostics") {
+                NSPasteboard.general.declareTypes([.string], owner: nil)
+                NSPasteboard.general.setString(controller.diagnostics(), forType: .string)
+            }
         }
         .padding()
         .frame(width: 360)
-        .onAppear {
-            // UI verification hook for build screenshots.
-            if ProcessInfo.processInfo.environment["OMIL_SHOW_RECORDER"] == "1" {
-                openWindow(id: "main")
-            }
-        }
     }
 
     var statusTitle: String {

@@ -641,6 +641,26 @@ final class DictationController: ObservableObject {
         statusMessage = "Copied to clipboard"
     }
 
+    // MARK: Diagnostics (no transcript content — safe to paste)
+
+    func diagnostics() -> String {
+        let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+        let os = ProcessInfo.processInfo.operatingSystemVersionString
+        return """
+        Omil diagnostics (no transcript content):
+        - app: \(appVersion) (\(build)) on \(os)
+        - phase: \(phase.rawValue) — \(statusMessage)
+        - mic: \(micPermission.rawValue)
+        - backend pref: \(backendPreference.rawValue) — \(backendDescription)
+        - assets: \(assetState)
+        - server engine: \(server.status.label)
+        - server token set: \(serverConfig.token.isEmpty ? "no" : "yes") (\(serverConfig.host):\(serverConfig.port))
+        - prereqs ready: \(assets.allReady)
+        - last delivery: \(lastDeliveryMethod)
+        """
+    }
+
     // MARK: Dictionary
 
     func confirmDictionary(spoken: String, written: String) {
