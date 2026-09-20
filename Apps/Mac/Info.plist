@@ -18,8 +18,6 @@
 	<string>1</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
-	<key>LSUIElement</key>
-	<true/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Omil records your voice to transcribe it locally on this Mac. Audio never leaves the device.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>

@@ -48,7 +48,6 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.omil.mac
         INFOPLIST_FILE: Apps/Mac/Info.plist
         CODE_SIGN_ENTITLEMENTS: Apps/Mac/OmilMac.entitlements
-        LSUIELEMENT: YES
     scheme:
       environmentVariables:
         OMIL_LOG: "1"

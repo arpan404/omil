@@ -369,7 +369,6 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				LSUIELEMENT = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.omil.mac;
 				SDKROOT = macosx;
@@ -387,7 +386,6 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				LSUIELEMENT = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.omil.mac;
 				SDKROOT = macosx;
