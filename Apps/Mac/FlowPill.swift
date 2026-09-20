@@ -19,6 +19,11 @@ final class PillManager: ObservableObject {
 
     private init() {}
 
+    func debugInfo() -> String {
+        guard let p = panel else { return "no panel" }
+        return "panel visible=\(p.isVisible)"
+    }
+
     func attach(_ controller: DictationController) {
         if panel != nil { return }
         self.controller = controller

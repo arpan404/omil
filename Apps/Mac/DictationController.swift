@@ -750,6 +750,7 @@ final class DictationController: ObservableObject {
         let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
         let os = ProcessInfo.processInfo.operatingSystemVersionString
+        let windows = NSApp.windows.map { "\($0.title.isEmpty ? "(untitled)" : $0.title):visible=\($0.isVisible)" }.joined(separator: ", ")
         return """
         Omil diagnostics (no transcript content):
         - app: \(appVersion) (\(build)) on \(os)
@@ -760,6 +761,8 @@ final class DictationController: ObservableObject {
         - server engine: \(server.status.label)
         - server token set: \(serverConfig.token.isEmpty ? "no" : "yes") (\(serverConfig.host):\(serverConfig.port))
         - prereqs ready: \(assets.allReady)
+        - windows: [\(windows)]
+        - pill: \(PillManager.shared.debugInfo())
         - last delivery: \(lastDeliveryMethod)
         """
     }
