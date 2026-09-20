@@ -48,26 +48,27 @@ cd server && bun test                # 13 tests
 - Mac app: Settings → General → Omil inference core (`127.0.0.1`, token).
   iPhone/iPad: same screen with the Mac's LAN address.
 
-## Mac app (direct-distribution build)
+## Mac app (direct-distribution build, pure client)
 
-One command (server binary → Xcode project → ad-hoc build):
+One command (Xcode project → ad-hoc build):
 
 ```sh
 ./scripts/bootstrap-mac.sh
-open ~/Library/Developer/Xcode/DerivedData/Omil-*/Build/Products/Debug/OmilMac.app
 ```
 
-What bootstrap does: `scripts/build-server.sh` typechecks, tests, and
-compiles `server/dist/omil-server` (standalone, no Bun at runtime);
-`xcodegen generate` embeds it in the app; `xcodebuild` builds ad-hoc signed.
+The Mac app holds no server code: it talks to the inference core over its
+LAN API. Run the server first (same machine for now):
 
-The Mac app owns the inference server: it launches the embedded engine at
-startup, restarts it on crashes, and stops it on quit. First launch shows
-Settings → General → **Install prerequisites** (one button): whisper.cpp +
-llama.cpp sidecars (prebuilt Apple-silicon bottles fetched directly, SHA
-verified, no Homebrew needed) plus the selected Whisper/Qwen weights with
-progress. Switch Whisper/LLM models or override the rewrite prompt in the
-same section; the server switches without reinstalling the app.
+```sh
+cd server && bun src/main.ts   # first boot prints the LAN token + downloads weights on first use
+```
+
+Then launch the app and enter host/port/token under Models → Connection
+(`127.0.0.1:3217` when local):
+
+```sh
+open ~/Library/Developer/Xcode/DerivedData/Omil-*/Build/Products/Debug/OmilMac.app
+```
 
 Manual equivalent of bootstrap:
 
@@ -98,9 +99,12 @@ changes are needed. Do NOT publish a release without authorization.
 
 1. Launch `OmilMac.app` — the mic icon appears in the menu bar and the main
    Omil window opens. First launch shows guided onboarding (permissions →
-   engine setup); afterwards the Hub opens (sidebar: Home, Dictate, History,
-   Dictionary, Models). If no window appears, click the menu-bar icon → Open Omil.
-2. Dictate tab (or the floating pill while recording): first Start prompts for **microphone access**; grant it.
+   server connection); afterwards the Hub opens (sidebar: Home, Dictate,
+   History, Dictionary, Models). If no window appears, click the menu-bar
+   icon → Open Omil.
+2. Start the inference server first (see above) and connect under Models →
+   Connection. Missing weights download server-side on first use.
+3. Dictate tab (or the floating pill while recording): first Start prompts for **microphone access**; grant it.
    Without it, Start fails with an actionable message.
 3. Focus a text field in another app (e.g. TextEdit), then Start (big round
    button, menu bar, hold Right Option, or Ctrl+Option+O). Speak, then Stop.

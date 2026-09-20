@@ -57,7 +57,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        controller.shutdownServer()
+        // The inference server runs separately; nothing owned to stop.
+        HotkeyManager.shared.stop()
     }
 }
 @MainActor
@@ -96,19 +97,19 @@ struct MenuBarView: View {
     @ObservedObject var controller: DictationController
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Circle()
-                    .fill(controller.phase == .recording ? Color.red : Color.gray)
-                    .frame(width: 10, height: 10)
-                    .accessibilityHidden(true)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                RecordingDot(active: controller.phase == .recording)
                 Text(statusTitle)
                     .font(.headline)
+                    .fontDesign(.rounded)
             }
 
             Button("Open Omil") {
                 (NSApp.delegate as? AppDelegate)?.openMainWindow()
             }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
 
             Divider()
 
@@ -128,8 +129,8 @@ struct MenuBarView: View {
 
             Button("Quit Omil") { NSApp.terminate(nil) }
         }
-        .padding()
-        .frame(width: 240)
+        .padding(12)
+        .frame(width: 250)
     }
 
     var statusTitle: String {
@@ -241,28 +242,6 @@ struct HistoryView: View {
     }
 }
 
-// MARK: - Asset state row
-
-func assetStateView(_ state: ServerAssets.AssetState) -> some View {
-    Group {
-        switch state {
-        case .missing:
-            Text("Not installed").font(.caption).foregroundStyle(.secondary)
-        case .downloading(let p):
-            ProgressView(value: p).frame(width: 120)
-        case .verifying:
-            Text("Verifying…").font(.caption).foregroundStyle(.secondary)
-        case .extracting:
-            Text("Installing…").font(.caption).foregroundStyle(.secondary)
-        case .ready:
-            Label("Ready", systemImage: "checkmark.circle.fill")
-                .font(.caption).foregroundStyle(.green)
-        case .failed(let r):
-            Text(r).font(.caption).foregroundStyle(.red).lineLimit(2)
-        }
-    }
-}
-
 // MARK: - Settings
 
 struct SettingsView: View {
@@ -322,7 +301,7 @@ struct SettingsView: View {
                         controller.downloadAssets()
                     }
                 }
-                Text("Changing transcription never changes cleanup behavior. The owned inference core lives under Models in the main window.")
+                Text("Changing transcription never changes cleanup behavior. Server models and the rewrite prompt live under Models in the main window.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

@@ -1,12 +1,10 @@
 #!/bin/bash
-# One-command Mac setup: server binary -> Xcode project -> ad-hoc build.
-# Run from the repo root. Requires: bun, Xcode 26+, ~5 GB free for models
-# (downloaded later, in-app, with one button).
+# One-command Mac setup: Xcode project -> ad-hoc build.
+# Run from the repo root. Requires: Xcode 26+, xcodegen.
+# The inference server runs separately (see docs/BUILD.md); this app is a
+# pure client and embeds no engine.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-
-echo "==> building inference server binary"
-./scripts/build-server.sh
 
 echo "==> generating Xcode project"
 xcodegen generate
@@ -18,4 +16,5 @@ xcodebuild -project Omil.xcodeproj -scheme OmilMac -configuration Debug \
 
 APP=$(find ~/Library/Developer/Xcode/DerivedData/Omil-*/Build/Products/Debug -maxdepth 1 -name "OmilMac.app" | head -n 1)
 echo "==> app: $APP"
-echo "Launch it with: open \"$APP\""
+echo "Run the server first: (cd server && bun src/main.ts)"
+echo "Launch the app with: open \"$APP\""

@@ -79,16 +79,24 @@ final class PillManager: ObservableObject {
 
 struct PillView: View {
     @ObservedObject var controller: DictationController
+    @State private var bars = [0.4, 0.7, 1.0, 0.7, 0.4]
+    @State private var timer: Timer?
 
     var body: some View {
         HStack(spacing: 10) {
-            Circle()
-                .fill(controller.phase == .recording ? Color.red : Color.orange)
-                .frame(width: 10, height: 10)
-                .accessibilityHidden(true)
+            // Decorative activity bars while recording.
+            HStack(spacing: 2.5) {
+                ForEach(0..<5) { i in
+                    RoundedRectangle(cornerRadius: 1.5)
+                        .fill(controller.phase == .recording ? Color.red : Color.orange)
+                        .frame(width: 3, height: 4 + 12 * bars[i])
+                }
+            }
+            .frame(width: 27)
             VStack(alignment: .leading, spacing: 2) {
                 Text(controller.phase == .recording ? "Recording…" : "Finalizing…")
                     .font(.headline)
+                    .fontDesign(.rounded)
                 Text(controller.phase == .recording && !controller.draftText.isEmpty
                      ? controller.draftText : controller.statusMessage)
                     .font(.caption)
@@ -108,7 +116,21 @@ struct PillView: View {
         .padding(10)
         .frame(width: 400)
         .background(.thickMaterial)
-        .cornerRadius(14)
+        .cornerRadius(16)
         .padding(6)
+        .onAppear { startBars() }
+        .onDisappear { stopBars() }
+    }
+
+    func startBars() {
+        stopBars()
+        timer = Timer.scheduledTimer(withTimeInterval: 0.18, repeats: true) { _ in
+            bars = bars.map { _ in Double.random(in: 0.15...1.0) }
+        }
+    }
+
+    func stopBars() {
+        timer?.invalidate()
+        timer = nil
     }
 }

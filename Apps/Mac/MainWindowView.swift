@@ -92,6 +92,8 @@ struct HomeView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Hold \(HotkeyManager.shared.pushToTalkName), speak, release.")
                         .font(.title2)
+                        .fontDesign(.rounded)
+                        .fontWeight(.semibold)
                     Text("Omil transcribes on your Mac, cleans up filler and self-corrections, and inserts the result where your cursor is.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
@@ -101,15 +103,22 @@ struct HomeView: View {
                             controller.toggle()
                         }
                         .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
                         .disabled(controller.phase == .preparing || controller.phase == .processing)
                         Button("How it works") { goDictate() }
                             .buttonStyle(.bordered)
+                            .controlSize(.large)
                     }
+                    .padding(.top, 4)
                 }
-                .padding()
+                .padding(16)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color(nsColor: .controlBackgroundColor))
-                .cornerRadius(12)
+                .background(
+                    LinearGradient(
+                        colors: [Color.accentColor.opacity(0.22), Color.purple.opacity(0.14)],
+                        startPoint: .topLeading, endPoint: .bottomTrailing)
+                )
+                .cornerRadius(16)
 
                 // Stats.
                 HStack(spacing: 12) {
@@ -143,10 +152,11 @@ struct HomeView: View {
                                 NSPasteboard.general.setString(entry.cleaned, forType: .string)
                             }
                             .buttonStyle(.bordered)
+                            .controlSize(.small)
                         }
-                        .padding(8)
+                        .padding(10)
                         .background(Color(nsColor: .textBackgroundColor))
-                        .cornerRadius(8)
+                        .cornerRadius(12)
                     }
                 }
                 Spacer()
@@ -164,6 +174,8 @@ struct StatCard: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(value)
                 .font(.largeTitle)
+                .fontDesign(.rounded)
+                .fontWeight(.bold)
             Text(title)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -171,7 +183,7 @@ struct StatCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding()
         .background(Color(nsColor: .controlBackgroundColor))
-        .cornerRadius(12)
+        .cornerRadius(14)
     }
 }
 
@@ -232,12 +244,10 @@ struct DictateView: View {
                 RecordButton(controller: controller, onStart: { startTimer() }, onStop: { stopTimer() })
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 8) {
-                        Circle()
-                            .fill(controller.phase == .recording ? Color.red : Color.gray)
-                            .frame(width: 10, height: 10)
-                            .accessibilityHidden(true)
+                        RecordingDot(active: controller.phase == .recording)
                         Text(statusLine)
                             .font(.headline)
+                            .fontDesign(.rounded)
                     }
                     Text(controller.statusMessage)
                         .font(.caption)
@@ -246,7 +256,7 @@ struct DictateView: View {
                 }
                 Spacer()
                 VStack(alignment: .trailing, spacing: 2) {
-                    Text("offline • on-device")
+                    Text("on-device inference")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Text(controller.backendDescription)
@@ -318,6 +328,15 @@ struct DictateView: View {
         }
         .padding()
         .onDisappear { stopTimer() }
+        .onChange(of: controller.phase) { _, phase in
+            // A15: keep the timer honest when recording stops anywhere
+            // (hotkey release, pill button, toggle) — not just here.
+            if phase == .recording {
+                if timer == nil { startTimer() }
+            } else {
+                stopTimer()
+            }
+        }
     }
 
     var canStart: Bool {
@@ -360,6 +379,26 @@ struct DictateView: View {
     }
 }
 
+// MARK: - Shared bits
+
+/// Pulsing recording indicator used across Dictate, menu-adjacent views.
+struct RecordingDot: View {
+    var active: Bool
+    @State private var pulse = false
+
+    var body: some View {
+        Circle()
+            .fill(active ? Color.red : Color.gray)
+            .frame(width: 10, height: 10)
+            .scaleEffect(active && pulse ? 1.35 : 1.0)
+            .opacity(active && pulse ? 0.65 : 1.0)
+            .animation(active ? .easeInOut(duration: 0.8).repeatForever(autoreverses: true) : .default, value: pulse)
+            .accessibilityLabel(active ? "Recording" : "Not recording")
+            .onAppear { pulse = active }
+            .onChange(of: active) { _, on in pulse = on }
+    }
+}
+
 // MARK: - Big record button
 
 struct RecordButton: View {
@@ -388,6 +427,7 @@ struct RecordButton: View {
         .disabled(controller.phase == .preparing || controller.phase == .processing)
         .accessibilityLabel(controller.phase == .recording ? "Stop recording" : "Start recording")
         .accessibilityHint("Toggles the current dictation session")
+        .shadow(color: controller.phase == .recording ? .red.opacity(0.4) : .accentColor.opacity(0.35), radius: 10)
     }
 }
 
@@ -440,123 +480,173 @@ struct DictionaryView: View {
 
 // MARK: - Models (owned inference core)
 
+private struct ModelOption {
+    var file: String
+    var displayName: String
+    var approxMB: Int
+}
+
+private let whisperModelOptions: [ModelOption] = [
+    ModelOption(file: "ggml-tiny.bin", displayName: "Whisper tiny — fastest", approxMB: 77),
+    ModelOption(file: "ggml-base.bin", displayName: "Whisper base — fast", approxMB: 148),
+    ModelOption(file: "ggml-small.bin", displayName: "Whisper small — balanced", approxMB: 488),
+    ModelOption(file: "ggml-medium.bin", displayName: "Whisper medium — accurate", approxMB: 1570),
+    ModelOption(file: "ggml-large-v3-turbo.bin", displayName: "Whisper large-v3-turbo — recommended", approxMB: 1624),
+    ModelOption(file: "ggml-large-v3.bin", displayName: "Whisper large-v3 — most accurate", approxMB: 3110),
+]
+
+private let rewriteModelOptions: [ModelOption] = [
+    ModelOption(file: "Qwen3-0.6B-Q4_K_M.gguf", displayName: "Qwen3 0.6B — tiny, fast", approxMB: 397),
+    ModelOption(file: "Qwen3-4B-Instruct-2507-Q4_K_M.gguf", displayName: "Qwen3 4B — recommended", approxMB: 2497),
+    ModelOption(file: "Qwen3-8B-Q4_K_M.gguf", displayName: "Qwen3 8B — best quality, 8GB+ headroom", approxMB: 5028),
+]
+
+/// Shared card chrome for the Hub: icon title, rounded surface.
+struct OmilCard<Content: View>: View {
+    var title: String
+    var icon: String
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label(title, systemImage: icon)
+                .font(.headline)
+                .fontDesign(.rounded)
+                .foregroundStyle(.primary)
+            content()
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .cornerRadius(14)
+    }
+}
+
 struct ModelsView: View {
     @ObservedObject var controller: DictationController
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                GroupBox("Engine") {
+            VStack(alignment: .leading, spacing: 14) {
+                OmilCard(title: "Connection", icon: "network") {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Status: \(controller.server.status.label)")
-                        HStack {
-                            Button("Restart server") { controller.server.restart() }
-                            Button("Reveal server log") {
-                                NSWorkspace.shared.activateFileViewerSelecting([ServerAssets.logURL])
-                            }
+                        HStack(spacing: 8) {
+                            Circle()
+                                .fill(controller.serverHealth.lowercased().contains("unreach") ? Color.orange : Color.green)
+                                .frame(width: 8, height: 8)
+                            Text(controller.serverHealth)
+                                .font(.callout)
                         }
-                    }
-                    .padding(4)
-                }
-
-                GroupBox("Prerequisites") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("One install: sidecar engines + the selected Whisper and Qwen weights. No Homebrew needed.")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                        Picker("Whisper model", selection: $controller.whisperFile) {
-                            ForEach(ServerAssets.whisperOptions, id: \.id) { opt in
-                                Text("\(opt.displayName) (~\(opt.approxMB) MB)").tag(opt.id)
-                            }
-                        }
-                        .onChange(of: controller.whisperFile) { controller.selectModels() }
-                        Picker("Rewrite model", selection: $controller.llmFile) {
-                            ForEach(ServerAssets.llmOptions, id: \.id) { opt in
-                                Text("\(opt.displayName) (~\(opt.approxMB) MB)").tag(opt.id)
-                            }
-                        }
-                        .onChange(of: controller.llmFile) { controller.selectModels() }
-                        if !controller.serverOpNote.isEmpty {
-                            Text(controller.serverOpNote)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        ForEach(controller.assets.requiredPins, id: \.id) { pin in
-                            HStack {
-                                VStack(alignment: .leading) {
-                                    Text(pin.displayName).font(.body)
-                                    Text(pin.version).font(.caption2).foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                assetStateView(controller.assets.states[pin.id] ?? .missing)
-                            }
-                        }
-                        HStack {
-                            Button(controller.assets.allReady ? "Prerequisites installed" : "Install prerequisites") {
-                                controller.assets.installPrerequisites {
-                                    Task { @MainActor in controller.adoptServerToken() }
-                                }
-                            }
-                            .disabled(controller.assets.isInstalling || controller.assets.allReady)
-                            Button("Recheck") { controller.assets.refreshState() }
-                        }
-                    }
-                    .padding(4)
-                }
-
-                GroupBox("Rewrite prompt") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(controller.promptCustom ? "Custom prompt active." : "Using the default prompt.")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                        TextEditor(text: $controller.promptText)
-                            .font(.system(.body, design: .monospaced))
-                            .frame(minHeight: 160)
-                            .border(Color.secondary.opacity(0.3))
-                        HStack {
-                            Button("Load current") { controller.loadPrompt() }
-                            Button("Save custom prompt") { controller.savePrompt() }
-                            Button("Reset to default") { controller.resetPrompt() }
-                        }
-                    }
-                    .padding(4)
-                }
-
-                GroupBox("Connection") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("This Mac connects to its own server automatically. iPhone/iPad use the Mac's LAN address + the token below.")
-                            .font(.callout)
+                        Text("Run the inference server separately (`cd server && bun src/main.ts`), then point this app at it. Missing weights download server-side on first use.")
+                            .font(.caption)
                             .foregroundStyle(.secondary)
                         HStack {
-                            TextField("Host (Mac IP)", text: $controller.serverConfig.host)
+                            TextField("Host", text: $controller.serverConfig.host)
                             TextField("Port", value: $controller.serverConfig.port, format: .number)
                                 .frame(width: 80)
-                            Button("Save & test") { controller.saveServerConfig() }
                         }
+                        SecureField("Server token", text: $controller.serverConfig.token)
                         HStack {
-                            Text("Token: managed automatically")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                            Button("Save & test") { controller.saveServerConfig() }
                             Spacer()
-                            Text(controller.serverHealth)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                            Toggle("Qwen cleanup", isOn: Binding(
+                                get: { controller.serverCleanupEnabled },
+                                set: { controller.serverCleanupEnabled = $0; controller.saveServerConfig() }
+                            ))
+                            .toggleStyle(.switch)
                         }
-                        Toggle("Qwen cleanup via server", isOn: Binding(
-                            get: { controller.serverCleanupEnabled },
-                            set: { controller.serverCleanupEnabled = $0; controller.saveServerConfig() }
-                        ))
                         if !controller.serverNote.isEmpty {
                             Text(controller.serverNote)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
                     }
-                    .padding(4)
+                }
+
+                OmilCard(title: "Speech model", icon: "waveform") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Picker("Whisper model", selection: $controller.whisperFile) {
+                            ForEach(whisperModelOptions, id: \.file) { opt in
+                                Text("\(opt.displayName) (~\(opt.approxMB) MB)").tag(opt.file)
+                            }
+                        }
+                        .onChange(of: controller.whisperFile) { controller.selectModels() }
+                        modelRows(kind: "whisper")
+                        if !controller.serverOpNote.isEmpty {
+                            Text(controller.serverOpNote)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                OmilCard(title: "Rewrite model", icon: "sparkles") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Picker("Rewrite model", selection: $controller.llmFile) {
+                            ForEach(rewriteModelOptions, id: \.file) { opt in
+                                Text("\(opt.displayName) (~\(opt.approxMB) MB)").tag(opt.file)
+                            }
+                        }
+                        .onChange(of: controller.llmFile) { controller.selectModels() }
+                        modelRows(kind: "llm")
+                    }
+                }
+
+                OmilCard(title: "Rewrite prompt", icon: "text.quote") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(controller.promptCustom ? "Custom prompt active." : "Using the default prompt.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                        TextEditor(text: $controller.promptText)
+                            .font(.system(.body, design: .monospaced))
+                            .frame(minHeight: 150)
+                            .cornerRadius(8)
+                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.25)))
+                        HStack {
+                            Button("Load current") { controller.loadPrompt() }
+                            Button("Save custom prompt") { controller.savePrompt() }
+                            Button("Reset to default") { controller.resetPrompt() }
+                        }
+                    }
                 }
             }
             .padding()
         }
-        .onAppear { controller.loadPrompt() }
+        .onAppear {
+            controller.loadPrompt()
+            Task { await controller.fetchServerModels() }
+        }
+    }
+
+    @ViewBuilder
+    func modelRows(kind: String) -> some View {
+        ServerModelRows(rows: controller.serverModels.filter { $0.kind == kind })
+    }
+}
+
+struct ServerModelRows: View {
+    var rows: [DictationController.ServerModelInfo]
+
+    var body: some View {
+        if rows.isEmpty {
+            Text("Model list unavailable — is the server running?")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } else {
+            ForEach(rows) { m in
+                HStack {
+                    Image(systemName: m.selected ? "checkmark.circle.fill" : "circle")
+                        .foregroundStyle(m.selected ? Color.green : Color.secondary)
+                    VStack(alignment: .leading) {
+                        Text(m.id).font(.body)
+                        Text(m.description).font(.caption2).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Text(m.downloaded ? "downloaded" : "missing")
+                        .font(.caption)
+                        .foregroundStyle(m.downloaded ? Color.secondary : Color.orange)
+                }
+            }
+        }
     }
 }

@@ -26,21 +26,6 @@ targets:
     deploymentTarget: "14.0"
     sources:
       - path: Apps/Mac
-    # Embed the compiled inference engine (scripts/build-server.sh). A build
-    # phase copies + signs it because extension-less resources are skipped.
-    postBuildScripts:
-      - name: Embed omil-server engine
-        script: |
-          SRC="${SRCROOT}/server/dist/omil-server"
-          DST="${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources/omil-server"
-          if [ ! -f "$SRC" ]; then
-            echo "warning: server engine missing at $SRC — run scripts/build-server.sh, then rebuild"
-            exit 0
-          fi
-          mkdir -p "$(dirname "$DST")"
-          cp -f "$SRC" "$DST"
-          chmod +x "$DST"
-          /usr/bin/codesign --force --sign "${EXPANDED_CODE_SIGN_IDENTITY:--}" "$DST" || true
     dependencies:
       - package: OmilCore
     settings:

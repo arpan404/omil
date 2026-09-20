@@ -54,7 +54,7 @@ struct OnboardingView: View {
         .frame(width: 560, height: 480)
         .onAppear {
             controller.refreshMicPermission()
-            controller.assets.refreshState()
+            Task { await controller.refreshServerHealth() }
         }
     }
 
@@ -72,6 +72,8 @@ struct OnboardingView: View {
                 .foregroundStyle(.tint)
             Text("Welcome to Omil")
                 .font(.largeTitle)
+                .fontDesign(.rounded)
+                .fontWeight(.semibold)
             Text("Hold a shortcut, speak naturally, release — faithful cleaned text lands where your cursor is. Transcription and cleanup run on your Mac. No account.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
@@ -83,6 +85,7 @@ struct OnboardingView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Permissions")
                 .font(.largeTitle)
+                .fontDesign(.rounded)
             PermissionCard(
                 icon: "mic.fill",
                 title: "Microphone",
@@ -119,22 +122,33 @@ struct OnboardingView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Speech engine")
                 .font(.largeTitle)
-            Text("Omil runs Whisper and Qwen on your Mac. One install, about 4.3 GB, verified automatically.")
+                .fontDesign(.rounded)
+            Text("Omil transcribes with Whisper and cleans up with Qwen, served from your Mac over your LAN — never a third party.")
                 .foregroundStyle(.secondary)
-            ForEach(controller.assets.requiredPins, id: \.id) { pin in
-                HStack {
-                    Text(pin.displayName)
-                    Spacer()
-                    assetStateView(controller.assets.states[pin.id] ?? .missing)
+            OmilCard(title: "Server", icon: "network") {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("In a terminal, run:")
+                        .font(.callout)
+                    Text("cd server && bun src/main.ts")
+                        .font(.system(.body, design: .monospaced))
+                        .textSelection(.enabled)
+                        .padding(8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color(nsColor: .textBackgroundColor))
+                        .cornerRadius(8)
+                    Text("First boot prints a LAN token and downloads weights on first use. Then test below.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    HStack {
+                        Button("Test connection") {
+                            Task { await controller.refreshServerHealth() }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        Text(controller.serverHealth)
+                            .font(.callout)
+                    }
                 }
             }
-            Button(controller.assets.allReady ? "Installed" : "Install prerequisites") {
-                controller.assets.installPrerequisites {
-                    Task { @MainActor in controller.adoptServerToken() }
-                }
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(controller.assets.isInstalling || controller.assets.allReady)
             Spacer()
         }
         .padding()
@@ -147,6 +161,8 @@ struct OnboardingView: View {
                 .foregroundStyle(.green)
             Text("You're ready")
                 .font(.largeTitle)
+                .fontDesign(.rounded)
+                .fontWeight(.semibold)
             Text("Focus any text field and hold \(HotkeyManager.shared.pushToTalkName). Release to insert the cleaned result. The floating pill shows your live draft.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)

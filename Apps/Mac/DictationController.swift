@@ -82,9 +82,6 @@ final class DictationController: ObservableObject {
     private var sessionSeq = 0
     private var eventTask: Task<Void, Never>?
     private var dictionary = PersonalDictionary()
-    // The Mac app owns the inference server lifecycle + prerequisites.
-    let assets = ServerAssets()
-    let server = ServerLifecycle()
 
     init() {
         if let raw = UserDefaults.standard.string(forKey: "omil.mode"), let m = CleanupMode(rawValue: raw) {
@@ -108,8 +105,10 @@ final class DictationController: ObservableObject {
         serverCleanupEnabled = UserDefaults.standard.object(forKey: "omil.serverCleanup") as? Bool ?? true
     }
 
-    /// Post-launch startup (called from AppDelegate): hotkeys, backend probe,
-    /// owned server. Kept out of init so launch stays fast and diagnosable.
+    /// Post-launch startup (called from AppDelegate): hotkeys + backend probe.
+    /// Kept out of init so launch stays fast and diagnosable.
+    /// The inference server runs separately (see docs/BUILD.md); this app is
+    /// a pure client over its LAN API.
     func startup() {
         NSLog("Omil: startup")
         HotkeyManager.shared.onPushStart = { [weak self] in self?.start() }
@@ -117,26 +116,7 @@ final class DictationController: ObservableObject {
         HotkeyManager.shared.onToggle = { [weak self] in self?.toggle() }
         HotkeyManager.shared.start()
         Task { await refreshBackendStatus() }
-        // Own the server: launch at startup, auto-adopt its LAN token.
-        adoptServerToken()
         NSLog("Omil: startup done")
-    }
-
-    /// (Re)starts the owned server, adopting its token into the local config.
-    func adoptServerToken() {
-        server.start { [weak self] token in
-            Task { @MainActor in
-                guard let self else { return }
-                if self.serverConfig.token != token {
-                    self.serverConfig.token = token
-                    self.saveServerConfig()
-                }
-            }
-        }
-    }
-
-    func shutdownServer() {
-        server.stop()
     }
 
     var axTrusted: Bool { ax.isTrusted }
@@ -209,27 +189,27 @@ final class DictationController: ObservableObject {
         return req
     }
 
-    /// Persist model selection, download the newly selected weights when
-    /// missing, then tell the server to switch (llama sidecar restarts lazily).
+    struct ServerModelInfo: Codable, Identifiable {
+        var id: String
+        var kind: String
+        var description: String
+        var filename: String
+        var approxBytes: Int?
+        var downloaded: Bool
+        var selected: Bool
+    }
+
+    @Published var serverModels: [ServerModelInfo] = []
+
+    /// Persist model selection and tell the running server to switch.
+    /// Missing weights download server-side on first use.
     func selectModels() {
         UserDefaults.standard.set(whisperFile, forKey: "omil.whisperFile")
         UserDefaults.standard.set(llmFile, forKey: "omil.llmFile")
-        assets.refreshState()
         serverOpNote = "Switching models…"
         Task {
-            for file in [whisperFile, llmFile] {
-                if assets.states[file]?.isReady != true, ServerAssets.pin(id: file) != nil {
-                    let ok = await withCheckedContinuation { cont in
-                        assets.installModel(id: file) { cont.resume(returning: $0) }
-                    }
-                    if !ok {
-                        await MainActor.run { self.serverOpNote = "Download failed for \(file) — see asset state" }
-                        return
-                    }
-                }
-            }
-            guard let whisperId = ServerAssets.whisperIdForFile[whisperFile],
-                  let llmId = ServerAssets.llmIdForFile[llmFile],
+            guard let whisperId = ServerCatalog.whisperIdForFile[whisperFile],
+                  let llmId = ServerCatalog.llmIdForFile[llmFile],
                   let req = serverRequest(path: "/v1/models/select", method: "POST",
                                            jsonBody: ["whisper": whisperId, "llm": llmId]) else {
                 await MainActor.run { self.serverOpNote = "Server not configured" }
@@ -243,13 +223,38 @@ final class DictationController: ObservableObject {
                 }
                 let note = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["note"] as? String ?? "switched"
                 await MainActor.run {
-                    self.serverOpNote = "Models switched (\(note)). Qwen restarts on next cleanup."
-                    Task { await self.refreshServerHealth() }
+                    self.serverOpNote = "Models switched (\(note)). Missing weights download on first use."
+                    Task {
+                        await self.fetchServerModels()
+                        await self.refreshServerHealth()
+                    }
                 }
             } catch {
                 await MainActor.run { self.serverOpNote = "Selection failed: server unreachable?" }
             }
         }
+    }
+
+    func fetchServerModels() async {
+        guard let req = serverRequest(path: "/v1/models") else { return }
+        do {
+            let (data, response) = try await URLSession.shared.data(for: req)
+            guard (response as? HTTPURLResponse)?.statusCode == 200,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let arr = json["models"] as? [[String: Any]] else { return }
+            let models = arr.compactMap { d -> ServerModelInfo? in
+                guard let id = d["id"] as? String,
+                      let kind = d["kind"] as? String,
+                      let description = d["description"] as? String,
+                      let filename = d["filename"] as? String,
+                      let downloaded = d["downloaded"] as? Bool,
+                      let selected = d["selected"] as? Bool else { return nil }
+                return ServerModelInfo(id: id, kind: kind, description: description,
+                                       filename: filename, approxBytes: d["approxBytes"] as? Int,
+                                       downloaded: downloaded, selected: selected)
+            }
+            await MainActor.run { self.serverModels = models }
+        } catch { /* server not up yet */ }
     }
 
     func setPillEnabled(_ on: Bool) {
@@ -322,18 +327,19 @@ final class DictationController: ObservableObject {
 
     /// Qwen cleanup post-pass over the finalized raw transcript. The local
     /// deterministic engine always runs first (journal + fallback); the server
-    /// result replaces the delivered text only on success.
-    func serverClean(rawText: String) async -> (text: String, note: String) {
+    /// result replaces the delivered text only on success. On server failure
+    /// the LOCAL cleaned text is kept — never raw speech.
+    func serverClean(rawText: String, localFallback: String) async -> (text: String, note: String) {
         guard serverCleanupEnabled, cleanupMode == .clean else {
-            return (rawText, "local rules (server cleanup off or verbatim mode)")
+            return (localFallback, "local rules (server cleanup off or verbatim mode)")
         }
         let client = ServerCleanupClient(config: serverConfig, dictionary: dictionary)
         do {
             let r = try await client.clean(text: rawText, mode: cleanupMode)
             let note = "Qwen cleanup via server: \(r.acceptedEdits.count) edits, \(r.abstentions.count) abstentions (\(r.rulesVersion))"
-            return (r.text, note)
+            return (r.text.isEmpty ? localFallback : r.text, note)
         } catch {
-            return (rawText, "Server cleanup unavailable (\(error)); used local rules")
+            return (localFallback, "Server cleanup unavailable (\(error)); used local rules")
         }
     }
 
@@ -549,12 +555,18 @@ final class DictationController: ObservableObject {
         }
         let text: String
         let note: String
-        if committed.cleaned.text.isEmpty {
-            text = committed.cleaned.text
-            note = "empty result"
+        if committed.cleaned.text.isEmpty && committed.rawSnapshot.rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            // A10: never insert an empty result (would wipe the selection).
+            await MainActor.run {
+                self.phase = .ready
+                self.lastCleaned = ""
+                self.statusMessage = "Empty result — nothing inserted"
+            }
+            return
         } else {
-            let cleaned = await serverClean(rawText: committed.rawSnapshot.rawText)
-            text = cleaned.text.isEmpty ? committed.cleaned.text : cleaned.text
+            let cleaned = await serverClean(rawText: committed.rawSnapshot.rawText,
+                                            localFallback: committed.cleaned.text)
+            text = cleaned.text
             note = cleaned.note
         }
         serverNote = note
@@ -665,14 +677,19 @@ final class DictationController: ObservableObject {
         statusMessage = "Copied to clipboard"
     }
 
-    /// Paste last result at the cursor (menu action). Uses the clipboard with
-    /// ownership restore, like delivery recovery.
+    /// Paste last result at the cursor (menu action). Auto-paste needs
+    /// Accessibility trust for the key simulation; without it we copy and
+    /// say so honestly instead of claiming a paste happened.
     func pasteLast() {
         guard !lastCleaned.isEmpty else {
             statusMessage = "Nothing to paste yet"
             return
         }
         let prepared = clipboard.prepare(text: lastCleaned)
+        guard axTrusted else {
+            statusMessage = "Copied — press ⌘V to paste (needs Accessibility for auto-paste)"
+            return
+        }
         clipboard.paste()
         let inserter = clipboard
         DispatchQueue.global().async {
@@ -758,9 +775,8 @@ final class DictationController: ObservableObject {
         - mic: \(micPermission.rawValue)
         - backend pref: \(backendPreference.rawValue) — \(backendDescription)
         - assets: \(assetState)
-        - server engine: \(server.status.label)
-        - server token set: \(serverConfig.token.isEmpty ? "no" : "yes") (\(serverConfig.host):\(serverConfig.port))
-        - prereqs ready: \(assets.allReady)
+        - server: \(serverHealth) at \(serverConfig.host):\(serverConfig.port) (token set: \(serverConfig.token.isEmpty ? "no" : "yes"))
+        - whisper: \(whisperFile) — llm: \(llmFile)
         - windows: [\(windows)]
         - pill: \(PillManager.shared.debugInfo())
         - last delivery: \(lastDeliveryMethod)
