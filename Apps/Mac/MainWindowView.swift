@@ -11,6 +11,24 @@ enum MainSection: String, Hashable {
     case home, dictate, history, dictionary, models, help
 }
 
+/// Root content of the imperative AppKit main window: onboarding until
+/// complete, then the Hub. (A plain ViewBuilder conditional — always works,
+// unlike the SwiftUI Window scene which never materialized.)
+struct RootView: View {
+    @ObservedObject var controller: DictationController
+
+    var body: some View {
+        Group {
+            if controller.onboarded {
+                MainWindowView(controller: controller)
+            } else {
+                OnboardingView(controller: controller)
+            }
+        }
+        .frame(minWidth: 760, minHeight: 520)
+    }
+}
+
 struct MainWindowView: View {
     @ObservedObject var controller: DictationController
     @Environment(\.openSettings) private var openSettings

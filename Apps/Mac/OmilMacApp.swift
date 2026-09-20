@@ -6,59 +6,56 @@ import OmilCore
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     weak var controller: DictationController?
+    private var mainWindowController: NSWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSLog("Omil launched")
         controller?.startup()
         if let c = controller { PillManager.shared.attach(c) }
-        // Agent apps (LSUIElement) don't activate on their own — bring the
-        // right window forward explicitly. Retry: scenes may not exist yet.
-        NSApp.activate(ignoringOtherApps: true)
-        attemptOrderFront(tries: 20)
+        showMainWindow()
     }
 
-    private func attemptOrderFront(tries: Int) {
-        if orderFront() { return }
-        guard tries > 0 else {
-            NSLog("Omil: startup window never appeared")
+    /// The main window is a plain AppKit window hosting SwiftUI content:
+    /// deterministic, unlike the SwiftUI Window scene which never
+    /// materialized in this app.
+    func showMainWindow() {
+        guard let c = controller else {
+            NSLog("Omil: no controller for main window")
             return
         }
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 500_000_000)
-            self?.attemptOrderFront(tries: tries - 1)
+        if mainWindowController == nil {
+            let hosting = NSHostingView(rootView: RootView(controller: c))
+            hosting.frame = NSRect(x: 0, y: 0, width: 1000, height: 640)
+            hosting.autoresizingMask = [.width, .height]
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 1000, height: 640),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                backing: .buffered, defer: false)
+            window.title = "Omil"
+            window.contentView = hosting
+            window.center()
+            window.isReleasedWhenClosed = false
+            mainWindowController = NSWindowController(window: window)
         }
+        NSApp.activate(ignoringOtherApps: true)
+        mainWindowController?.showWindow(nil)
+        mainWindowController?.window?.makeKeyAndOrderFront(nil)
+        NSLog("Omil: main window shown (visible=%d)",
+              mainWindowController?.window?.isVisible == true ? 1 : 0)
     }
 
-    /// Onboarding first, main window after (both live in the "Omil" window).
-    @discardableResult
-    private func orderFront() -> Bool {
-        orderWindowFront(title: "Omil")
-    }
-
-    /// openWindow is unreliable from MenuBarExtra content — order the
-    /// SwiftUI Window scene's NSWindow forward directly.
-    /// - Returns: whether a main window was found.
+    /// Kept for the menu action name.
     @discardableResult
     func openMainWindow() -> Bool {
         NSLog("Omil: Open Omil pressed")
-        return orderWindowFront(title: "Omil")
+        showMainWindow()
+        return mainWindowController?.window?.isVisible == true
     }
 
-    @discardableResult
-    private func orderWindowFront(title: String) -> Bool {
-        NSApp.activate(ignoringOtherApps: true)
-        if let w = NSApp.windows.first(where: { $0.title == title && $0.canBecomeMain }) {
-            w.makeKeyAndOrderFront(nil)
-            NSLog("Omil: window '%@' front", title)
-            return true
-        } else if let w = NSApp.windows.first(where: { $0.title == title }) {
-            w.orderFrontRegardless()
-            NSLog("Omil: window '%@' front (regardless)", title)
-            return true
-        } else {
-            NSLog("Omil: window '%@' not found among %d windows", title, NSApp.windows.count)
-            return false
-        }
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        // Dock icon click reopens the main window.
+        if !flag { showMainWindow() }
+        return true
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -83,17 +80,6 @@ struct OmilMacApp: App {
             Label("Omil", systemImage: controller.phase == .recording ? "mic.fill" : "mic")
         }
         .menuBarExtraStyle(.window)
-
-        Window("Omil", id: "main") {
-            Group {
-                if controller.onboarded {
-                    MainWindowView(controller: controller)
-                        .frame(minWidth: 760, minHeight: 520)
-                } else {
-                    OnboardingView(controller: controller)
-                }
-            }
-        }
 
         Settings {
             SettingsView(controller: controller)
