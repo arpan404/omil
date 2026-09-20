@@ -97,9 +97,10 @@ changes are needed. Do NOT publish a release without authorization.
 ### Mac test run (for the tester)
 
 1. Launch `OmilMac.app` — the mic icon appears in the menu bar and the main
-   Omil window opens (sidebar: Dictate, History, Dictionary, Models). If no
-   window appears, click the menu-bar icon → Open Omil.
-2. Dictate tab: first Start prompts for **microphone access**; grant it.
+   Omil window opens. First launch shows guided onboarding (permissions →
+   engine setup); afterwards the Hub opens (sidebar: Home, Dictate, History,
+   Dictionary, Models). If no window appears, click the menu-bar icon → Open Omil.
+2. Dictate tab (or the floating pill while recording): first Start prompts for **microphone access**; grant it.
    Without it, Start fails with an actionable message.
 3. Focus a text field in another app (e.g. TextEdit), then Start (big round
    button, menu bar, hold Right Option, or Ctrl+Option+O). Speak, then Stop.

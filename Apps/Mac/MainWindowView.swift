@@ -8,41 +8,181 @@ import OmilCore
 // compact recorder + indicator.
 
 enum MainSection: String, Hashable {
-    case dictate, history, dictionary, models
+    case home, dictate, history, dictionary, models, help
 }
 
 struct MainWindowView: View {
     @ObservedObject var controller: DictationController
-    @State private var section: MainSection? = .dictate
+    @Environment(\.openSettings) private var openSettings
+    @State private var section: MainSection? = .home
 
     var body: some View {
         NavigationSplitView {
             List(selection: $section) {
-                Label("Dictate", systemImage: "mic.fill").tag(MainSection.dictate)
-                Label("History", systemImage: "clock").tag(MainSection.history)
-                Label("Dictionary", systemImage: "book").tag(MainSection.dictionary)
-                Label("Models", systemImage: "cpu").tag(MainSection.models)
+                Section {
+                    Label("Home", systemImage: "house").tag(MainSection.home)
+                    Label("Dictate", systemImage: "mic.fill").tag(MainSection.dictate)
+                    Label("History", systemImage: "clock").tag(MainSection.history)
+                    Label("Dictionary", systemImage: "book").tag(MainSection.dictionary)
+                    Label("Models", systemImage: "cpu").tag(MainSection.models)
+                }
+                Section {
+                    Button { openSettings() } label: {
+                        Label("Settings", systemImage: "gear")
+                    }
+                    .buttonStyle(.plain)
+                    Label("Help", systemImage: "questionmark.circle").tag(MainSection.help)
+                }
             }
             .navigationTitle("Omil")
             .listStyle(.sidebar)
         } detail: {
-            switch section ?? .dictate {
+            switch section ?? .home {
+            case .home: HomeView(controller: controller, goDictate: { section = .dictate })
             case .dictate: DictateView(controller: controller)
             case .history: HistoryView(controller: controller)
             case .dictionary: DictionaryView(controller: controller)
             case .models: ModelsView(controller: controller)
+            case .help: HelpView(controller: controller)
             }
         }
         .navigationTitle(sectionTitle)
     }
 
     var sectionTitle: String {
-        switch section ?? .dictate {
+        switch section ?? .home {
+        case .home: return "Home"
         case .dictate: return "Dictate"
         case .history: return "History"
         case .dictionary: return "Dictionary"
         case .models: return "Models"
+        case .help: return "Help"
         }
+    }
+}
+
+// MARK: - Home
+
+struct HomeView: View {
+    @ObservedObject var controller: DictationController
+    var goDictate: () -> Void = {}
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                // Hero: the one action that matters.
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Hold \(HotkeyManager.shared.pushToTalkName), speak, release.")
+                        .font(.title2)
+                    Text("Omil transcribes on your Mac, cleans up filler and self-corrections, and inserts the result where your cursor is.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    HStack {
+                        Button("Dictate now") {
+                            goDictate()
+                            controller.toggle()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(controller.phase == .preparing || controller.phase == .processing)
+                        Button("How it works") { goDictate() }
+                            .buttonStyle(.bordered)
+                    }
+                }
+                .padding()
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color(nsColor: .controlBackgroundColor))
+                .cornerRadius(12)
+
+                // Stats.
+                HStack(spacing: 12) {
+                    StatCard(title: "Words dictated", value: "\(controller.totalWords)")
+                    StatCard(title: "Dictations", value: "\(controller.totalDictations)")
+                    StatCard(title: "Day streak", value: "\(controller.dayStreak)")
+                }
+
+                // Recent.
+                HStack {
+                    Text("Recent")
+                        .font(.headline)
+                    Spacer()
+                }
+                if controller.history.isEmpty {
+                    Text("Nothing yet — your dictations will appear here.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(controller.history.prefix(3)) { entry in
+                        HStack(alignment: .top) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(entry.cleaned)
+                                    .lineLimit(2)
+                                Text("\(entry.date.formatted(date: .abbreviated, time: .shortened)) • \(entry.wordCount) words")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button("Copy") {
+                                NSPasteboard.general.declareTypes([.string], owner: nil)
+                                NSPasteboard.general.setString(entry.cleaned, forType: .string)
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                        .padding(8)
+                        .background(Color(nsColor: .textBackgroundColor))
+                        .cornerRadius(8)
+                    }
+                }
+                Spacer()
+            }
+            .padding()
+        }
+    }
+}
+
+struct StatCard: View {
+    var title: String
+    var value: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(value)
+                .font(.largeTitle)
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding()
+        .background(Color(nsColor: .controlBackgroundColor))
+        .cornerRadius(12)
+    }
+}
+
+// MARK: - Help
+
+struct HelpView: View {
+    @ObservedObject var controller: DictationController
+
+    var body: some View {
+        Form {
+            Section("Troubleshooting") {
+                Text("No text appears? Grant Accessibility (Settings → Permissions), then speak into a focused text field.")
+                Text("Start fails? Install prerequisites under Models — the server needs its engines and weights.")
+                Text("Wrong words? Open the dictation in History to compare raw and cleaned text.")
+            }
+            Section("Diagnostics") {
+                Button("Copy diagnostics") {
+                    NSPasteboard.general.declareTypes([.string], owner: nil)
+                    NSPasteboard.general.setString(controller.diagnostics(), forType: .string)
+                }
+                Text("Paste it when reporting an issue. Contains no transcript content.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section("About") {
+                Text("Omil \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?") — local-first dictation for Mac.")
+            }
+        }
+        .padding()
     }
 }
 

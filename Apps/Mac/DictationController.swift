@@ -2,6 +2,7 @@ import AppKit
 import AVFoundation
 import Combine
 import OmilCore
+import ServiceManagement
 
 // MARK: - DictationController (Mac)
 //
@@ -48,6 +49,9 @@ final class DictationController: ObservableObject {
     @Published var promptText = ""
     @Published var promptCustom = false
     @Published var serverOpNote = ""
+    @Published var pillEnabled = true {
+        didSet { UserDefaults.standard.set(pillEnabled, forKey: "omil.pillEnabled") }
+    }
 
     enum MicPermission: String {
         case unknown, granted, denied
@@ -59,6 +63,11 @@ final class DictationController: ObservableObject {
         var raw: String
         var cleaned: String
         var backend: String
+        var duration: Double = 0
+
+        var wordCount: Int {
+            cleaned.split(whereSeparator: { $0.isWhitespace }).count
+        }
     }
 
     private var session: DictationSession?
@@ -95,6 +104,7 @@ final class DictationController: ObservableObject {
         }
         whisperFile = UserDefaults.standard.string(forKey: "omil.whisperFile") ?? whisperFile
         llmFile = UserDefaults.standard.string(forKey: "omil.llmFile") ?? llmFile
+        pillEnabled = UserDefaults.standard.object(forKey: "omil.pillEnabled") as? Bool ?? true
         serverCleanupEnabled = UserDefaults.standard.object(forKey: "omil.serverCleanup") as? Bool ?? true
     }
 
@@ -240,6 +250,11 @@ final class DictationController: ObservableObject {
                 await MainActor.run { self.serverOpNote = "Selection failed: server unreachable?" }
             }
         }
+    }
+
+    func setPillEnabled(_ on: Bool) {
+        pillEnabled = on
+        UserDefaults.standard.set(on, forKey: "omil.pillEnabled")
     }
 
     // MARK: Prompt override
@@ -591,9 +606,9 @@ final class DictationController: ObservableObject {
         phase = .ready
         statusMessage = method
         guard historyEnabled else { return }
-        let entry = HistoryEntry(raw: result.rawSnapshot.rawText, cleaned: text, backend: result.backend.displayName)
+        let entry = HistoryEntry(raw: result.rawSnapshot.rawText, cleaned: text, backend: result.backend.displayName, duration: result.duration)
         history.insert(entry, at: 0)
-        history = Array(history.prefix(50))
+        history = Array(history.prefix(200))
         LocalHistory.saveHistory(history)
     }
 
@@ -648,6 +663,85 @@ final class DictationController: ObservableObject {
         NSPasteboard.general.declareTypes([.string], owner: nil)
         NSPasteboard.general.setString(lastCleaned, forType: .string)
         statusMessage = "Copied to clipboard"
+    }
+
+    /// Paste last result at the cursor (menu action). Uses the clipboard with
+    /// ownership restore, like delivery recovery.
+    func pasteLast() {
+        guard !lastCleaned.isEmpty else {
+            statusMessage = "Nothing to paste yet"
+            return
+        }
+        let prepared = clipboard.prepare(text: lastCleaned)
+        clipboard.paste()
+        let inserter = clipboard
+        DispatchQueue.global().async {
+            let restored = inserter.restoreIfOwned(prepared: prepared)
+            Task { @MainActor in
+                self.statusMessage = restored ? "Pasted last result" : "Pasted last result (clipboard kept)"
+            }
+        }
+    }
+
+    func deleteHistoryEntry(_ entry: HistoryEntry) {
+        history.removeAll(where: { $0.id == entry.id })
+        LocalHistory.saveHistory(history)
+    }
+
+    // MARK: Onboarding + stats (Hub Home)
+
+    @Published var onboarded = UserDefaults.standard.bool(forKey: "omil.onboarded") {
+        didSet { UserDefaults.standard.set(onboarded, forKey: "omil.onboarded") }
+    }
+
+    var totalWords: Int { history.reduce(0) { $0 + $1.wordCount } }
+    var totalDictations: Int { history.count }
+
+    /// Consecutive days (including today or yesterday) with dictations.
+    var dayStreak: Int {
+        let days = Set(history.map { Calendar.current.startOfDay(for: $0.date) })
+        guard !days.isEmpty else { return 0 }
+        var streak = 0
+        var day = Calendar.current.startOfDay(for: Date())
+        if !days.contains(day) {
+            // Allow the streak to survive until end of "yesterday grace": only
+            // count back from yesterday if today is empty.
+            day = Calendar.current.date(byAdding: .day, value: -1, to: day)!
+            if !days.contains(day) { return 0 }
+        }
+        while days.contains(day) {
+            streak += 1
+            day = Calendar.current.date(byAdding: .day, value: -1, to: day)!
+        }
+        return streak
+    }
+
+    var historyByDay: [(day: Date, entries: [HistoryEntry])] {
+        let grouped = Dictionary(grouping: history) { Calendar.current.startOfDay(for: $0.date) }
+        return grouped.keys.sorted(by: >).map { ($0, grouped[$0]!.sorted(by: { $0.date > $1.date })) }
+    }
+
+    func dayLabel(for day: Date) -> String {
+        let cal = Calendar.current
+        if cal.isDateInToday(day) { return "Today" }
+        if cal.isDateInYesterday(day) { return "Yesterday" }
+        let fmt = DateFormatter()
+        fmt.dateStyle = .medium
+        fmt.timeStyle = .none
+        return fmt.string(from: day)
+    }
+
+    var launchAtLogin: Bool {
+        get { SMAppService.mainApp.status == .enabled }
+        set {
+            do {
+                if newValue { try SMAppService.mainApp.register() }
+                else { try SMAppService.mainApp.unregister() }
+            } catch {
+                statusMessage = "Launch at login failed: \(error)"
+            }
+            objectWillChange.send()
+        }
     }
 
     // MARK: Diagnostics (no transcript content — safe to paste)

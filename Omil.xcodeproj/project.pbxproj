@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		082A161812636C0427E6710F /* MainWindowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95CF191E80A5EA59EEC34A6A /* MainWindowView.swift */; };
+		0F5CF7D85173E8C864DC3C0B /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 972AF13517E3CDBE826C8A80 /* OnboardingView.swift */; };
 		1EB9298E271B4A50839D2C65 /* SessionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5BF80D997AFF8047BD7C73E /* SessionCoordinator.swift */; };
 		20DC695B0350A941669542DA /* OmilMacApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE8761062032A3B86123D949 /* OmilMacApp.swift */; };
 		30B4B3C2F9DEAB2AF13DDD24 /* OmilIOSApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 049BF89C8C48F72E25AB3907 /* OmilIOSApp.swift */; };
@@ -21,6 +22,7 @@
 		A57A1BC73285B4EA4B3D02F6 /* DictationController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C59DC022BA72956BFC5C9C30 /* DictationController.swift */; };
 		C479CD106E7002AB6857CD26 /* KeyboardViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = E09BC10233CD55A62306C100 /* KeyboardViewController.swift */; };
 		CFACA50094D901B0AF5CF923 /* AXInserter.swift in Sources */ = {isa = PBXBuildFile; fileRef = B43D832DFCBCE2C4F56E7D16 /* AXInserter.swift */; };
+		D5E4D5C704D0026D6E23C404 /* FlowPill.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4195CCC24F75A38BF03C1A1A /* FlowPill.swift */; };
 		F3CE15969B14EC48054AAFBC /* HotkeyManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = E41CC6A8072238F3190BA40E /* HotkeyManager.swift */; };
 /* End PBXBuildFile section */
 
@@ -54,11 +56,13 @@
 		0B70C2E88C7B28A5691266EB /* OmilKeyboard.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = OmilKeyboard.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		1AB5C36E850C783EEC69C7FF /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		32F5F8B299D38A27AE4030E4 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		4195CCC24F75A38BF03C1A1A /* FlowPill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FlowPill.swift; sourceTree = "<group>"; };
 		4D39E5E2A3EB44CBC48C6734 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		51346BA7F369F5CF17D06141 /* ServerLifecycle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerLifecycle.swift; sourceTree = "<group>"; };
 		5375B1ADDA9DDC49673F5CAB /* omil */ = {isa = PBXFileReference; lastKnownFileType = folder; name = omil; path = .; sourceTree = SOURCE_ROOT; };
 		8901AAB308C1A5A57255CD3F /* OmilMac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OmilMac.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		95CF191E80A5EA59EEC34A6A /* MainWindowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainWindowView.swift; sourceTree = "<group>"; };
+		972AF13517E3CDBE826C8A80 /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
 		9F3850DCBEC22156CB08ED76 /* OmilMac.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = OmilMac.entitlements; sourceTree = "<group>"; };
 		AB5D151E8AAC531F356B19AA /* OmilKeyboard.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = OmilKeyboard.entitlements; sourceTree = "<group>"; };
 		AE8761062032A3B86123D949 /* OmilMacApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OmilMacApp.swift; sourceTree = "<group>"; };
@@ -145,11 +149,13 @@
 				B43D832DFCBCE2C4F56E7D16 /* AXInserter.swift */,
 				D848F1CE08AE5D255D009732 /* ClipboardInserter.swift */,
 				C59DC022BA72956BFC5C9C30 /* DictationController.swift */,
+				4195CCC24F75A38BF03C1A1A /* FlowPill.swift */,
 				E41CC6A8072238F3190BA40E /* HotkeyManager.swift */,
 				1AB5C36E850C783EEC69C7FF /* Info.plist */,
 				95CF191E80A5EA59EEC34A6A /* MainWindowView.swift */,
 				9F3850DCBEC22156CB08ED76 /* OmilMac.entitlements */,
 				AE8761062032A3B86123D949 /* OmilMacApp.swift */,
+				972AF13517E3CDBE826C8A80 /* OnboardingView.swift */,
 				BB2651B8F974483501276281 /* ServerAssets.swift */,
 				51346BA7F369F5CF17D06141 /* ServerLifecycle.swift */,
 			);
@@ -322,9 +328,11 @@
 				CFACA50094D901B0AF5CF923 /* AXInserter.swift in Sources */,
 				A440BA01828D7F2EA3516236 /* ClipboardInserter.swift in Sources */,
 				A57A1BC73285B4EA4B3D02F6 /* DictationController.swift in Sources */,
+				D5E4D5C704D0026D6E23C404 /* FlowPill.swift in Sources */,
 				F3CE15969B14EC48054AAFBC /* HotkeyManager.swift in Sources */,
 				082A161812636C0427E6710F /* MainWindowView.swift in Sources */,
 				20DC695B0350A941669542DA /* OmilMacApp.swift in Sources */,
+				0F5CF7D85173E8C864DC3C0B /* OnboardingView.swift in Sources */,
 				831F40342153275F308CD652 /* ServerAssets.swift in Sources */,
 				321200C5B65E005CFA915278 /* ServerLifecycle.swift in Sources */,
 			);

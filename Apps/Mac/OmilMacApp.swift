@@ -10,17 +10,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSLog("Omil launched")
         controller?.startup()
+        if let c = controller { PillManager.shared.attach(c) }
         // Agent apps (LSUIElement) don't activate on their own — bring the
-        // main window forward explicitly so first launch shows the app.
-        // Retry: the SwiftUI scene may not exist yet on first tick.
+        // right window forward explicitly. Retry: scenes may not exist yet.
         NSApp.activate(ignoringOtherApps: true)
         attemptOrderFront(tries: 20)
     }
 
     private func attemptOrderFront(tries: Int) {
-        if orderMainWindowFront() { return }
+        if orderFront() { return }
         guard tries > 0 else {
-            NSLog("Omil: main window never appeared")
+            NSLog("Omil: startup window never appeared")
             return
         }
         Task { @MainActor [weak self] in
@@ -29,28 +29,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Onboarding first, main window after (both live in the "Omil" window).
+    @discardableResult
+    private func orderFront() -> Bool {
+        orderWindowFront(title: "Omil")
+    }
+
     /// openWindow is unreliable from MenuBarExtra content — order the
     /// SwiftUI Window scene's NSWindow forward directly.
     /// - Returns: whether a main window was found.
     @discardableResult
     func openMainWindow() -> Bool {
         NSLog("Omil: Open Omil pressed")
-        return orderMainWindowFront()
+        return orderWindowFront(title: "Omil")
     }
 
     @discardableResult
-    private func orderMainWindowFront() -> Bool {
+    private func orderWindowFront(title: String) -> Bool {
         NSApp.activate(ignoringOtherApps: true)
-        if let w = NSApp.windows.first(where: { $0.title == "Omil" && $0.canBecomeMain }) {
+        if let w = NSApp.windows.first(where: { $0.title == title && $0.canBecomeMain }) {
             w.makeKeyAndOrderFront(nil)
-            NSLog("Omil: main window front")
+            NSLog("Omil: window '%@' front", title)
             return true
-        } else if let w = NSApp.windows.first(where: { $0.title == "Omil" }) {
+        } else if let w = NSApp.windows.first(where: { $0.title == title }) {
             w.orderFrontRegardless()
-            NSLog("Omil: main window front (regardless)")
+            NSLog("Omil: window '%@' front (regardless)", title)
             return true
         } else {
-            NSLog("Omil: main window not found among %d windows", NSApp.windows.count)
+            NSLog("Omil: window '%@' not found among %d windows", title, NSApp.windows.count)
             return false
         }
     }
@@ -79,10 +85,15 @@ struct OmilMacApp: App {
         .menuBarExtraStyle(.window)
 
         Window("Omil", id: "main") {
-            MainWindowView(controller: controller)
-                .frame(minWidth: 760, minHeight: 520)
+            Group {
+                if controller.onboarded {
+                    MainWindowView(controller: controller)
+                        .frame(minWidth: 760, minHeight: 520)
+                } else {
+                    OnboardingView(controller: controller)
+                }
+            }
         }
-        .windowResizability(.contentSize)
 
         Settings {
             SettingsView(controller: controller)
@@ -106,98 +117,40 @@ struct MenuBarView: View {
                 Text(statusTitle)
                     .font(.headline)
             }
-            Text(controller.statusMessage)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(3)
-
-            Divider()
-
-            HStack {
-                Button(controller.phase == .recording ? "Stop" : "Start") {
-                    controller.toggle()
-                }
-                .keyboardShortcut("r", modifiers: [.command])
-                .disabled(controller.phase == .preparing || controller.phase == .processing)
-                Button("Cancel") { controller.cancel() }
-                    .disabled(controller.phase != .recording && controller.phase != .processing)
-                    .keyboardShortcut(".", modifiers: [.command])
-            }
-
-            if controller.phase == .recording {
-                Text("Draft: \(controller.draftText)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            if !controller.lastCleaned.isEmpty {
-                Divider()
-                Text("Result")
-                    .font(.headline)
-                Text(controller.lastCleaned)
-                    .font(.body)
-                    .textSelection(.enabled)
-                HStack {
-                    Button("Copy") { controller.copyLast() }
-                    Button("Insert again") { controller.insertRetainedResult() }
-                    Button("Undo") { controller.undoLast() }
-                        .disabled(!controller.canUndo)
-                }
-                Text(controller.lastDeliveryMethod)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-
-            Divider()
-            HStack {
-                Picker("Mode", selection: $controller.cleanupMode) {
-                    Text("Clean").tag(CleanupMode.clean)
-                    Text("Verbatim").tag(CleanupMode.verbatim)
-                }
-                .pickerStyle(.segmented)
-            }
-            .accessibilityLabel("Cleanup mode")
-
-            Text("Backend: \(controller.backendDescription)")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            if !controller.assets.allReady {
-                Text("Prerequisites missing — the server has nothing to run with yet.")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-                Button(controller.assets.isInstalling ? "Installing… (see Models tab for progress)" : "Install prerequisites (~4.3 GB)") {
-                    controller.assets.installPrerequisites {
-                        Task { @MainActor in controller.adoptServerToken() }
-                    }
-                }
-                .disabled(controller.assets.isInstalling || controller.assets.allReady)
-            }
-            Text("Engine: \(controller.server.status.label)")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            Text("Local/offline after assets installed. No account.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
 
             Button("Open Omil") {
                 (NSApp.delegate as? AppDelegate)?.openMainWindow()
             }
-            Button("Copy diagnostics") {
-                NSPasteboard.general.declareTypes([.string], owner: nil)
-                NSPasteboard.general.setString(controller.diagnostics(), forType: .string)
+
+            Divider()
+
+            if controller.phase == .recording {
+                Button("Stop") { controller.stop() }
+                    .keyboardShortcut(".", modifiers: [.command])
+            } else {
+                Button("Start dictation") { controller.toggle() }
+                    .keyboardShortcut("r", modifiers: [.command])
+                    .disabled(controller.phase == .preparing || controller.phase == .processing)
             }
+
+            Button("Paste last result") { controller.pasteLast() }
+                .disabled(controller.lastCleaned.isEmpty)
+
+            Divider()
+
+            Button("Quit Omil") { NSApp.terminate(nil) }
         }
         .padding()
-        .frame(width: 360)
+        .frame(width: 240)
     }
 
     var statusTitle: String {
         switch controller.phase {
-        case .idle: return "Omil — idle"
+        case .idle: return "Omil"
         case .preparing: return "Omil — preparing"
         case .recording: return "Omil — recording"
         case .processing: return "Omil — finalizing"
-        case .ready: return "Omil — result ready"
+        case .ready: return "Omil"
         case .failed: return "Omil — attention needed"
         }
     }
@@ -207,10 +160,25 @@ struct MenuBarView: View {
 
 struct HistoryView: View {
     @ObservedObject var controller: DictationController
+    @State private var search = ""
+    @State private var hovered: UUID?
+    @State private var confirmDelete: DictationController.HistoryEntry?
+
+    var filtered: [(day: Date, entries: [DictationController.HistoryEntry])] {
+        let groups = controller.historyByDay
+        guard !search.isEmpty else { return groups }
+        let q = search.lowercased()
+        return groups.compactMap { day, entries in
+            let hit = entries.filter {
+                $0.cleaned.lowercased().contains(q) || $0.raw.lowercased().contains(q)
+            }
+            return hit.isEmpty ? nil : (day, hit)
+        }
+    }
 
     var body: some View {
         NavigationStack {
-            VStack {
+            VStack(spacing: 0) {
                 if controller.history.isEmpty {
                     ContentUnavailableView(
                         "No history",
@@ -219,21 +187,43 @@ struct HistoryView: View {
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    List(controller.history) { entry in
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(entry.cleaned)
-                                .font(.body)
-                                .textSelection(.enabled)
-                            Text("Raw: \(entry.raw)")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .textSelection(.enabled)
-                            Text("\(entry.date.formatted()) • \(entry.backend)")
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
+                    List {
+                        ForEach(filtered, id: \.day) { day, entries in
+                            Section(controller.dayLabel(for: day)) {
+                                ForEach(entries) { entry in
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(entry.cleaned)
+                                            .font(.body)
+                                            .textSelection(.enabled)
+                                        Text("Raw: \(entry.raw)")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                            .textSelection(.enabled)
+                                        HStack {
+                                            Text("\(entry.date.formatted(date: .omitted, time: .shortened)) • \(entry.wordCount) words • \(entry.backend)")
+                                                .font(.caption2)
+                                                .foregroundStyle(.tertiary)
+                                            Spacer()
+                                            if hovered == entry.id {
+                                                Button("Copy") {
+                                                    NSPasteboard.general.declareTypes([.string], owner: nil)
+                                                    NSPasteboard.general.setString(entry.cleaned, forType: .string)
+                                                }
+                                                .buttonStyle(.bordered)
+                                                Button("Delete") { confirmDelete = entry }
+                                                    .buttonStyle(.bordered)
+                                            }
+                                        }
+                                    }
+                                    .padding(.vertical, 4)
+                                    .onHover { hovering in
+                                        hovered = hovering ? entry.id : nil
+                                    }
+                                }
+                            }
                         }
-                        .padding(.vertical, 4)
                     }
+                    .searchable(text: $search, prompt: "Search transcripts")
                 }
             }
             .navigationTitle("History (kept on this Mac)")
@@ -244,6 +234,20 @@ struct HistoryView: View {
                 ))
                 Button("Clear") { controller.clearHistory() }
                     .disabled(controller.history.isEmpty)
+            }
+            .confirmationDialog(
+                "Delete this transcript? This is permanent.",
+                isPresented: Binding(
+                    get: { confirmDelete != nil },
+                    set: { if !$0 { confirmDelete = nil } }
+                ),
+                titleVisibility: .visible
+            ) {
+                Button("Delete", role: .destructive) {
+                    if let entry = confirmDelete { controller.deleteHistoryEntry(entry) }
+                    confirmDelete = nil
+                }
+                Button("Cancel", role: .cancel) { confirmDelete = nil }
             }
         }
     }
@@ -333,9 +337,6 @@ struct SettingsView: View {
                 Text("Changing transcription never changes cleanup behavior. The owned inference core lives under Models in the main window.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Text("Changing transcription never changes cleanup behavior.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
             .tabItem { Label("General", systemImage: "gear") }
             .padding()
@@ -403,6 +404,26 @@ struct SettingsView: View {
             .tabItem { Label("Permissions", systemImage: "mic.badge.plus") }
             .padding()
             .onAppear { controller.refreshMicPermission() }
+
+            Form {
+                Section("Startup") {
+                    Toggle("Launch at login", isOn: Binding(
+                        get: { controller.launchAtLogin },
+                        set: { controller.launchAtLogin = $0 }
+                    ))
+                }
+                Section("Dictation control") {
+                    Toggle("Floating pill while recording", isOn: Binding(
+                        get: { controller.pillEnabled },
+                        set: { controller.setPillEnabled($0) }
+                    ))
+                    Text("The pill shows the live draft with Stop/Cancel where you work. The menu bar icon always shows recording state.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .tabItem { Label("System", systemImage: "desktopcomputer") }
+            .padding()
         }
         .frame(minWidth: 480, minHeight: 420)
     }
