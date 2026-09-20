@@ -5,13 +5,14 @@ import OmilCore
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    weak var controller: DictationController?
+    /// Single shared controller — no init-time wiring to go stale.
+    var controller: DictationController { AppContext.controller }
     private var mainWindowController: NSWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSLog("Omil launched")
-        controller?.startup()
-        if let c = controller { PillManager.shared.attach(c) }
+        controller.startup()
+        PillManager.shared.attach(controller)
         showMainWindow()
     }
 
@@ -19,10 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// deterministic, unlike the SwiftUI Window scene which never
     /// materialized in this app.
     func showMainWindow() {
-        guard let c = controller else {
-            NSLog("Omil: no controller for main window")
-            return
-        }
+        let c = controller
         if mainWindowController == nil {
             let hosting = NSHostingView(rootView: RootView(controller: c))
             hosting.frame = NSRect(x: 0, y: 0, width: 1000, height: 640)
@@ -59,18 +57,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        controller?.shutdownServer()
+        controller.shutdownServer()
     }
+}
+@MainActor
+enum AppContext {
+    static let controller = DictationController()
 }
 
 @main
 struct OmilMacApp: App {
-    @StateObject private var controller = DictationController()
+    @StateObject private var controller: DictationController
+
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
 
     init() {
-        // Wire terminate-time server shutdown (both wrappers exist by now).
-        _delegate.wrappedValue.controller = _controller.wrappedValue
+        _controller = StateObject(wrappedValue: AppContext.controller)
     }
 
     var body: some Scene {
