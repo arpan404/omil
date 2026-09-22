@@ -1108,6 +1108,10 @@ final class DictationController: ObservableObject {
             }
         }
         serverNote = note
+        if recordingSource == .app {
+            finishDelivery(text: text, method: "Transcript ready", receipt: nil, result: committed)
+            return
+        }
         processingStage = .inserting
         statusMessage = "Inserting your text"
         let pre = self.precondition ?? SelectionPrecondition()
@@ -1151,7 +1155,7 @@ final class DictationController: ObservableObject {
             receipt: receipt, result: committed)
     }
 
-    private func finishDelivery(text: String, method: String, receipt: InsertionReceipt, result: SessionResult) {
+    private func finishDelivery(text: String, method: String, receipt: InsertionReceipt?, result: SessionResult) {
         lastReceipt = receipt
         lastDeliveryMethod = method
         lastCleaned = text

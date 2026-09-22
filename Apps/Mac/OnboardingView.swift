@@ -174,8 +174,10 @@ struct OnboardingView: View {
                             .foregroundStyle(OmilTheme.muted)
                     }
                     Spacer()
-                    Button("Retry") { controller.restartManagedServer() }
-                        .buttonStyle(QuietButtonStyle())
+                    if !serverHealthy {
+                        Button("Retry") { controller.restartManagedServer() }
+                            .buttonStyle(QuietButtonStyle())
+                    }
                 }
                 .padding(14)
                 .background(OmilTheme.canvas, in: RoundedRectangle(cornerRadius: 10))
@@ -184,7 +186,6 @@ struct OnboardingView: View {
                     Label("Speech processing runs on this Mac by default", systemImage: "lock.fill")
                         .font(.system(size: 11))
                         .foregroundStyle(OmilTheme.muted)
-                    Spacer()
                     Text("Manage models in Engine.")
                         .font(.system(size: 11))
                         .foregroundStyle(OmilTheme.faint)
