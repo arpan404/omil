@@ -18,8 +18,15 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Omil connects to the speech engine running in the Omil app on your Mac.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Omil records your voice to transcribe it locally on this device. Audio never leaves the device.</string>
+	<string>Omil records your voice and sends it to the speech engine you select, including your Mac on the local network.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Omil transcribes your dictation using on-device speech recognition.</string>
 	<key>UIApplicationSceneManifest</key>

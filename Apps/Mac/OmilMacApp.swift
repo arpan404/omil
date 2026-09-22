@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var mainWindowController: NSWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        AppContext.appDelegate = self
         NSLog("Omil launched")
         controller.startup()
         PillManager.shared.attach(controller)
@@ -105,13 +106,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 @MainActor
 enum AppContext {
+    static weak var appDelegate: AppDelegate?
     static let localServer = LocalServerManager()
     static let controller = DictationController(localServer: localServer)
     static let updater = UpdateController()
 }
 
 @main
-@MainActor
 struct OmilMacApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
 
@@ -119,7 +120,10 @@ struct OmilMacApp: App {
         MenuBarExtra {
             MenuBarView(controller: AppContext.controller)
         } label: {
-            Label("Omil", systemImage: "mic")
+            Image(nsImage: NSApplication.shared.applicationIconImage)
+                .resizable()
+                .frame(width: 20, height: 20)
+                .accessibilityLabel("Omil")
         }
         .menuBarExtraStyle(.window)
 
@@ -134,115 +138,144 @@ struct OmilMacApp: App {
 
 struct MenuBarView: View {
     @ObservedObject var controller: DictationController
+    @Environment(\.openSettings) private var openSettings
+
+    private var recording: Bool { controller.phase == .recording }
+    private var busy: Bool { controller.phase == .preparing || controller.phase == .processing }
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
-                OmilMark(size: 32, active: controller.phase == .recording)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Omil")
-                        .font(OmilType.display(16))
-                    Text(statusTitle)
-                        .font(OmilType.utility(9, weight: .semibold))
-                        .foregroundStyle(statusColor)
-                }
+                OmilMark(size: 34)
+                Text("Omil")
+                    .font(.system(size: 16, weight: .semibold))
                 Spacer()
                 Button {
-                    (NSApp.delegate as? AppDelegate)?.openMainWindow()
+                    NSApp.activate(ignoringOtherApps: true)
+                    openSettings()
                 } label: {
-                    Image(systemName: "arrow.up.forward.app")
-                        .frame(width: 26, height: 26)
+                    Image(systemName: "gearshape")
+                        .frame(width: 28, height: 28)
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(OmilTheme.muted)
-                .help("Open Omil")
+                .help("Settings")
+                .accessibilityLabel("Settings")
             }
-            .padding(14)
+            .padding(18)
 
-            Group {
-                if controller.phase == .recording {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 7) {
+                    Circle()
+                        .fill(recording ? OmilTheme.coral : controller.serverIsReady ? OmilTheme.mint : OmilTheme.warning)
+                        .frame(width: 6, height: 6)
+                    Text(statusTitle)
+                        .font(.system(size: 13, weight: .medium))
+                }
+                if recording {
                     SignalRail(levels: controller.audioLevels, active: true)
-                } else if controller.phase == .processing {
-                    ProgressView()
-                        .controlSize(.small)
-                        .tint(OmilTheme.signal)
+                        .frame(height: 28)
+                } else if busy {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text(controller.statusMessage)
+                            .font(.system(size: 12))
+                            .foregroundStyle(OmilTheme.muted)
+                    }
                 } else {
-                    Color.clear
+                    Text("Hold \(HotkeyManager.shared.pushToTalkName) in any text field. Release when you're done speaking.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(OmilTheme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Button {
+                    controller.toggle(source: .menuBar)
+                } label: {
+                    HStack {
+                        Image(systemName: recording ? "stop.fill" : "mic.fill")
+                        Text(recording ? "Stop and transcribe" : "Start dictation")
+                        Spacer()
+                        if !recording { Text("⌃⌥O").foregroundStyle(OmilTheme.signalInk.opacity(0.65)) }
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(SignalButtonStyle())
+                .disabled(busy || (!recording && !controller.serverIsReady))
+                if recording || controller.phase == .preparing {
+                    Button("Cancel recording") { controller.cancel() }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 12))
+                        .foregroundStyle(OmilTheme.muted)
                 }
             }
-            .frame(height: 42)
-            .padding(.horizontal, 18)
-
-            Button {
-                controller.toggle()
-            } label: {
-                Label(controller.phase == .recording ? "Stop recording" : "Start dictation",
-                      systemImage: controller.phase == .recording ? "stop.fill" : "mic.fill")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(SignalButtonStyle())
-            .disabled(
-                controller.phase == .preparing
-                    || controller.phase == .processing
-                    || !controller.serverIsReady
-            )
-            .padding(14)
+            .padding(16)
+            .background(OmilTheme.panelLifted.opacity(0.55), in: RoundedRectangle(cornerRadius: 12))
+            .padding(.horizontal, 12)
+            .padding(.bottom, 12)
 
             if !controller.lastCleaned.isEmpty {
-                Divider().overlay(OmilTheme.line)
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("LAST RESULT")
-                        .font(OmilType.utility(9, weight: .bold))
-                        .tracking(0.8)
-                        .foregroundStyle(OmilTheme.faint)
+                VStack(alignment: .leading, spacing: 7) {
+                    HStack {
+                        Text("Last transcript")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(OmilTheme.muted)
+                        Spacer()
+                        Button { controller.copyLast() } label: { Image(systemName: "doc.on.doc") }
+                            .buttonStyle(.plain)
+                            .help("Copy transcript")
+                            .accessibilityLabel("Copy transcript")
+                    }
                     Text(controller.lastCleaned)
                         .font(.system(size: 12))
                         .lineLimit(3)
-                    HStack {
-                        Button("Copy") { controller.copyLast() }
-                        Button("Paste") { controller.pasteLast() }
-                    }
-                    .buttonStyle(QuietButtonStyle())
+                        .textSelection(.enabled)
                 }
-                .padding(14)
+                .padding(.horizontal, 18)
+                .padding(.bottom, 14)
             }
 
-            Divider().overlay(OmilTheme.line)
-            HStack {
-                Button("Open Omil") { (NSApp.delegate as? AppDelegate)?.openMainWindow() }
-                Button("Check for Updates…") { AppContext.updater.checkForUpdates() }
-                    .disabled(!AppContext.updater.canCheckForUpdates)
-                Spacer()
-                Button("Quit") { NSApp.terminate(nil) }
+            Divider()
+            VStack(spacing: 2) {
+                menuRow("Open Omil", icon: "macwindow", shortcut: "") {
+                    AppContext.appDelegate?.showMainWindow()
+                }
+                menuRow("Check for updates", icon: "arrow.down.circle", shortcut: "") {
+                    AppContext.updater.checkForUpdates()
+                }
+                .disabled(!AppContext.updater.canCheckForUpdates)
+                menuRow("Quit Omil", icon: "power", shortcut: "⌘Q") { NSApp.terminate(nil) }
             }
-            .buttonStyle(.plain)
-            .font(.system(size: 11, weight: .medium))
-            .foregroundStyle(OmilTheme.muted)
-            .padding(14)
+            .padding(8)
         }
-        .frame(width: 290)
+        .frame(width: 320)
         .background(OmilTheme.panel)
-        .preferredColorScheme(controller.appearance.colorScheme)
+        .foregroundStyle(OmilTheme.ink)
+        .omilAppearance()
     }
 
-    var statusTitle: String {
-        switch controller.phase {
-        case .idle: return controller.serverIsReady ? "READY" : "SETUP NEEDED"
-        case .preparing: return "PREPARING"
-        case .recording: return "RECORDING"
-        case .processing: return "CLEANING UP"
-        case .ready: return "RESULT READY"
-        case .failed: return "CHECK SETUP"
+    private func menuRow(_ title: String, icon: String, shortcut: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: icon).frame(width: 18)
+                Text(title)
+                Spacer()
+                Text(shortcut).foregroundStyle(OmilTheme.muted)
+            }
+            .font(.system(size: 12))
+            .padding(.horizontal, 10)
+            .frame(height: 34)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
     }
 
-    var statusColor: Color {
+    private var statusTitle: String {
         switch controller.phase {
-        case .recording: return OmilTheme.coral
-        case .failed: return OmilTheme.warning
-        case .preparing, .processing: return OmilTheme.signal
-        case .idle: return controller.serverIsReady ? OmilTheme.mint : OmilTheme.warning
-        case .ready: return OmilTheme.mint
+        case .idle: return controller.serverIsReady ? "Ready to transcribe" : "Finish speech setup in Omil"
+        case .preparing: return "Getting ready"
+        case .recording: return "Listening"
+        case .processing: return controller.processingStage.title
+        case .ready: return controller.lastCleaned.isEmpty ? "No speech detected" : "Transcript ready"
+        case .failed: return "Couldn't finish. Open Omil for details."
         }
     }
 }
@@ -266,6 +299,9 @@ private enum SettingsPane: String, CaseIterable {
 struct SettingsView: View {
     @ObservedObject var controller: DictationController
     @State private var pane: SettingsPane = .general
+    @ObservedObject private var hotkeys = HotkeyManager.shared
+    @State private var pendingModifier: Int?
+    @State private var shortcutError = ""
     @State private var recordingShortcut = false
     @State private var shortcutMonitor: Any?
 
@@ -278,21 +314,47 @@ struct SettingsView: View {
     }
 
     func startShortcutCapture() {
+        stopShortcutCapture()
         recordingShortcut = true
-        // Local monitors dispatch on the main thread, so MainActor access is safe.
-        shortcutMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { e in
-            let code = e.keyCode
-            MainActor.assumeIsolated {
-                HotkeyManager.shared.setPushToTalk(keyCode: Int(code))
-                self.stopShortcutCapture()
+        shortcutError = ""
+        hotkeys.capturingShortcut = true
+        shortcutMonitor = NSEvent.addLocalMonitorForEvents(matching: [.flagsChanged, .keyDown]) { event in
+            let consumed = MainActor.assumeIsolated {
+                if event.type == .keyDown {
+                    if event.keyCode == 53 {
+                        self.stopShortcutCapture()
+                    } else if self.hotkeys.setPushToTalk(
+                        keyCode: Int(event.keyCode),
+                        modifiers: event.modifierFlags,
+                        character: event.charactersIgnoringModifiers ?? ""
+                    ) {
+                        self.stopShortcutCapture()
+                    } else {
+                        self.pendingModifier = nil
+                        self.shortcutError = "Choose a modifier or a different key combination."
+                    }
+                    return true
+                }
+                let code = Int(event.keyCode)
+                if let flag = HotkeyManager.modifierFlag(for: code) {
+                    if event.modifierFlags.contains(flag) {
+                        self.pendingModifier = code
+                    } else if self.pendingModifier == code {
+                        self.hotkeys.setPushToTalk(keyCode: code)
+                        self.stopShortcutCapture()
+                    }
+                }
+                return false
             }
-            return e
+            return consumed ? nil : event
         }
     }
 
     func stopShortcutCapture() {
         recordingShortcut = false
-        if let m = shortcutMonitor { NSEvent.removeMonitor(m) }
+        pendingModifier = nil
+        hotkeys.capturingShortcut = false
+        if let monitor = shortcutMonitor { NSEvent.removeMonitor(monitor) }
         shortcutMonitor = nil
     }
 
@@ -300,7 +362,7 @@ struct SettingsView: View {
         HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 10) {
-                    OmilMark(size: 32, active: false)
+                    OmilMark(size: 32)
                     Text("Settings")
                         .font(OmilType.display(17))
                 }
@@ -329,7 +391,7 @@ struct SettingsView: View {
                 }
                 .padding(.horizontal, 10)
                 Spacer()
-                Text("Audio stays on your Mac")
+                Text(controller.usesCustomServer ? "Using your transcription server" : "Speech processing on this Mac")
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(OmilTheme.faint)
                     .padding(16)
@@ -352,17 +414,18 @@ struct SettingsView: View {
             .background(OmilTheme.canvas)
         }
         .frame(minWidth: 700, minHeight: 520)
-        .preferredColorScheme(controller.appearance.colorScheme)
+        .omilAppearance()
         .onAppear {
             controller.refreshMicPermission()
             controller.refreshAXTrust()
         }
         .onDisappear { stopShortcutCapture() }
+        .onChange(of: pane) { _, _ in stopShortcutCapture() }
     }
 
     private var generalPane: some View {
         VStack(alignment: .leading, spacing: 20) {
-            SettingsPageHeader(title: "General", detail: "How Omil records, cleans, and starts.")
+            SettingsPageHeader(title: "General", detail: "Choose how Omil looks and handles your dictation.")
 
             SettingsGroup(title: "Appearance") {
                 SettingsRow(title: "Theme", detail: "Follow this Mac or keep Omil light or dark.") {
@@ -388,13 +451,34 @@ struct SettingsView: View {
                     .frame(width: 180)
                 }
                 SettingsDivider()
-                SettingsRow(title: "Floating pill", detail: "Keep recording and processing visible above other apps.") {
+                SettingsRow(title: "Recording indicator", detail: "Show a floating control for shortcut and menu-bar dictation.") {
                     Toggle("", isOn: Binding(
                         get: { controller.pillEnabled },
                         set: { controller.setPillEnabled($0) }
                     ))
                     .labelsHidden()
                     .toggleStyle(.switch)
+                }
+                SettingsDivider()
+                SettingsRow(
+                    title: "Saved recordings",
+                    detail: controller.audioRetentionDays == 0
+                        ? "Off. Existing saved recordings are removed."
+                        : "Keep recordings on this Mac to listen back or transcribe again."
+                ) {
+                    Picker("Retention", selection: Binding(
+                        get: { controller.audioRetentionDays },
+                        set: { controller.setAudioRetentionDays($0) }
+                    )) {
+                        Text("Off").tag(0)
+                        Text("1 day").tag(1)
+                        Text("3 days").tag(3)
+                        Text("7 days").tag(7)
+                        Text("14 days").tag(14)
+                        Text("30 days").tag(30)
+                    }
+                    .labelsHidden()
+                    .frame(width: 120)
                 }
             }
 
@@ -410,7 +494,7 @@ struct SettingsView: View {
                 SettingsDivider()
                 SettingsRow(
                     title: controller.usesCustomServer ? "Other server" : "Local engine",
-                    detail: controller.serverHealth
+                    detail: controller.speechSetupSummary
                 ) {
                     HStack(spacing: 8) {
                         Circle()
@@ -419,6 +503,17 @@ struct SettingsView: View {
                         Button("Check") { Task { await controller.refreshBackendStatus() } }
                             .buttonStyle(QuietButtonStyle())
                     }
+                }
+            }
+
+            SettingsGroup(title: "Getting started") {
+                SettingsRow(title: "Review setup", detail: "Check permissions and try your first dictation again.") {
+                    Button("Show setup") {
+                        controller.onboarded = false
+                        AppContext.appDelegate?.showMainWindow()
+                    }
+                    .buttonStyle(QuietButtonStyle())
+                    .disabled(controller.phase == .recording || controller.phase == .preparing || controller.phase == .processing)
                 }
             }
 
@@ -434,14 +529,14 @@ struct SettingsView: View {
 
     private var permissionsPane: some View {
         VStack(alignment: .leading, spacing: 20) {
-            SettingsPageHeader(title: "Permissions", detail: "Two permissions make dictation work anywhere.")
+            SettingsPageHeader(title: "Permissions", detail: "Manage microphone access and writing in other apps.")
 
             SettingsGroup(title: "Microphone") {
                 PermissionSettingsRow(
                     icon: "mic.fill",
                     title: controller.micPermission == .granted ? "Microphone allowed" : "Microphone access needed",
                     detail: controller.micPermission == .granted
-                        ? "Omil can record. Raw audio is discarded after transcription."
+                        ? "Omil can hear you during dictation. Manage saved recordings in General."
                         : "Allow access before starting a recording.",
                     granted: controller.micPermission == .granted,
                     actionTitle: controller.micPermission == .denied ? "Open Settings" : "Allow"
@@ -450,13 +545,13 @@ struct SettingsView: View {
                 }
             }
 
-            SettingsGroup(title: "Typing into apps") {
+            SettingsGroup(title: "Writing in other apps") {
                 PermissionSettingsRow(
                     icon: "cursorarrow.motionlines",
-                    title: controller.axTrusted ? "Direct insertion allowed" : "Accessibility access needed",
+                    title: controller.axTrusted ? "Accessibility allowed" : "Accessibility access needed",
                     detail: controller.axTrusted
-                        ? "Omil can type the result into the field you started from."
-                        : "Without it, Omil keeps the result ready to copy and paste.",
+                        ? "Your transcript appears where you started dictating."
+                        : "Allow access to put your transcript directly in other apps.",
                     granted: controller.axTrusted,
                     actionTitle: controller.axTrusted ? "Check again" : "Allow"
                 ) {
@@ -479,8 +574,8 @@ struct SettingsView: View {
 
             SettingsGroup(title: "Push to talk") {
                 SettingsRow(
-                    title: HotkeyManager.shared.pushToTalkName,
-                    detail: recordingShortcut ? "Press one modifier key now." : "Hold to record. Release to transcribe."
+                    title: recordingShortcut ? "Press a shortcut" : hotkeys.pushToTalkName,
+                    detail: recordingShortcut ? (shortcutError.isEmpty ? "A modifier key or a key combination." : shortcutError) : "Hold to speak. Release to transcribe."
                 ) {
                     if recordingShortcut {
                         Button("Cancel") { stopShortcutCapture() }
@@ -501,15 +596,7 @@ struct SettingsView: View {
                     .labelsHidden()
                     .toggleStyle(.switch)
                 }
-                SettingsDivider()
-                HStack(spacing: 9) {
-                    Image(systemName: "info.circle")
-                    Text("Background shortcuts need Input Monitoring access. The recorder buttons always work.")
-                }
-                .font(.system(size: 10))
-                .foregroundStyle(OmilTheme.faint)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
+
             }
         }
     }
@@ -537,7 +624,7 @@ private struct SettingsGroup<Content: View>: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
-            Text(title.uppercased())
+            Text(title)
                 .font(OmilType.utility(9, weight: .bold))
                 .tracking(0.8)
                 .foregroundStyle(OmilTheme.faint)

@@ -54,6 +54,8 @@ final class DictationController: ObservableObject {
         }
     }
 
+    enum RecordingSource { case app, shortcut, menuBar }
+    @Published private(set) var recordingSource: RecordingSource = .app
     @Published var phase: Phase = .idle
     @Published var draftText = ""
     @Published var lastRaw = ""
@@ -67,6 +69,8 @@ final class DictationController: ObservableObject {
         didSet { UserDefaults.standard.set(cleanupMode.rawValue, forKey: "omil.mode") }
     }
     @Published var history: [HistoryEntry] = []
+    @Published private(set) var recoveryRecordings: [RecoveryRecording] = []
+    @Published private(set) var audioRetentionDays = 7
     @Published var lastReceipt: InsertionReceipt?
     @Published var lastDeliveryMethod = ""
     @Published var micPermission: MicPermission = .unknown
@@ -74,10 +78,20 @@ final class DictationController: ObservableObject {
     @Published var serverConfig = ServerConfig()
     @Published var externalServerConfig = ServerConfig(host: "", port: 3217)
     @Published private(set) var usesCustomServer = false
+    @Published private(set) var lanSharingEnabled = false
+    @Published private(set) var lanCredentials: LANConnectionCredentials?
     @Published var serverNote = ""
+    var speechSetupSummary: String {
+        if serverIsReady {
+            return usesCustomServer ? "Connected to your transcription server." : "Speech models are ready on this Mac."
+        }
+        return serverHealth
+    }
     @Published var serverHealth = "Unknown"
     @Published var whisperFile = "ggml-large-v3-turbo.bin"
     @Published var llmFile = "Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
+    @Published private(set) var pendingWhisperFile: String?
+    @Published private(set) var pendingLLMFile: String?
     @Published var promptText = ""
     @Published var promptCustom = false
     @Published var serverOpNote = ""
@@ -89,7 +103,10 @@ final class DictationController: ObservableObject {
         didSet { UserDefaults.standard.set(pillEnabled, forKey: "omil.pillEnabled") }
     }
     @Published var appearance: AppearancePreference = .system {
-        didSet { UserDefaults.standard.set(appearance.rawValue, forKey: "omil.appearance") }
+        didSet {
+            UserDefaults.standard.set(appearance.rawValue, forKey: "omil.appearance")
+            AppAppearance.shared.apply(appearance)
+        }
     }
     @Published private(set) var snippets: [Snippet] = []
     @Published var personalStyle: WritingStyle = .casual {
@@ -157,6 +174,11 @@ final class DictationController: ObservableObject {
     private var dictionary = PersonalDictionary()
     private var lastMeterTimestamp: Double = -.infinity
     private let localServer: LocalServerManager
+    private let recoveryStore = RecoveryAudioStore()
+    private let recoveryBuffer = RecoveryAudioBuffer()
+    private var startAttempt = UUID()
+    private var recoveryIDsBySession: [SessionID: UUID] = [:]
+    let recoveryPlayback = RecoveryPlayback()
     private var cancellables = Set<AnyCancellable>()
 
     init(localServer: LocalServerManager) {
@@ -169,11 +191,14 @@ final class DictationController: ObservableObject {
         history = LocalHistory.loadHistory()
         historyEnabled = UserDefaults.standard.object(forKey: "omil.historyEnabled") as? Bool ?? true
         if !historyEnabled { history = [] }
+        audioRetentionDays = UserDefaults.standard.object(forKey: "omil.audioRetentionDays") as? Int ?? 7
+        recoveryRecordings = recoveryStore.load(retentionDays: audioRetentionDays)
         if let data = UserDefaults.standard.data(forKey: "omil.serverConfig"),
            let cfg = try? JSONDecoder().decode(ServerConfig.self, from: data) {
             externalServerConfig = cfg
         }
         usesCustomServer = UserDefaults.standard.bool(forKey: "omil.usesCustomServer")
+        lanSharingEnabled = UserDefaults.standard.bool(forKey: "omil.lanSharingEnabled")
         if usesCustomServer { serverConfig = externalServerConfig }
         whisperFile = UserDefaults.standard.string(forKey: "omil.whisperFile") ?? whisperFile
         llmFile = UserDefaults.standard.string(forKey: "omil.llmFile") ?? llmFile
@@ -194,16 +219,21 @@ final class DictationController: ObservableObject {
             self.serverHealth = message
             self.assetState = message
         }.store(in: &cancellables)
+        localServer.$sharedCredentials.sink { [weak self] credentials in
+            self?.lanCredentials = credentials
+        }.store(in: &cancellables)
     }
 
     /// Post-launch startup: hotkeys plus either the app-owned local server or
     /// the user's explicit custom-server override.
     func startup() {
+        AppAppearance.shared.apply(appearance)
         NSLog("Omil: startup")
         refreshMicPermission()
-        HotkeyManager.shared.onPushStart = { [weak self] in self?.start() }
+        HotkeyManager.shared.onPushStart = { [weak self] in self?.start(source: .shortcut) }
         HotkeyManager.shared.onPushStop = { [weak self] in self?.stop() }
-        HotkeyManager.shared.onToggle = { [weak self] in self?.toggle() }
+        HotkeyManager.shared.onToggle = { [weak self] in self?.toggle(source: .shortcut) }
+        HotkeyManager.shared.canCancel = { [weak self] in self?.phase == .recording || self?.phase == .preparing }
         HotkeyManager.shared.onCancel = { [weak self] in self?.cancel() }
         HotkeyManager.shared.start()
         Task {
@@ -222,11 +252,14 @@ final class DictationController: ObservableObject {
         let value = serverHealth.lowercased()
         return serverConfig.isConfigured
             && value.contains("binaries ok")
-            && value.contains("whisper ready")
-            && value.contains("qwen ready")
+            && modelIsDownloaded(file: whisperFile) == true
+            && modelIsDownloaded(file: llmFile) == true
             && !value.contains("unreachable")
             && !value.contains("failed")
     }
+
+    var displayedWhisperFile: String { pendingWhisperFile ?? whisperFile }
+    var displayedLLMFile: String { pendingLLMFile ?? llmFile }
 
     func requestAXTrust() {
         ax.requestTrust()
@@ -316,13 +349,60 @@ final class DictationController: ObservableObject {
         Task { await activateManagedServer(restart: true) }
     }
 
+    func setLANSharing(_ enabled: Bool) {
+        guard !usesCustomServer else {
+            serverOpNote = "Switch back to this Mac before changing network access."
+            return
+        }
+        guard phase != .recording, phase != .preparing, phase != .processing else {
+            serverOpNote = "Finish the current dictation before changing network access."
+            return
+        }
+        lanSharingEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "omil.lanSharingEnabled")
+        serverOpNote = enabled ? "Opening the engine to your local network." : "Blocking local network connections."
+        Task { await activateManagedServer(restart: true) }
+    }
+
+    func regenerateLANToken() {
+        guard !usesCustomServer else { return }
+        guard phase != .recording, phase != .preparing, phase != .processing else {
+            serverOpNote = "Finish the current dictation before replacing the connection token."
+            return
+        }
+        serverHealth = "Replacing connection token"
+        serverOpNote = "Replacing the token and restarting the local engine."
+        Task {
+            do {
+                serverConfig = try await localServer.regenerateToken(
+                    allowLANAccess: lanSharingEnabled
+                )
+                await refreshCurrentServerHealth()
+                await fetchServerModels()
+                serverOpNote = "New connection token ready. Other devices must use it."
+            } catch {
+                serverHealth = "Local engine failed: \(error.localizedDescription)"
+                serverOpNote = "Could not replace the connection token."
+            }
+        }
+    }
+
+    func copyLANCredentials() {
+        guard let credentials = lanCredentials else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(credentials.copyText, forType: .string)
+        serverOpNote = "Connection details copied."
+    }
+
     private func activateManagedServer(restart: Bool = false) async {
         serverHealth = restart ? "Restarting local engine" : "Starting local engine"
         assetState = serverHealth
         serverOpNote = ""
         serverModels = []
         do {
-            let config = try await (restart ? localServer.restart() : localServer.start())
+            let config = try await (restart
+                ? localServer.restart(allowLANAccess: lanSharingEnabled)
+                : localServer.start(allowLANAccess: lanSharingEnabled))
             serverConfig = config
             await refreshCurrentServerHealth()
             await fetchServerModels()
@@ -377,46 +457,42 @@ final class DictationController: ObservableObject {
 
     @Published var serverModels: [ServerModelInfo] = []
 
-    /// Persist a model selection without downloading it. The Engine screen
-    /// presents an explicit download action when the selected model is absent.
-    func selectWhisperModel() {
-        UserDefaults.standard.set(whisperFile, forKey: "omil.whisperFile")
-        selectModel(id: ServerCatalog.whisperIdForFile[whisperFile], kind: "whisper")
+    /// Model choice belongs to this client. Missing weights download first;
+    /// the current model remains usable until verification succeeds.
+    func chooseWhisperModel(file: String) {
+        chooseModel(file: file, kind: "whisper")
     }
 
-    func selectLLMModel() {
-        UserDefaults.standard.set(llmFile, forKey: "omil.llmFile")
-        selectModel(id: ServerCatalog.llmIdForFile[llmFile], kind: "llm")
+    func chooseLLMModel(file: String) {
+        chooseModel(file: file, kind: "llm")
     }
 
-    private func selectModel(id: String?, kind: String) {
-        let role = kind == "whisper" ? "transcription" : "cleanup"
-        serverOpNote = "Switching \(role) model"
-        Task {
-            guard let id,
-                  let req = serverRequest(path: "/v1/models/select", method: "POST",
-                                           jsonBody: [kind: id]) else {
-                await MainActor.run { self.serverOpNote = "Server not configured" }
-                return
-            }
-            do {
-                let (data, response) = try await URLSession.shared.data(for: req)
-                guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-                    await MainActor.run { self.serverOpNote = "Server rejected selection" }
-                    return
-                }
-                _ = data
-                await self.fetchServerModels()
-                await self.refreshCurrentServerHealth()
-                let model = self.serverModels.first(where: { $0.id == id })
-                await MainActor.run {
-                    self.serverOpNote = model?.downloaded == false
-                        ? "Selected model needs to be downloaded."
-                        : "Model switched."
-                }
-            } catch {
-                await MainActor.run { self.serverOpNote = "Selection failed: server unreachable?" }
-            }
+    private func chooseModel(file: String, kind: String) {
+        let known = kind == "whisper"
+            ? ServerCatalog.whisperIdForFile[file] != nil
+            : ServerCatalog.llmIdForFile[file] != nil
+        guard known else { return }
+        if modelIsDownloaded(file: file) == true {
+            activateModel(file: file, kind: kind)
+            serverOpNote = kind == "whisper"
+                ? "Transcription model switched for this Mac."
+                : "Cleanup model switched for this Mac."
+            return
+        }
+        if kind == "whisper" { pendingWhisperFile = file } else { pendingLLMFile = file }
+        serverOpNote = "Downloading before switching. The current model remains available."
+        downloadModel(file: file)
+    }
+
+    private func activateModel(file: String, kind: String) {
+        if kind == "whisper" {
+            whisperFile = file
+            pendingWhisperFile = nil
+            UserDefaults.standard.set(file, forKey: "omil.whisperFile")
+        } else {
+            llmFile = file
+            pendingLLMFile = nil
+            UserDefaults.standard.set(file, forKey: "omil.llmFile")
         }
     }
 
@@ -448,16 +524,6 @@ final class DictationController: ObservableObject {
             }
             await MainActor.run {
                 if self.serverModels != models { self.serverModels = models }
-                if let selectedWhisper = models.first(where: { $0.kind == "whisper" && $0.selected }) {
-                    if self.whisperFile != selectedWhisper.filename {
-                        self.whisperFile = selectedWhisper.filename
-                    }
-                }
-                if let selectedLLM = models.first(where: { $0.kind == "llm" && $0.selected }) {
-                    if self.llmFile != selectedLLM.filename {
-                        self.llmFile = selectedLLM.filename
-                    }
-                }
             }
         } catch { /* server not up yet */ }
     }
@@ -530,6 +596,43 @@ final class DictationController: ObservableObject {
         Task { await downloadModel(model, with: request) }
     }
 
+    func deleteModel(file: String) {
+        guard downloadingModelIDs.isEmpty,
+              let model = serverModels.first(where: { $0.filename == file }),
+              model.downloaded,
+              let request = serverRequest(
+                path: "/v1/models/delete",
+                method: "POST",
+                jsonBody: ["model": model.id]
+              ) else { return }
+        if file == whisperFile || file == llmFile {
+            guard let fallback = serverModels.first(where: {
+                $0.kind == model.kind && $0.downloaded && $0.filename != file
+            }) else {
+                serverOpNote = "Download another \(model.kind == "whisper" ? "transcription" : "cleanup") model before deleting the active one."
+                return
+            }
+            activateModel(file: fallback.filename, kind: model.kind)
+        }
+        serverOpNote = "Deleting \(model.filename)."
+        Task {
+            do {
+                let (data, response) = try await URLSession.shared.data(for: request)
+                let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+                guard code == 200 else {
+                    let detail = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["error"] as? String
+                    serverOpNote = "Could not delete model: \(detail ?? "server error")"
+                    return
+                }
+                await fetchServerModels()
+                await refreshCurrentServerHealth()
+                serverOpNote = "Model deleted from this Mac."
+            } catch {
+                serverOpNote = "Could not delete model: \(error.localizedDescription)"
+            }
+        }
+    }
+
     private func downloadModel(_ model: ServerModelInfo, with request: URLRequest) async {
         let targetConfig = serverConfig
         defer { downloadingModelIDs.remove(model.id) }
@@ -545,9 +648,10 @@ final class DictationController: ObservableObject {
             }
             await fetchServerModels()
             await refreshCurrentServerHealth()
+            activateModel(file: model.filename, kind: model.kind)
             serverOpNote = model.kind == "whisper"
-                ? "Transcription model downloaded."
-                : "Cleanup model downloaded."
+                ? "Transcription model downloaded and selected for this Mac."
+                : "Cleanup model downloaded and selected for this Mac."
         } catch {
             guard serverConfig == targetConfig else { return }
             serverOpNote = "Download failed: \(error.localizedDescription)"
@@ -628,9 +732,7 @@ final class DictationController: ObservableObject {
         NSLog("Omil: server health %@ at %@:%d", health, serverConfig.host, serverConfig.port)
         serverHealth = health
         assetState = health
-        guard health.lowercased().contains("whisper ready"),
-              health.lowercased().contains("qwen ready"),
-              let request = serverRequest(path: "/v1/models") else { return }
+        guard let request = serverRequest(path: "/v1/models") else { return }
         do {
             let (_, response) = try await URLSession.shared.data(for: request)
             if (response as? HTTPURLResponse)?.statusCode == 401 {
@@ -645,12 +747,11 @@ final class DictationController: ObservableObject {
 
     func prepareSelectedModels() async {
         guard !modelsPreparing else { return }
-        guard let request = serverRequest(
-            path: "/v1/models/prepare",
-            method: "POST",
-            jsonBody: [:],
-            timeout: 7_200
-        ) else { return }
+        let modelIDs = [
+            ServerCatalog.whisperIdForFile[whisperFile],
+            ServerCatalog.llmIdForFile[llmFile],
+        ].compactMap { $0 }
+        guard modelIDs.count == 2 else { return }
         let targetConfig = serverConfig
         modelsPreparing = true
         defer { modelsPreparing = false }
@@ -658,13 +759,21 @@ final class DictationController: ObservableObject {
         assetState = serverHealth
         serverOpNote = "Preparing Whisper and Qwen. You can keep using the rest of the app."
         do {
-            let (data, response) = try await URLSession.shared.data(for: request)
-            guard serverConfig == targetConfig else { return }
-            guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-                let detail = String(data: data, encoding: .utf8) ?? "unknown server error"
-                serverOpNote = "Model preparation failed: \(detail)"
-                await refreshCurrentServerHealth()
-                return
+            for modelID in modelIDs {
+                guard let request = serverRequest(
+                    path: "/v1/models/prepare",
+                    method: "POST",
+                    jsonBody: ["model": modelID],
+                    timeout: 7_200
+                ) else { return }
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard serverConfig == targetConfig else { return }
+                guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+                    let detail = String(data: data, encoding: .utf8) ?? "unknown server error"
+                    serverOpNote = "Model preparation failed: \(detail)"
+                    await refreshCurrentServerHealth()
+                    return
+                }
             }
             serverOpNote = "Models are ready."
             await fetchServerModels()
@@ -678,14 +787,19 @@ final class DictationController: ObservableObject {
 
     /// Qwen cleanup runs in the Effect/Bun service. A server failure retains
     /// the transcript in Omil instead of silently switching to Swift cleanup.
-    func serverClean(rawText: String) async throws -> (text: String, note: String) {
+    func serverClean(rawText: String, requestId: String) async throws -> (text: String, note: String) {
         let client = ServerCleanupClient(
             config: serverConfig,
             dictionary: dictionary,
             snippets: Dictionary(uniqueKeysWithValues: snippets.map { ($0.trigger, $0.expansion) }),
-            style: styleForCapturedTarget()
+            style: styleForCapturedTarget(),
+            modelId: ServerCatalog.llmIdForFile[llmFile]
         )
-        let result = try await client.clean(text: rawText, mode: cleanupMode)
+        let result = try await client.clean(
+            text: rawText,
+            mode: cleanupMode,
+            requestId: requestId
+        )
         guard !result.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw ServerCleanupError.failed(reason: "server returned an empty cleanup result")
         }
@@ -695,23 +809,30 @@ final class DictationController: ObservableObject {
     }
 
     func makeBackend() -> (any TranscriptionBackend)? {
-        ServerTranscriptionBackend(config: serverConfig)
+        ServerTranscriptionBackend(
+            config: serverConfig,
+            modelId: ServerCatalog.whisperIdForFile[whisperFile]
+        )
     }
 
     // MARK: Recording
 
-    func toggle() {
+    func toggle(source: RecordingSource = .app) {
         NSLog("Omil: toggle pressed, phase=%@", phase.rawValue)
         switch phase {
-        case .idle, .ready, .failed: start()
+        case .idle, .ready, .failed: start(source: source)
         case .recording: stop()
         case .preparing, .processing: break
         }
     }
 
-    func start() {
+    func start(source: RecordingSource = .app) {
         NSLog("Omil: start pressed, phase=%@", phase.rawValue)
         guard phase == .idle || phase == .ready || phase == .failed else { return }
+        startAttempt = UUID()
+        let attempt = startAttempt
+        recordingSource = source
+        recoveryPlayback.stop()
         refreshMicPermission()
         guard micPermission != .denied else {
             phase = .failed
@@ -726,9 +847,10 @@ final class DictationController: ObservableObject {
                 let granted = await AudioCapture.requestPermission()
                 await MainActor.run {
                     self.micPermission = granted ? .granted : .denied
+                    guard self.startAttempt == attempt, self.phase == .preparing else { return }
                     if granted {
                         self.phase = .idle
-                        self.start()
+                        self.start(source: source)
                     } else {
                         self.phase = .failed
                         self.statusMessage = "Microphone access denied. Grant it in Settings → Permissions."
@@ -760,6 +882,7 @@ final class DictationController: ObservableObject {
         )
         self.session = session
         self.backend = backend
+        recoveryBuffer.reset()
         phase = .preparing
         statusMessage = axOk ? "Preparing" : "Preparing. No text field was found, so Omil will keep the result."
         draftText = ""
@@ -831,9 +954,11 @@ final class DictationController: ObservableObject {
 
     private func startCapture(backend: any TranscriptionBackend, session: DictationSession) {
         let sessionID = session.sessionId
+        let recoveryBuffer = self.recoveryBuffer
         do {
             let captureBackend = backend
             try capture.start(targetSampleRate: 16_000, targetChannels: 1) { chunk in
+                recoveryBuffer.append(chunk.pcm16)
                 let level = AudioLevelMeter.normalizedRMS(pcm16: chunk.pcm16)
                 Task { @MainActor [weak self] in
                     self?.pushAudioLevel(level, timestamp: chunk.timestamp)
@@ -852,12 +977,17 @@ final class DictationController: ObservableObject {
     }
 
     func stop() {
+        if phase == .preparing {
+            cancel()
+            return
+        }
         guard phase == .recording, let activeSession = session else { return }
         let sessionID = activeSession.sessionId
         processingStage = .transcribing
         phase = .processing
         statusMessage = "Transcribing your recording"
         capture.stop()
+        saveRecoveryAudio(for: sessionID)
         Task {
             if let result = await activeSession.stop() {
                 guard self.session?.sessionId == sessionID else { return }
@@ -871,6 +1001,11 @@ final class DictationController: ObservableObject {
                         if !self.statusMessage.hasPrefix("Could not transcribe") {
                             self.statusMessage = "Could not transcribe this recording. Check Engine and try again."
                         }
+                        self.updateRecovery(
+                            for: sessionID,
+                            state: .failed,
+                            failureReason: self.statusMessage
+                        )
                     } else {
                         self.phase = .idle
                         self.statusMessage = "Cancelled"
@@ -881,18 +1016,21 @@ final class DictationController: ObservableObject {
     }
 
     func cancel() {
-        guard phase == .recording || phase == .preparing, let activeSession = session else { return }
+        guard phase == .recording || phase == .preparing else { return }
+        let activeSession = session
+        startAttempt = UUID()
         session = nil
         backend = nil
         eventTask?.cancel()
         eventTask = nil
         capture.cancel()
+        recoveryBuffer.reset()
         phase = .idle
         draftText = ""
         resetAudioMeter()
         statusMessage = "Cancelled"
         Task {
-            await activeSession.cancel()
+            await activeSession?.cancel()
         }
     }
 
@@ -932,13 +1070,17 @@ final class DictationController: ObservableObject {
                 self.phase = .ready
                 self.lastCleaned = ""
                 self.statusMessage = "No speech was detected"
+                self.updateRecovery(for: committed.sessionId, state: .ready, transcript: "")
             }
             return
         } else {
             processingStage = .cleaning
             statusMessage = "Cleaning up your text"
             do {
-                let cleaned = try await serverClean(rawText: committed.rawSnapshot.rawText)
+                let cleaned = try await serverClean(
+                    rawText: committed.rawSnapshot.rawText,
+                    requestId: committed.sessionId.rawValue
+                )
                 text = cleaned.text
                 note = cleaned.note
             } catch {
@@ -954,6 +1096,12 @@ final class DictationController: ObservableObject {
                         cleaned: committed.rawSnapshot.rawText,
                         backend: committed.backend.displayName,
                         duration: committed.duration
+                    )
+                    self.updateRecovery(
+                        for: committed.sessionId,
+                        state: .ready,
+                        transcript: committed.rawSnapshot.rawText,
+                        failureReason: "Cleanup failed; raw transcript preserved."
                     )
                 }
                 return
@@ -1015,6 +1163,7 @@ final class DictationController: ObservableObject {
             backend: result.backend.displayName,
             duration: result.duration
         )
+        updateRecovery(for: result.sessionId, state: .ready, transcript: text)
     }
 
     private func recordHistory(raw: String, cleaned: String, backend: String, duration: Double) {
@@ -1104,6 +1253,134 @@ final class DictationController: ObservableObject {
     func deleteHistoryEntry(_ entry: HistoryEntry) {
         history.removeAll(where: { $0.id == entry.id })
         LocalHistory.saveHistory(history)
+    }
+
+    // MARK: Recovery recordings
+
+    func setAudioRetentionDays(_ days: Int) {
+        let allowed = [0, 1, 3, 7, 14, 30]
+        let value = allowed.contains(days) ? days : 7
+        audioRetentionDays = value
+        UserDefaults.standard.set(value, forKey: "omil.audioRetentionDays")
+        recoveryPlayback.stop()
+        recoveryRecordings = recoveryStore.load(retentionDays: value)
+        statusMessage = value == 0
+            ? "Saved recovery audio removed"
+            : "Recovery audio will be kept for \(value) day\(value == 1 ? "" : "s")"
+    }
+
+    func retryRecovery(_ recording: RecoveryRecording) {
+        guard phase != .recording && phase != .preparing && phase != .processing else {
+            statusMessage = "Finish the current dictation before retrying a recording."
+            return
+        }
+        guard serverIsReady else {
+            phase = .failed
+            statusMessage = "The engine is not ready. Open Engine and try again."
+            return
+        }
+        recoveryPlayback.stop()
+        let url = recoveryStore.audioURL(for: recording)
+        let requestID = "recovery-\(recording.id.uuidString.lowercased())-\(UUID().uuidString.lowercased())"
+        let transcriber = ServerTranscriptionBackend(
+            config: serverConfig,
+            modelId: ServerCatalog.whisperIdForFile[whisperFile]
+        )
+        recordingSource = .app
+        phase = .processing
+        processingStage = .transcribing
+        statusMessage = "Transcribing saved recording"
+
+        Task {
+            do {
+                let transcript = try await transcriber.transcribeFile(url: url, requestId: requestID)
+                guard !transcript.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    throw BackendError.recognitionFailed(underlying: "no speech was detected")
+                }
+                processingStage = .cleaning
+                statusMessage = "Cleaning up recovered text"
+                let cleaned = try await serverClean(rawText: transcript.text, requestId: requestID)
+                lastRaw = transcript.text
+                lastCleaned = cleaned.text
+                lastDiff = DiffUtil.diff(raw: transcript.text, cleaned: cleaned.text)
+                serverNote = cleaned.note
+                recordHistory(
+                    raw: transcript.text,
+                    cleaned: cleaned.text,
+                    backend: "Whisper recovery",
+                    duration: recording.duration
+                )
+                updateRecovery(recording.id, state: .ready, transcript: cleaned.text)
+                phase = .ready
+                statusMessage = "Recovered transcript ready"
+            } catch {
+                updateRecovery(recording.id, state: .failed, failureReason: "\(error)")
+                phase = .failed
+                statusMessage = "Could not transcribe saved recording: \(error)"
+            }
+        }
+    }
+
+    func playRecovery(_ recording: RecoveryRecording) {
+        guard phase != .recording && phase != .preparing && phase != .processing else { return }
+        recoveryPlayback.toggle(id: recording.id, url: recoveryStore.audioURL(for: recording))
+    }
+
+    func seekRecovery(_ recording: RecoveryRecording, to time: TimeInterval) {
+        guard phase != .recording && phase != .preparing && phase != .processing else { return }
+        recoveryPlayback.prepare(id: recording.id, url: recoveryStore.audioURL(for: recording))
+        recoveryPlayback.seek(to: time)
+    }
+
+    func deleteRecovery(_ recording: RecoveryRecording) {
+        if recoveryPlayback.recordingID == recording.id { recoveryPlayback.stop() }
+        do {
+            try recoveryStore.delete(recording)
+            recoveryRecordings.removeAll { $0.id == recording.id }
+            recoveryIDsBySession = recoveryIDsBySession.filter { $0.value != recording.id }
+            statusMessage = "Saved recording deleted"
+        } catch {
+            statusMessage = "Could not delete saved recording: \(error.localizedDescription)"
+        }
+    }
+
+    private func saveRecoveryAudio(for sessionID: SessionID) {
+        let pcm = recoveryBuffer.take()
+        guard audioRetentionDays > 0, !pcm.isEmpty else { return }
+        do {
+            let recording = try recoveryStore.save(pcm16: pcm)
+            recoveryIDsBySession[sessionID] = recording.id
+            recoveryRecordings.insert(recording, at: 0)
+        } catch {
+            serverNote = "Could not save recovery audio: \(error.localizedDescription)"
+        }
+    }
+
+    private func updateRecovery(
+        for sessionID: SessionID,
+        state: RecoveryRecordingState,
+        transcript: String? = nil,
+        failureReason: String? = nil
+    ) {
+        guard let id = recoveryIDsBySession[sessionID] else { return }
+        updateRecovery(id, state: state, transcript: transcript, failureReason: failureReason)
+    }
+
+    private func updateRecovery(
+        _ id: UUID,
+        state: RecoveryRecordingState,
+        transcript: String? = nil,
+        failureReason: String? = nil
+    ) {
+        guard let index = recoveryRecordings.firstIndex(where: { $0.id == id }) else { return }
+        recoveryRecordings[index].state = state
+        recoveryRecordings[index].transcript = transcript
+        recoveryRecordings[index].failureReason = failureReason
+        do {
+            try recoveryStore.update(recoveryRecordings[index])
+        } catch {
+            serverNote = "Could not update saved recording: \(error.localizedDescription)"
+        }
     }
 
     // MARK: Onboarding + stats (Hub Home)
@@ -1333,5 +1610,126 @@ enum LocalHistory {
         if let data = try? JSONEncoder().encode(snippets) {
             try? data.write(to: dir.appendingPathComponent("snippets.json"), options: .atomic)
         }
+    }
+}
+
+private final class RecoveryAudioBuffer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var data = Data()
+
+    func append(_ chunk: Data) {
+        lock.lock()
+        data.append(chunk)
+        lock.unlock()
+    }
+
+    func take() -> Data {
+        lock.lock()
+        defer { lock.unlock() }
+        let result = data
+        data = Data()
+        return result
+    }
+
+    func reset() {
+        lock.lock()
+        data = Data()
+        lock.unlock()
+    }
+}
+
+
+/// One player shared by History cards so recordings never overlap.
+@MainActor
+final class RecoveryPlayback: ObservableObject {
+    @Published private(set) var recordingID: UUID?
+    @Published private(set) var isPlaying = false
+    @Published private(set) var position: TimeInterval = 0
+    @Published private(set) var duration: TimeInterval = 0
+    @Published private(set) var errorMessage: String?
+    @Published var rate: Float = 1 {
+        didSet { player?.rate = rate }
+    }
+    @Published var volume: Float = 1 {
+        didSet { player?.volume = volume }
+    }
+
+    private var player: AVAudioPlayer?
+    private var progressTask: Task<Void, Never>?
+
+    func toggle(id: UUID, url: URL) {
+        if recordingID == id, let player {
+            if isPlaying {
+                player.pause()
+                position = player.currentTime
+                isPlaying = false
+                progressTask?.cancel()
+                return
+            }
+            if position >= duration { player.currentTime = 0 }
+        } else {
+            prepare(id: id, url: url)
+        }
+        guard let player, player.play() else {
+            errorMessage = "Couldn't start playback. Check your Mac's sound output and try again."
+            return
+        }
+        errorMessage = nil
+        isPlaying = true
+        position = player.currentTime
+        progressTask?.cancel()
+        progressTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+                guard let self, let player = self.player else { return }
+                guard player.isPlaying else {
+                    self.position = self.duration
+                    self.isPlaying = false
+                    return
+                }
+                self.position = player.currentTime
+            }
+        }
+    }
+
+    func prepare(id: UUID, url: URL) {
+        guard recordingID != id || player == nil else { return }
+        stop()
+        recordingID = id
+        do {
+            let audio = try AVAudioPlayer(contentsOf: url)
+            audio.enableRate = true
+            audio.rate = rate
+            audio.volume = volume
+            audio.prepareToPlay()
+            player = audio
+            duration = audio.duration
+        } catch {
+            errorMessage = "This recording couldn't be opened. The audio file may be missing or damaged."
+        }
+    }
+
+    func seek(to time: TimeInterval) {
+        guard let player, time.isFinite else { return }
+        let target = min(max(0, time), duration)
+        player.currentTime = target
+        position = target
+        if target >= duration {
+            player.pause()
+            isPlaying = false
+            progressTask?.cancel()
+        }
+    }
+
+    func stop() {
+        progressTask?.cancel()
+        progressTask = nil
+        player?.stop()
+        player = nil
+        recordingID = nil
+        isPlaying = false
+        position = 0
+        duration = 0
+        errorMessage = nil
     }
 }

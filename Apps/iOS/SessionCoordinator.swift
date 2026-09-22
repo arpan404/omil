@@ -74,18 +74,29 @@ final class SessionCoordinator: ObservableObject {
     }
 
     func refreshServerHealth() async {
-        let probeBackend = ServerTranscriptionBackend(config: serverConfig)
+        let probeBackend = ServerTranscriptionBackend(
+            config: serverConfig,
+            modelId: ServerCatalog.whisperIdForFile[ServerCatalog.defaultWhisperFile]
+        )
         let health = await probeBackend.serverHealth()
         await MainActor.run { self.serverHealth = health }
     }
 
-    func serverClean(rawText: String) async -> (text: String, note: String) {
+    func serverClean(rawText: String, requestId: String) async -> (text: String, note: String) {
         guard serverCleanupEnabled, cleanupMode == .clean else {
             return (rawText, "local rules")
         }
-        let client = ServerCleanupClient(config: serverConfig, dictionary: dictionary)
+        let client = ServerCleanupClient(
+            config: serverConfig,
+            dictionary: dictionary,
+            modelId: ServerCatalog.llmIdForFile[ServerCatalog.defaultLlmFile]
+        )
         do {
-            let r = try await client.clean(text: rawText, mode: cleanupMode)
+            let r = try await client.clean(
+                text: rawText,
+                mode: cleanupMode,
+                requestId: requestId
+            )
             return (r.text, "Qwen cleanup via server (\(r.acceptedEdits.count) edits)")
         } catch {
             return (rawText, "Server cleanup unavailable (\(error)); used local rules")
@@ -119,7 +130,10 @@ final class SessionCoordinator: ObservableObject {
     private func makeBackend() -> (any TranscriptionBackend)? {
         switch selector.resolve(status: status, preference: backendPreference) {
         case .omilServer:
-            return ServerTranscriptionBackend(config: serverConfig)
+            return ServerTranscriptionBackend(
+                config: serverConfig,
+                modelId: ServerCatalog.whisperIdForFile[ServerCatalog.defaultWhisperFile]
+            )
         case .appleSpeech:
             if #available(iOS 26, *) { return AppleSpeechBackend() }
             return nil
@@ -271,7 +285,10 @@ final class SessionCoordinator: ObservableObject {
             }
             return
         }
-        let cleaned = await self.serverClean(rawText: committed.rawSnapshot.rawText)
+        let cleaned = await self.serverClean(
+            rawText: committed.rawSnapshot.rawText,
+            requestId: committed.sessionId.rawValue
+        )
         let finalText = cleaned.text.isEmpty ? committed.cleaned.text : cleaned.text
         await MainActor.run { self.serverNote = cleaned.note }
         if let s = shared {

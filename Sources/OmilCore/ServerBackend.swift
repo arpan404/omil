@@ -31,14 +31,17 @@ public actor ServerTranscriptionBackend: TranscriptionBackend {
     public nonisolated let locale: String
 
     private let config: ServerConfig
+    private let modelId: String?
     private var pcm = Data()
     private var sampleRate = 16_000.0
     private var events: AsyncStream<BackendEvent>.Continuation?
     private var finished = false
+    private var requestId: String?
 
-    public init(config: ServerConfig, locale: String = "en-US") {
+    public init(config: ServerConfig, locale: String = "en-US", modelId: String? = nil) {
         self.config = config
         self.locale = locale
+        self.modelId = modelId
     }
 
     private func request(
@@ -76,8 +79,26 @@ public actor ServerTranscriptionBackend: TranscriptionBackend {
             if h.whisperBin == false {
                 throw BackendError.notAvailable(reason: "whisper.cpp binary missing on server (brew install whisper-cpp)")
             }
-            if h.whisperModelReady == false {
+            if modelId == nil, h.whisperModelReady == false {
                 throw BackendError.assetMissing(locale: "whisper weights downloading on first use — retry shortly")
+            }
+        }
+        if let modelId {
+            struct Catalog: Codable {
+                struct Model: Codable {
+                    var id: String
+                    var downloaded: Bool
+                }
+                var models: [Model]
+            }
+            let catalogRequest = try request(path: "/v1/models")
+            let (catalogData, catalogResponse) = try await URLSession.shared.data(for: catalogRequest)
+            guard (catalogResponse as? HTTPURLResponse)?.statusCode == 200 else {
+                throw BackendError.notAvailable(reason: "could not read the server model catalog")
+            }
+            let catalog = try JSONDecoder().decode(Catalog.self, from: catalogData)
+            guard catalog.models.first(where: { $0.id == modelId })?.downloaded == true else {
+                throw BackendError.assetMissing(locale: "selected transcription model is not downloaded")
             }
         }
     }
@@ -128,6 +149,7 @@ public actor ServerTranscriptionBackend: TranscriptionBackend {
         self.events = cont
         self.pcm = Data()
         self.finished = false
+        self.requestId = sessionId.rawValue
         return stream
     }
 
@@ -151,26 +173,7 @@ public actor ServerTranscriptionBackend: TranscriptionBackend {
         events = nil
         do {
             let wav = WavEncoder().encode(pcm16: pcm, sampleRate: Int(sampleRate))
-            var req = try request(
-                path: "/v1/transcribe",
-                queryItems: [URLQueryItem(name: "language", value: config.language)],
-                method: "POST", body: wav, contentType: "audio/wav")
-            req.timeoutInterval = 900
-            let (data, response) = try await URLSession.shared.data(for: req)
-            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-            guard code == 200 else {
-                let msg = String(data: data, encoding: .utf8) ?? "HTTP \(code)"
-                if code == 401 {
-                    cont.yield(.failure(.notAvailable(reason: "server rejected token (check Settings → Server)")))
-                } else if code == 503 {
-                    cont.yield(.failure(.assetMissing(locale: msg)))
-                } else {
-                    cont.yield(.failure(.recognitionFailed(underlying: msg)))
-                }
-                cont.finish()
-                return
-            }
-            let transcript = try JSONDecoder().decode(ServerTranscript.self, from: data)
+            let transcript = try await transcribe(wav: wav, requestId: requestId)
             let seg = SegmentRevision(segmentId: "whisper-0", revision: 0, text: transcript.text, isFinal: true)
             let alts = transcript.segments.enumerated().map { i, s in
                 AlternativeHypothesis(segmentId: seg.segmentId, rank: i, text: s.text, tokenTexts: s.text.split(separator: " ").map(String.init))
@@ -183,11 +186,45 @@ public actor ServerTranscriptionBackend: TranscriptionBackend {
         }
     }
 
+    /// Retries a previously saved WAV without reopening the microphone.
+    public func transcribeFile(url: URL, requestId: String = UUID().uuidString) async throws -> ServerTranscript {
+        try await transcribe(wav: Data(contentsOf: url), requestId: requestId)
+    }
+
+    private func transcribe(wav: Data, requestId: String?) async throws -> ServerTranscript {
+        var queryItems = [URLQueryItem(name: "language", value: config.language)]
+        if let modelId { queryItems.append(URLQueryItem(name: "model", value: modelId)) }
+        var req = try request(
+            path: "/v1/transcribe",
+            queryItems: queryItems,
+            method: "POST",
+            body: wav,
+            contentType: "audio/wav"
+        )
+        if let requestId { req.setValue(requestId, forHTTPHeaderField: "X-Omil-Request-ID") }
+        req.timeoutInterval = 900
+        let (data, response) = try await URLSession.shared.data(for: req)
+        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard code == 200 else {
+            let message = String(data: data, encoding: .utf8) ?? "HTTP \(code)"
+            switch code {
+            case 401:
+                throw BackendError.notAvailable(reason: "server rejected token (check Settings → Server)")
+            case 503:
+                throw BackendError.assetMissing(locale: message)
+            default:
+                throw BackendError.recognitionFailed(underlying: message)
+            }
+        }
+        return try JSONDecoder().decode(ServerTranscript.self, from: data)
+    }
+
     public func cancelStreaming() async {
         finished = true
         events?.finish()
         events = nil
         pcm = Data()
+        requestId = nil
     }
 }
 
@@ -262,20 +299,27 @@ public struct ServerCleanupClient: Sendable {
     public var dictionary: PersonalDictionary
     public var snippets: [String: String]
     public var style: WritingStyle
+    public var modelId: String?
 
     public init(
         config: ServerConfig,
         dictionary: PersonalDictionary = PersonalDictionary(),
         snippets: [String: String] = [:],
-        style: WritingStyle = .automatic
+        style: WritingStyle = .automatic,
+        modelId: String? = nil
     ) {
         self.config = config
         self.dictionary = dictionary
         self.snippets = snippets
         self.style = style
+        self.modelId = modelId
     }
 
-    public func clean(text: String, mode: CleanupMode) async throws -> ServerCleanedResult {
+    public func clean(
+        text: String,
+        mode: CleanupMode,
+        requestId: String? = nil
+    ) async throws -> ServerCleanedResult {
         guard config.baseURL != nil, config.isConfigured else {
             throw ServerCleanupError.notConfigured
         }
@@ -286,14 +330,16 @@ public struct ServerCleanupClient: Sendable {
         req.httpMethod = "POST"
         req.setValue("Bearer \(config.token)", forHTTPHeaderField: "Authorization")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let requestId { req.setValue(requestId, forHTTPHeaderField: "X-Omil-Request-ID") }
         req.timeoutInterval = 300
-        let body: [String: Any] = [
+        var body: [String: Any] = [
             "text": text,
             "mode": mode == .verbatim ? "verbatim" : "clean",
             "dictionary": dictionary.entries,
             "snippets": snippets,
             "style": style.rawValue,
         ]
+        if let modelId { body["model"] = modelId }
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (data, response) = try await URLSession.shared.data(for: req)
         let code = (response as? HTTPURLResponse)?.statusCode ?? 0

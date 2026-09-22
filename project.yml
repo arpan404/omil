@@ -75,11 +75,29 @@ targets:
         INFOPLIST_FILE: Apps/Keyboard/Info.plist
         CODE_SIGN_ENTITLEMENTS: Apps/Keyboard/OmilKeyboard.entitlements
 
+  OmilMacTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Tests/OmilMacTests
+    dependencies:
+      - target: OmilMac
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.arpan404.omil.tests
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Omil.app/Contents/MacOS/Omil"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+
 schemes:
   OmilMac:
     build:
       targets:
         OmilMac: all
+    test:
+      targets:
+        - OmilMacTests
     run:
       config: Debug
       environmentVariables:

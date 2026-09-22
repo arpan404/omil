@@ -44,9 +44,30 @@ export const MODELS: ReadonlyArray<ModelSpec> = [
     expectedBytes: null, description: "Whisper medium (769M) — high accuracy, slower",
   },
   {
+    id: "distil-whisper-medium-en", kind: "whisper",
+    url: "https://huggingface.co/distil-whisper/distil-medium.en/resolve/main/ggml-medium-32-2.en.bin",
+    filename: "ggml-medium-32-2.en.bin",
+    expectedBytes: 794_018_180,
+    description: "Distil-Whisper medium English — fast English transcription from Hugging Face",
+  },
+  {
+    id: "distil-whisper-large-v3", kind: "whisper",
+    url: "https://huggingface.co/distil-whisper/distil-large-v3-ggml/resolve/main/ggml-distil-large-v3.bin",
+    filename: "ggml-distil-large-v3.bin",
+    expectedBytes: 1_519_521_155,
+    description: "Distil-Whisper large-v3 English — faster long-form English model from Hugging Face",
+  },
+  {
     id: "whisper-large-v3", kind: "whisper",
     url: `${WHISPER_REPO}/ggml-large-v3.bin`, filename: "ggml-large-v3.bin",
     expectedBytes: null, description: "OpenAI Whisper large-v3 (1.55B) — most accurate",
+  },
+  {
+    id: "whisper-large-v3-q5", kind: "whisper",
+    url: `${WHISPER_REPO}/ggml-large-v3-q5_0.bin`,
+    filename: "ggml-large-v3-q5_0.bin",
+    expectedBytes: null,
+    description: "Whisper large-v3 Q5 — high accuracy with a smaller memory footprint",
   },
   {
     id: "whisper-large-v3-turbo",
@@ -55,6 +76,20 @@ export const MODELS: ReadonlyArray<ModelSpec> = [
     filename: "ggml-large-v3-turbo.bin",
     expectedBytes: 1_624_345_968,
     description: "OpenAI Whisper large-v3-turbo (809M params), whisper.cpp format",
+  },
+  {
+    id: "whisper-large-v3-turbo-q5", kind: "whisper",
+    url: `${WHISPER_REPO}/ggml-large-v3-turbo-q5_0.bin`,
+    filename: "ggml-large-v3-turbo-q5_0.bin",
+    expectedBytes: null,
+    description: "Whisper large-v3-turbo Q5 — recommended balance of speed, size, and accuracy",
+  },
+  {
+    id: "whisper-large-v3-turbo-q8", kind: "whisper",
+    url: `${WHISPER_REPO}/ggml-large-v3-turbo-q8_0.bin`,
+    filename: "ggml-large-v3-turbo-q8_0.bin",
+    expectedBytes: null,
+    description: "Whisper large-v3-turbo Q8 — smaller than full precision with higher fidelity than Q5",
   },
   {
     id: "qwen3-0.6b",
@@ -79,6 +114,27 @@ export const MODELS: ReadonlyArray<ModelSpec> = [
     filename: "Qwen3-8B-Q4_K_M.gguf",
     expectedBytes: 5_027_784_512,
     description: "Qwen3 8B Instruct, Q4_K_M — best repair quality, needs 8GB+ headroom",
+  },
+  {
+    id: "qwen3.5-0.8b", kind: "llm",
+    url: "https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-Q4_K_M.gguf",
+    filename: "Qwen3.5-0.8B-Q4_K_M.gguf",
+    expectedBytes: null,
+    description: "Qwen3.5 0.8B, Q4_K_M — newest compact option, requires current llama.cpp",
+  },
+  {
+    id: "qwen3.5-4b", kind: "llm",
+    url: "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf",
+    filename: "Qwen3.5-4B-Q4_K_M.gguf",
+    expectedBytes: null,
+    description: "Qwen3.5 4B, Q4_K_M — newer balanced cleanup model, requires current llama.cpp",
+  },
+  {
+    id: "qwen3.5-9b", kind: "llm",
+    url: "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf",
+    filename: "Qwen3.5-9B-Q4_K_M.gguf",
+    expectedBytes: null,
+    description: "Qwen3.5 9B, Q4_K_M — highest-capacity catalog option, needs more memory",
   },
 ]
 

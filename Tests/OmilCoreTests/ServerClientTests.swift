@@ -104,9 +104,13 @@ enum ServerAssetsMirror {
     static let pinnedIds: Set<String> = [
         "whisper-bin", "llama-bin",
         "ggml-tiny.bin", "ggml-base.bin", "ggml-small.bin",
-        "ggml-medium.bin", "ggml-large-v3-turbo.bin", "ggml-large-v3.bin",
+        "ggml-medium.bin", "ggml-medium-32-2.en.bin",
+        "ggml-distil-large-v3.bin", "ggml-large-v3-turbo-q5_0.bin",
+        "ggml-large-v3-turbo-q8_0.bin", "ggml-large-v3-turbo.bin",
+        "ggml-large-v3-q5_0.bin", "ggml-large-v3.bin",
         "Qwen3-0.6B-Q4_K_M.gguf", "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
-        "Qwen3-8B-Q4_K_M.gguf",
+        "Qwen3-8B-Q4_K_M.gguf", "Qwen3.5-0.8B-Q4_K_M.gguf",
+        "Qwen3.5-4B-Q4_K_M.gguf", "Qwen3.5-9B-Q4_K_M.gguf",
     ]
     static func pinExists(_ id: String) -> Bool { pinnedIds.contains(id) }
 }

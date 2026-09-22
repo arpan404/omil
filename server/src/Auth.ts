@@ -24,7 +24,7 @@ export const loadOrCreateToken = (dataDir: string): Effect.Effect<string, never,
     const token = randomBytes(24).toString("base64url")
     await writeFile(file, token, { mode: 0o600 })
     await chmod(file, 0o600)
-    console.log(`\nNew Omil server token (enter it in the Mac/iOS app Settings):\n\n    ${token}\n`)
+    console.log("generated a new Omil server token")
     return token
   })
 

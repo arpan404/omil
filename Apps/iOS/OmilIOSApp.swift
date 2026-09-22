@@ -29,7 +29,7 @@ struct ContentView: View {
                     Text(title)
                         .font(.title2.bold())
                     Spacer()
-                    Text("on-device")
+                    Text(coordinator.backendPreference == .omilServer ? "your Mac" : "on-device")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -189,7 +189,7 @@ struct SettingsView: View {
                 }
             }
             Section("Omil server (your Mac)") {
-                Text("Enter your Mac's LAN address and the token the server printed on first boot. Audio stays on your LAN.")
+                Text("In the Omil Mac app, open Engine and turn on Share on local network. Copy the host, port, and token shown there.")
                     .font(.caption)
                 TextField("Mac host/IP", text: $coordinator.serverConfig.host)
                     .textInputAutocapitalization(.never)
@@ -230,7 +230,7 @@ struct SettingsView: View {
                     .font(.caption)
             }
             Section("Privacy") {
-                Text("Audio, transcripts, and cleanup stay on this device. No account. Works offline after assets are installed.")
+                Text("With the Omil server selected, audio and preferences travel only to your Mac over the local network. Omil does not require an account.")
                     .font(.caption)
             }
         }

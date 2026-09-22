@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { ModelRuntimeLifecycle } from "../src/ModelRuntime"
-import { checkModelReady } from "../src/Models"
+import { checkModelReady, deleteModel } from "../src/Models"
 import type { ServerConfig } from "../src/Config"
 
 describe("model runtime lifecycle", () => {
@@ -77,6 +77,31 @@ describe("model file lifecycle", () => {
       await writeFile(path.join(dir, "ggml-large-v3.bin"), new Uint8Array([1, 2, 3]))
 
       expect(await Effect.runPromise(checkModelReady(cfg, "whisper-large-v3"))).toBe(false)
+    } finally {
+      await rm(dataDir, { recursive: true, force: true })
+    }
+  })
+
+  test("deleting a model removes its file and readiness state", async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), "omil-model-delete-"))
+    const cfg: ServerConfig = {
+      host: "127.0.0.1",
+      port: 3217,
+      dataDir,
+      whisperBin: "whisper-cli",
+      llamaBin: "llama-server",
+      llamaPort: 3218,
+      whisperModelId: "whisper-large-v3-turbo",
+      llmModelId: "qwen3-4b-instruct",
+    }
+    try {
+      const dir = path.join(dataDir, "models")
+      await mkdir(dir, { recursive: true })
+      await writeFile(path.join(dir, "ggml-large-v3-turbo.bin"), new Uint8Array([1, 2, 3]))
+
+      expect(await Effect.runPromise(deleteModel(cfg, "whisper-large-v3-turbo"))).toBe(true)
+      expect(await Bun.file(path.join(dir, "ggml-large-v3-turbo.bin")).exists()).toBe(false)
+      expect(await Effect.runPromise(checkModelReady(cfg, "whisper-large-v3-turbo"))).toBe(false)
     } finally {
       await rm(dataDir, { recursive: true, force: true })
     }

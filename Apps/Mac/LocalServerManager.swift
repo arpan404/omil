@@ -1,5 +1,17 @@
 import Foundation
 import OmilCore
+import Security
+
+struct LANConnectionCredentials: Equatable {
+    let host: String
+    let port: Int
+    let token: String
+
+    var endpoint: String { "http://\(host):\(port)" }
+    var copyText: String {
+        "Omil server\nHost: \(host)\nPort: \(port)\nToken: \(token)"
+    }
+}
 
 /// Owns the bundled Effect/Bun server for the normal Mac experience.
 /// A custom server is an explicit override managed by DictationController.
@@ -13,15 +25,17 @@ final class LocalServerManager: ObservableObject {
     }
 
     @Published private(set) var state: State = .stopped
+    @Published private(set) var sharedCredentials: LANConnectionCredentials?
 
     private var process: Process?
     private var logHandle: FileHandle?
     private var activeConfig: ServerConfig?
+    private var activeLANAccess = false
 
     var isRunning: Bool { process?.isRunning == true }
 
-    func start() async throws -> ServerConfig {
-        if let activeConfig, isRunning { return activeConfig }
+    func start(allowLANAccess: Bool = false) async throws -> ServerConfig {
+        if let activeConfig, isRunning, activeLANAccess == allowLANAccess { return activeConfig }
 
         stop()
         state = .starting
@@ -46,7 +60,7 @@ final class LocalServerManager: ObservableObject {
         child.standardError = log
 
         var environment = ProcessInfo.processInfo.environment
-        environment["OMIL_HOST"] = "127.0.0.1"
+        environment["OMIL_HOST"] = allowLANAccess ? "0.0.0.0" : "127.0.0.1"
         environment["OMIL_PORT"] = String(ports.api)
         environment["OMIL_LLAMA_PORT"] = String(ports.llama)
         environment["OMIL_DATA"] = root.path
@@ -73,6 +87,8 @@ final class LocalServerManager: ObservableObject {
                 guard let self, self.process?.processIdentifier == launchedPID else { return }
                 self.process = nil
                 self.activeConfig = nil
+                self.activeLANAccess = false
+                self.sharedCredentials = nil
                 try? self.logHandle?.close()
                 self.logHandle = nil
                 self.state = .failed("The local server exited with status \(status).")
@@ -80,6 +96,7 @@ final class LocalServerManager: ObservableObject {
         }
         let config = ServerConfig(host: "127.0.0.1", port: ports.api, token: token)
         activeConfig = config
+        activeLANAccess = allowLANAccess
 
         for _ in 0..<60 {
             if !child.isRunning {
@@ -89,6 +106,13 @@ final class LocalServerManager: ObservableObject {
             }
             if await responds(at: config) {
                 state = .running(port: ports.api)
+                sharedCredentials = allowLANAccess
+                    ? LANConnectionCredentials(
+                        host: preferredLANHost(),
+                        port: ports.api,
+                        token: token
+                    )
+                    : nil
                 return config
             }
             try await Task.sleep(for: .milliseconds(200))
@@ -100,9 +124,35 @@ final class LocalServerManager: ObservableObject {
         throw LocalServerError.startupFailed(message)
     }
 
-    func restart() async throws -> ServerConfig {
+    func restart(allowLANAccess: Bool = false) async throws -> ServerConfig {
+        await stopAndWait()
+        return try await start(allowLANAccess: allowLANAccess)
+    }
+
+    func regenerateToken(allowLANAccess: Bool) async throws -> ServerConfig {
+        await stopAndWait()
+        let fileManager = FileManager.default
+        let root = try serverDirectory(fileManager: fileManager)
+        let tokenURL = root.appendingPathComponent("omil-token")
+        if fileManager.fileExists(atPath: tokenURL.path) {
+            try fileManager.removeItem(at: tokenURL)
+        }
+        return try await start(allowLANAccess: allowLANAccess)
+    }
+
+    private func stopAndWait() async {
+        guard let running = process, running.isRunning else {
+            stop()
+            return
+        }
+        running.terminate()
+        for _ in 0..<40 where running.isRunning {
+            try? await Task.sleep(for: .milliseconds(25))
+        }
+        if running.isRunning {
+            running.interrupt()
+        }
         stop()
-        return try await start()
     }
 
     func stop() {
@@ -113,6 +163,8 @@ final class LocalServerManager: ObservableObject {
         activeConfig = nil
         try? logHandle?.close()
         logHandle = nil
+        activeLANAccess = false
+        sharedCredentials = nil
         state = .stopped
     }
 
@@ -156,8 +208,17 @@ final class LocalServerManager: ObservableObject {
             return value
         }
 
-        let value = (UUID().uuidString + UUID().uuidString)
-            .replacingOccurrences(of: "-", with: "")
+        var bytes = [UInt8](repeating: 0, count: 32)
+        let value: String
+        if SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess {
+            value = Data(bytes).base64EncodedString()
+                .replacingOccurrences(of: "+", with: "-")
+                .replacingOccurrences(of: "/", with: "_")
+                .replacingOccurrences(of: "=", with: "")
+        } else {
+            value = (UUID().uuidString + UUID().uuidString)
+                .replacingOccurrences(of: "-", with: "")
+        }
         try value.write(to: url, atomically: true, encoding: .utf8)
         try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         return value
@@ -200,6 +261,18 @@ final class LocalServerManager: ObservableObject {
             "/usr/local/bin/\(name)"
         ].compactMap { $0 }
         return candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) })
+    }
+
+    private func preferredLANHost() -> String {
+        if let address = Host.current().addresses.first(where: { candidate in
+            let parts = candidate.split(separator: ".")
+            return parts.count == 4
+                && candidate != "127.0.0.1"
+                && !candidate.hasPrefix("169.254.")
+        }) {
+            return address
+        }
+        return ProcessInfo.processInfo.hostName
     }
 }
 

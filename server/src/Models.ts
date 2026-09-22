@@ -250,6 +250,33 @@ export const ensureModel = (
     catch: (error) => error instanceof ModelError ? error : new ModelError(String(error)),
   })
 
+/** Delete one downloaded weight and its local integrity record. */
+export const deleteModel = (
+  cfg: ServerConfig,
+  id: string,
+): Effect.Effect<boolean, ModelError, never> =>
+  Effect.tryPromise({
+    try: async () => {
+      const spec = modelSpec(id)
+      if (!spec) throw new ModelError(`unknown model ${id}`)
+      const key = operationKey(cfg, id)
+      if (inFlight.has(key)) {
+        throw new ModelError(`${spec.filename} is still downloading`)
+      }
+      const destination = modelPath(cfg, id)
+      const existed = await Bun.file(destination).exists()
+      await rm(destination, { force: true })
+      const manifest = await readManifest(cfg)
+      if (manifest[spec.filename]) {
+        delete manifest[spec.filename]
+        await writeManifest(cfg, manifest)
+      }
+      operations.delete(key)
+      return existed
+    },
+    catch: (error) => error instanceof ModelError ? error : new ModelError(String(error)),
+  })
+
 function sizeMatches(expected: number | null, actual: number, contentLength?: number): boolean {
   if (expected !== null) return Math.abs(actual - expected) / expected < 0.05
   // Unpinned catalog entry: require byte-exact match with the download itself.

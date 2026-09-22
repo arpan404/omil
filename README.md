@@ -1,75 +1,103 @@
 # Omil
 
-Local-first dictation for Mac, iPhone, and iPad. Hold a shortcut, speak
-naturally, release, and get faithful cleaned text.
+Omil is local voice dictation for macOS. Hold Right Option, speak, and release
+to insert the result into the app you were using. A selected Whisper model
+transcribes the audio. A hybrid pipeline combines deterministic correction
+rules with a selected Qwen model, then validates every proposed edit.
 
-- `"make it 42, sorry 21"` → `"Make it 21."` (repairs resolved, cues removed)
-- `"make it 42, sorry 21, keep the original"` → `"Make it 42."` (reversals)
-- `"Do not send 42. Send 21."` stays intact (negation/scope preserved)
+Inference runs on your Mac. Omil does not require an account or send recordings
+to a hosted transcription service.
 
-## Architecture
+> Omil is under active development. The Mac app is the primary client. The iOS
+> app and keyboard extension are present in the repository but still need
+> physical-device validation.
 
-Inference runs in the **Omil server core** (`server/`, Effect/TypeScript),
-which the Mac app embeds, starts, monitors, and stops automatically:
-**Whisper large-v3-turbo** transcribes, **Qwen3 4B Instruct**
-proposes cleanup edits, and a validator applies only grounded edits. Swift
-apps are thin clients: they capture audio, display results, and insert text
-locally. iPhone/iPad connect to the Mac over your LAN — no third party is
-ever involved, but the Mac must be reachable and your LAN trusted. The Mac
-app does not fall back to a Swift inference path when the server is offline.
+## What it does
 
-## Status (2026-09-21)
+- Hold Right Option for push-to-talk, or press Control + Option + O to toggle
+  recording.
+- Review the raw transcript, cleaned text, and applied edits before reinserting
+  a result.
+- Add snippets, preferred spellings, and writing styles for different app
+  categories.
+- Insert text through macOS Accessibility, with a guarded clipboard fallback.
+- Keep dictation history and preferences on the Mac.
+- Follow the system appearance or choose a light or dark theme.
+- Keep the inference server private to the Mac by default, or explicitly share
+  it with an iPhone or iPad on the local network using generated credentials.
+- Queue simultaneous transcription and cleanup requests without mixing the
+  model, dictionary, snippet, style, or cleanup settings chosen by each client.
 
-Server core live on the reference Mac: Whisper large-v3-turbo transcribes
-(4/4 synthetic), hybrid Qwen cleanup passes all 6 mandatory cases, 43 Bun
-tests + 53 Swift tests green, and the redesigned SwiftUI Mac client builds.
-Still ahead:
-physical-device runs (mic, AX insertion, iPhone→Mac round trip, lifecycle,
-latency/power) and human-speech evaluation — see `docs/CAPABILITY.md`.
+## How it works
 
-## The Omil server core (Mac)
+The SwiftUI app records audio and manages a bundled Effect and Bun server. The
+server calls `whisper.cpp` with one of nine transcription models and
+`llama.cpp` with one of six cleanup models. The Engine screen controls model
+selection, downloads, deletion, and local-network access. A validator rejects
+cleanup edits that change the meaning of the transcript.
 
-The normal Mac app needs no server command, host, or token. It creates a
-private token, starts the bundled server on an available loopback port, and
-prepares the selected models. Engine → Use another server is the explicit
-override for a remote or separately managed service.
+The managed server listens only on loopback until local-network sharing is
+enabled. Omil then shows the endpoint and bearer token an iPhone or iPad needs
+to use the same Mac-hosted engine. Transcription and cleanup have independent
+single-worker queues so multiple devices can submit work safely.
 
-Server development and standalone iPhone/iPad hosting:
+## Requirements
 
-```sh
-brew install whisper-cpp llama.cpp   # sidecar binaries (one time)
-cd server && bun install
-bun src/main.ts --download-models    # ~1.6 GB Whisper + ~2.5 GB Qwen, first run only
-bun src/main.ts                      # serves http://127.0.0.1:3217 (token printed on first boot)
-```
+- An Apple silicon Mac running macOS 14 or later
+- Xcode 26 or later
+- [Bun](https://bun.sh/) and [XcodeGen](https://github.com/yonaskolb/XcodeGen)
+- `whisper.cpp` and `llama.cpp` command-line tools
+- About 4.1 GB for the default Whisper and Qwen models
 
-iPhone/iPad use the standalone server's LAN address and token. The managed
-Mac server intentionally listens only on loopback.
+The current toolchain is tested on macOS 26 with Xcode 26. The deployment
+target remains macOS 14.
 
-```sh
-cd server && bun test                # 43 tests
-curl http://127.0.0.1:3217/v1/health # model readiness (no auth)
-```
+## Build the Mac app
 
-## Start here
-
-- `docs/product-plan.md` — product and build plan
-- `docs/research/on-device-speech-stack.md` — speech-stack survey
-- `docs/research/wispr-flow-mac-ux.md` — first-party UX and feature research
-- `docs/BUILD.md` — setup, build, run, install, device validation
-- `docs/CAPABILITY.md` — capability matrix and limits
-- `docs/Eval-manifest.md` — corpus and fixture provenance
-- `docs/THIRD-PARTY.md` — dependency versions and licenses
-
-## Quick commands
+Install the build tools and native inference sidecars:
 
 ```sh
-swift build && swift test
-swift run omil-eval --corpus Tests/OmilCoreTests/Fixtures/corpus.json
-swift run omil-eval --bench && swift run omil-eval --probe && swift run omil-eval --asr-eval
+brew install bun xcodegen whisper-cpp llama.cpp
 ```
 
-## Releases
+Clone and build Omil:
+
+```sh
+git clone https://github.com/arpan404/omil.git
+cd omil
+./scripts/bootstrap-mac.sh
+```
+
+The script installs server dependencies, type-checks and tests the server,
+compiles the bundled server, regenerates the Xcode project, and builds the Mac
+app. It prints the path to `Omil.app` when it finishes.
+
+On first launch, Omil asks for microphone access and downloads the selected
+models. Accessibility permission enables direct text insertion. Input
+Monitoring permission enables global shortcuts when Omil is not focused.
+
+## Development
+
+Run the Swift package tests:
+
+```sh
+swift test
+```
+
+Run the server tests:
+
+```sh
+cd server
+bun install
+bun test
+```
+
+After changing `project.yml`, regenerate and review the Xcode project:
+
+```sh
+xcodegen generate
+git diff -- Omil.xcodeproj
+```
 
 Set a release version and increment its internal build number with:
 
@@ -77,10 +105,10 @@ Set a release version and increment its internal build number with:
 ./scripts/release.sh prepare 0.2.0
 ```
 
-Commit and push that version change. Copy `.env.release.example` to `.env`,
-fill in the credentials, and publish the signed, notarized release. The CLI
-loads `.env` automatically, while credentials exported in the shell take
-precedence.
+Commit and push that version change. Copy
+[`.env.release.example`](.env.release.example) to `.env`, fill in the
+credentials, and publish the signed, notarized release. The CLI loads `.env`
+automatically, while credentials exported in your shell take precedence.
 
 ```sh
 cp .env.release.example .env
@@ -91,3 +119,19 @@ cp .env.release.example .env
 The command creates `Omil-<version>.zip` and `appcast.xml`, signs the update
 with Sparkle's EdDSA key, and uploads both files to a GitHub Release. The app
 checks the `appcast.xml` attached to the latest release.
+
+## Current limitations
+
+- Dictation is English-only.
+- The native `whisper-cli` and `llama-server` sidecars must be installed on the
+  Mac.
+- The first run downloads the selected model weights.
+- Mobile recording, keyboard handoff, background behavior, latency, and power
+  use have not been validated on physical devices.
+- Human-speech evaluation is still pending. Current repeatable speech tests use
+  synthetic audio fixtures.
+
+## Documentation
+
+[How Omil works](docs/SYSTEM.md) explains the runtime, dictation pipeline,
+model lifecycle, local storage, insertion safeguards, and mobile handoff.

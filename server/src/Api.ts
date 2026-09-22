@@ -7,7 +7,10 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import type { ServerConfig } from "./Config"
 import { checkAuth } from "./Auth"
-import { checkBinaries, checkModelReady, ensureModel, modelFileLifecycle } from "./Models"
+import {
+  checkBinaries, checkModelReady, deleteModel, ensureModel, ModelError,
+  modelFileLifecycle,
+} from "./Models"
 import { transcribeFile, whisperMemoryState } from "./Whisper"
 import {
   acquireLlama, llamaRuntime, liveLlmModel, stopLlama, unloadLlama,
@@ -18,6 +21,7 @@ import {
   loadPrompt, savePrompt, resetPrompt, saveSelection, type ModelSelection,
 } from "./ServerState"
 import type { WritingStyle } from "./Personalization"
+import { InferenceQueue } from "./InferenceQueue"
 
 export interface ApiContext {
   readonly cfg: ServerConfig
@@ -31,6 +35,15 @@ const json = (v: unknown, status = 200) =>
 
 const authed = (ctx: ApiContext, req: HttpServerRequest.HttpServerRequest) =>
   checkAuth(req.headers, ctx.token)
+
+const transcriptionQueue = new InferenceQueue("transcription")
+const cleanupQueue = new InferenceQueue("cleanup")
+
+const requestIdentity = (req: HttpServerRequest.HttpServerRequest): string => {
+  const value = req.headers["x-omil-request-id"]
+  const candidate = Array.isArray(value) ? value[0] : value
+  return candidate?.trim().slice(0, 128) || crypto.randomUUID()
+}
 
 export const makeRouter = (ctx: ApiContext) =>
   HttpRouter.empty.pipe(
@@ -75,6 +88,14 @@ export const makeRouter = (ctx: ApiContext) =>
         })
       }
       return yield* json({ models: out, selection: ctx.selection, llmRuntime: runtime })
+    })),
+    HttpRouter.get("/v1/queue", Effect.gen(function* () {
+      const req = yield* HttpServerRequest.HttpServerRequest
+      if (!authed(ctx, req)) return unauthorized
+      return yield* json({
+        transcription: transcriptionQueue.snapshot(),
+        cleanup: cleanupQueue.snapshot(),
+      })
     })),
     HttpRouter.post("/v1/models/select", Effect.gen(function* () {
       const req = yield* HttpServerRequest.HttpServerRequest
@@ -136,6 +157,32 @@ export const makeRouter = (ctx: ApiContext) =>
       const unloaded = yield* Effect.promise(() => unloadLlama())
       return yield* json({ unloaded, runtime: llamaRuntime() })
     })),
+    HttpRouter.post("/v1/models/delete", Effect.gen(function* () {
+      const req = yield* HttpServerRequest.HttpServerRequest
+      if (!authed(ctx, req)) return unauthorized
+      const body = (yield* req.json) as { model?: unknown }
+      if (typeof body.model !== "string") {
+        return yield* json({ error: "model must be a string" }, 400)
+      }
+      const spec = modelSpec(body.model)
+      if (!spec) return yield* json({ error: `unknown model '${body.model}'` }, 400)
+
+      const queue = spec.kind === "whisper" ? transcriptionQueue.snapshot() : cleanupQueue.snapshot()
+      if (queue.active || queue.pending.length > 0) {
+        return yield* json({ error: `${queue.name} jobs are still queued; try again when the queue is empty` }, 409)
+      }
+      if (spec.kind === "whisper" && whisperMemoryState(spec.id) === "inUse") {
+        return yield* json({ error: "the transcription model is in use" }, 409)
+      }
+      if (spec.kind === "llm" && liveLlmModel() === spec.id) {
+        const runtime = llamaRuntime()
+        if (runtime.activeUses > 0) return yield* json({ error: "the cleanup model is in use" }, 409)
+        yield* Effect.promise(() => unloadLlama())
+      }
+      const removed = yield* Effect.either(deleteModel(ctx.cfg, spec.id))
+      if (removed._tag === "Left") return yield* json({ error: removed.left.reason }, 409)
+      return yield* json({ removed: removed.right, model: spec.id })
+    })),
     HttpRouter.get("/v1/prompt", Effect.gen(function* () {
       const req = yield* HttpServerRequest.HttpServerRequest
       if (!authed(ctx, req)) return unauthorized
@@ -164,6 +211,12 @@ export const makeRouter = (ctx: ApiContext) =>
       if (!authed(ctx, req)) return unauthorized
       const search = new URL(req.url, "http://x").searchParams
       const language = search.get("language") ?? "en"
+      const requestedModel = search.get("model") ?? ctx.selection.whisper
+      const model = modelSpec(requestedModel)
+      if (!model || model.kind !== "whisper") {
+        return yield* json({ error: `unknown whisper model '${requestedModel}'` }, 400)
+      }
+      const requestId = requestIdentity(req)
       // Body: WAV bytes (Content-Type: audio/wav, octet-stream).
       const dir = yield* Effect.promise(() => mkdtemp(path.join(tmpdir(), "omil-up-")))
       try {
@@ -172,17 +225,30 @@ export const makeRouter = (ctx: ApiContext) =>
         if (buf.byteLength === 0) return yield* json({ error: "empty body" }, 400)
         if (buf.byteLength > 200 * 1024 * 1024) return yield* json({ error: "audio too large (200MB cap)" }, 413)
         yield* Effect.promise(() => writeFile(audioPath, Buffer.from(buf)))
-        const outcome = yield* Effect.either(transcribeFile(ctx.cfg, audioPath, language, ctx.selection.whisper))
+        const outcome = yield* Effect.either(Effect.tryPromise({
+          try: () => transcriptionQueue.enqueue(
+            requestId,
+            () => Effect.runPromise(transcribeFile(ctx.cfg, audioPath, language, model.id)),
+          ),
+          catch: (error) => error instanceof ModelError ? error : new ModelError(String(error)),
+        }))
         if (outcome._tag === "Left") {
           const msg = outcome.left.reason
           const needsModels = /download|checksum|size|binary|exited/i.test(msg)
           return yield* json({ error: msg }, needsModels ? 503 : 500)
         }
-        const t = outcome.right
+        const queued = outcome.right
+        const t = queued.value
         return yield* json({
           text: t.text,
           segments: t.segments,
           model: t.model,
+          requestId: queued.requestId,
+          queue: {
+            jobId: queued.jobId,
+            positionAtEnqueue: queued.positionAtEnqueue,
+            waitedMs: queued.waitedMs,
+          },
           warning: "server-side inference on your own Mac; LAN transport, no third parties",
         })
       } finally {
@@ -198,30 +264,51 @@ export const makeRouter = (ctx: ApiContext) =>
         dictionary?: Record<string, string>
         snippets?: Record<string, string>
         style?: WritingStyle
+        model?: string
       }
       if (!body.text || typeof body.text !== "string") return yield* json({ error: "missing text" }, 400)
       if (body.text.length > 200_000) return yield* json({ error: "text too long" }, 413)
       const mode = body.mode === "verbatim" ? "verbatim" : "clean"
-      const prompt = yield* Effect.promise(() => loadPrompt(ctx.cfg.dataDir))
-      const lease = mode === "clean"
-        ? yield* Effect.either(acquireLlama(ctx.cfg, ctx.selection.llm))
-        : null
-      if (lease?._tag === "Left") {
-        return yield* json({ error: `cleanup model unavailable: ${lease.left.reason}` }, 503)
+      const requestedModel = body.model ?? ctx.selection.llm
+      const model = modelSpec(requestedModel)
+      if (!model || model.kind !== "llm") {
+        return yield* json({ error: `unknown cleanup model '${requestedModel}'` }, 400)
       }
-      const handle = lease?._tag === "Right" ? lease.right.handle : null
-      const result = yield* cleanWithQwen(handle, {
+      const requestId = requestIdentity(req)
+      const prompt = yield* Effect.promise(() => loadPrompt(ctx.cfg.dataDir))
+      const preferences = {
         text: body.text,
         mode,
         dictionary: body.dictionary,
         snippets: body.snippets,
         style: body.style,
-      }, prompt.text).pipe(
-        Effect.ensuring(Effect.sync(() => {
-          if (lease?._tag === "Right") lease.right.release()
-        })),
-      )
-      return yield* json({ ...result, promptCustom: prompt.isCustom })
+      } as const
+      const outcome = yield* Effect.either(Effect.tryPromise({
+        try: () => cleanupQueue.enqueue(requestId, () => Effect.runPromise(Effect.gen(function* () {
+          const lease = mode === "clean"
+            ? yield* acquireLlama(ctx.cfg, model.id)
+            : null
+          const handle = lease?.handle ?? null
+          return yield* cleanWithQwen(handle, preferences, prompt.text).pipe(
+            Effect.ensuring(Effect.sync(() => lease?.release())),
+          )
+        }))),
+        catch: (error) => error instanceof ModelError ? error : new ModelError(String(error)),
+      }))
+      if (outcome._tag === "Left") {
+        return yield* json({ error: `cleanup model unavailable: ${outcome.left.reason}` }, 503)
+      }
+      const queued = outcome.right
+      return yield* json({
+        ...queued.value,
+        promptCustom: prompt.isCustom,
+        requestId: queued.requestId,
+        queue: {
+          jobId: queued.jobId,
+          positionAtEnqueue: queued.positionAtEnqueue,
+          waitedMs: queued.waitedMs,
+        },
+      })
     })),
   )
 

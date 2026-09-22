@@ -11,30 +11,30 @@ struct OnboardingView: View {
     var body: some View {
         ZStack {
             OmilTheme.canvas.ignoresSafeArea()
-            Circle()
-                .fill(OmilTheme.signal.opacity(0.13))
-                .frame(width: 520, height: 520)
-                .blur(radius: 110)
-                .offset(x: 360, y: -300)
-
             VStack(spacing: 0) {
                 header
-                Group {
-                    switch step {
-                    case 0: welcome
-                    case 1: permissions
-                    case 2: server
-                    default: ready
+                ScrollView {
+                    Group {
+                        switch step {
+                        case 0: welcome
+                        case 1: permissions
+                        case 2: server
+                        default: ready
+                        }
                     }
+                    .frame(maxWidth: 760)
+                    .padding(.vertical, 32)
+                    .frame(maxWidth: .infinity)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 footer
             }
             .padding(28)
         }
-        .preferredColorScheme(.dark)
+        .omilAppearance()
         .onAppear {
             controller.refreshMicPermission()
+            controller.refreshAXTrust()
             Task { await controller.refreshServerHealth() }
         }
     }
@@ -42,10 +42,9 @@ struct OnboardingView: View {
     private var header: some View {
         HStack {
             HStack(spacing: 10) {
-                OmilMark(size: 34, active: false)
-                Text("OMIL")
-                    .font(.system(size: 16, weight: .black, design: .rounded))
-                    .tracking(1.5)
+                OmilMark(size: 34)
+                Text("Omil")
+                    .font(OmilType.display(17))
             }
             Spacer()
             HStack(spacing: 6) {
@@ -67,10 +66,11 @@ struct OnboardingView: View {
         HStack {
             if step > 0 {
                 Button("Back") { step -= 1 }
+                    .disabled(isBusy)
                     .buttonStyle(QuietButtonStyle())
             }
             Spacer()
-            Button(step == stepCount - 1 ? "Start using Omil" : "Continue") {
+            Button(step == stepCount - 1 ? "Open Omil" : step == 0 ? "Set up Omil" : "Continue") {
                 if step == stepCount - 1 {
                     controller.onboarded = true
                 } else {
@@ -79,72 +79,69 @@ struct OnboardingView: View {
             }
             .buttonStyle(SignalButtonStyle())
             .keyboardShortcut(.return, modifiers: [])
+            .disabled(isBusy)
         }
     }
 
     private var welcome: some View {
-        HStack(spacing: 64) {
-            VStack(alignment: .leading, spacing: 20) {
-                Text("LOCAL DICTATION FOR MAC")
-                    .font(OmilType.utility(10, weight: .bold))
-                    .tracking(1.4)
-                    .foregroundStyle(OmilTheme.signal)
-                Text("Your voice,\nready to paste.")
-                    .font(.system(size: 48, weight: .bold, design: .rounded))
-                    .tracking(-1.2)
-                Text("Hold a key, speak, and release. Omil starts its own local Effect + Bun engine, then puts cleaned text at your cursor.")
-                    .font(.system(size: 16))
+        VStack(alignment: .leading, spacing: 28) {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("Speak instead of typing.")
+                    .font(.system(size: 38, weight: .semibold))
+                    .foregroundStyle(OmilTheme.ink)
+                Text("Get your thoughts down as fast as you can say them. Omil turns your speech into text in the app you're using.")
+                    .font(.system(size: 17))
                     .foregroundStyle(OmilTheme.muted)
                     .lineSpacing(4)
-                    .frame(maxWidth: 470, alignment: .leading)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            VStack(spacing: 16) {
-                ZStack {
-                    Circle().fill(OmilTheme.signal.opacity(0.15)).frame(width: 132, height: 132)
-                    Circle().fill(OmilTheme.signal).frame(width: 86, height: 86)
-                    Image(systemName: "mic.fill")
-                        .font(.system(size: 29, weight: .bold))
-                        .foregroundStyle(.white)
-                }
-                Text("Hold. Speak. Release.")
+            VStack(alignment: .leading, spacing: 20) {
+                Label("For example, say", systemImage: "mic")
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(OmilTheme.muted)
+                Text("I'll send you the notes after lunch.")
+                    .font(.system(size: 23, weight: .medium))
+                Divider()
+                Label("Your words appear where you're writing.", systemImage: "text.cursor")
+                    .font(.system(size: 14))
+                    .foregroundStyle(OmilTheme.muted)
             }
-            .frame(width: 340, height: 330)
-            .background(OmilTheme.panel, in: RoundedRectangle(cornerRadius: 24))
-            .overlay(RoundedRectangle(cornerRadius: 24).stroke(OmilTheme.line))
+            .padding(28)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(OmilTheme.panel, in: RoundedRectangle(cornerRadius: 16))
+            .overlay(RoundedRectangle(cornerRadius: 16).stroke(OmilTheme.line))
+            Label("Hold \(HotkeyManager.shared.pushToTalkName) to speak. Release to transcribe.", systemImage: "keyboard")
+                .font(.system(size: 14))
+                .foregroundStyle(OmilTheme.muted)
         }
-        .padding(.horizontal, 42)
+        .frame(maxWidth: 600)
     }
 
     private var permissions: some View {
         VStack(alignment: .leading, spacing: 18) {
             OnboardingTitle(
-                eyebrow: "MAC ACCESS",
-                title: "Two permissions. Both have a clear job.",
-                detail: "Omil asks for nothing it does not use."
+                eyebrow: "Permissions",
+                title: "Let Omil hear you and write for you.",
+                detail: "Allow microphone access to transcribe. Add Accessibility access to write directly in other apps."
             )
 
             HStack(spacing: 16) {
                 SetupCard(
                     icon: "mic.fill",
                     title: "Microphone",
-                    detail: "Captures your speech while the shortcut is held.",
+                    detail: "Records your voice when you start dictation.",
                     granted: controller.micPermission == .granted,
-                    actionTitle: "Allow microphone"
+                    actionTitle: controller.micPermission == .denied ? "Open microphone settings" : "Allow microphone"
                 ) { controller.requestMic() }
                 SetupCard(
                     icon: "cursorarrow.motionlines",
                     title: "Accessibility",
-                    detail: "Inserts finished text into the field you selected.",
+                    detail: "Puts your words in the text field where you started.",
                     granted: controller.axTrusted,
-                    actionTitle: "Allow insertion"
+                    actionTitle: "Open Accessibility settings"
                 ) { controller.requestAXTrust() }
             }
 
-            Text("Without Accessibility access, Omil keeps the result ready for copy and paste.")
+            Text("You can try transcription without Accessibility access. Your text will still appear in Omil.")
                 .font(.system(size: 11))
                 .foregroundStyle(OmilTheme.faint)
         }
@@ -154,9 +151,9 @@ struct OnboardingView: View {
     private var server: some View {
         VStack(alignment: .leading, spacing: 18) {
             OnboardingTitle(
-                eyebrow: "LOCAL ENGINE",
-                title: "Omil runs the server for you",
-                detail: "The bundled Effect + Bun service starts with the app. Whisper and Qwen stay on this Mac."
+                eyebrow: "Speech setup",
+                title: "Get ready to transcribe.",
+                detail: "Omil needs speech models to turn your voice into text. You can check downloads and choose models in Engine."
             )
 
             VStack(alignment: .leading, spacing: 16) {
@@ -170,9 +167,9 @@ struct OnboardingView: View {
                     }
                     .frame(width: 44, height: 44)
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(serverHealthy ? "Local engine ready" : "Preparing local engine")
+                        Text(serverHealthy ? "Ready to transcribe" : "Checking speech setup")
                             .font(OmilType.display(16))
-                        Text(controller.serverHealth)
+                        Text(controller.speechSetupSummary)
                             .font(.system(size: 11))
                             .foregroundStyle(OmilTheme.muted)
                     }
@@ -183,12 +180,12 @@ struct OnboardingView: View {
                 .padding(14)
                 .background(OmilTheme.canvas, in: RoundedRectangle(cornerRadius: 10))
 
-                HStack {
-                    Label("No terminal command, host, or token required", systemImage: "lock.fill")
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("Speech processing runs on this Mac by default", systemImage: "lock.fill")
                         .font(.system(size: 11))
                         .foregroundStyle(OmilTheme.muted)
                     Spacer()
-                    Text("A remote server can be chosen later in Engine.")
+                    Text("Manage models in Engine.")
                         .font(.system(size: 11))
                         .foregroundStyle(OmilTheme.faint)
                 }
@@ -201,27 +198,22 @@ struct OnboardingView: View {
     }
 
     private var ready: some View {
-        VStack(spacing: 22) {
-            ZStack {
-                Circle().fill(OmilTheme.mint.opacity(0.1)).frame(width: 112, height: 112)
-                Circle().stroke(OmilTheme.mint.opacity(0.25), lineWidth: 1).frame(width: 78, height: 78)
-                Image(systemName: "checkmark")
-                    .font(.system(size: 31, weight: .bold))
-                    .foregroundStyle(OmilTheme.mint)
-            }
-            Text(serverHealthy ? "Ready to talk" : "Finishing setup")
-                .font(.system(size: 40, weight: .bold, design: .rounded))
-            Text("Focus a text field, hold \(HotkeyManager.shared.pushToTalkName), and speak. Release the key when you are done.")
-                .font(.system(size: 15))
+        VStack(alignment: .leading, spacing: 16) {
+            OnboardingTitle(
+                eyebrow: "Try dictation",
+                title: "Say something. See it in writing.",
+                detail: "Click the microphone, say a sentence, then stop to see your transcript."
+            )
+            RecorderView(controller: controller, showsHeader: false)
+                .frame(minHeight: 350)
+            Text("In another app, click where you want to write, hold \(HotkeyManager.shared.pushToTalkName), and speak. Release when you're done.")
+                .font(.system(size: 13))
                 .foregroundStyle(OmilTheme.muted)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 490)
-            HStack(spacing: 10) {
-                ReadyChip(icon: "server.rack", text: "Managed locally")
-                ReadyChip(icon: "lock.fill", text: "Private token")
-                ReadyChip(icon: "keyboard", text: HotkeyManager.shared.pushToTalkName)
-            }
         }
+    }
+
+    private var isBusy: Bool {
+        controller.phase == .recording || controller.phase == .preparing || controller.phase == .processing
     }
 
     private var serverHealthy: Bool {
@@ -238,11 +230,11 @@ private struct OnboardingTitle: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             Text(eyebrow)
-                .font(OmilType.utility(10, weight: .bold))
+                .font(.system(size: 12, weight: .medium))
                 .tracking(1.2)
                 .foregroundStyle(OmilTheme.signal)
             Text(title)
-                .font(.system(size: 30, weight: .bold, design: .rounded))
+                .font(.system(size: 28, weight: .semibold))
             Text(detail)
                 .font(.system(size: 13))
                 .foregroundStyle(OmilTheme.muted)
@@ -265,7 +257,7 @@ private struct SetupCard: View {
                     .font(.system(size: 22, weight: .semibold))
                     .foregroundStyle(granted ? OmilTheme.mint : OmilTheme.signal)
                 Spacer()
-                Text(granted ? "GRANTED" : "REQUIRED")
+                Text(granted ? "Allowed" : "Not allowed")
                     .font(OmilType.utility(9, weight: .bold))
                     .tracking(0.8)
                     .foregroundStyle(granted ? OmilTheme.mint : OmilTheme.warning)
@@ -284,21 +276,6 @@ private struct SetupCard: View {
         .frame(maxWidth: .infinity, minHeight: 210, alignment: .topLeading)
         .background(OmilTheme.panel, in: RoundedRectangle(cornerRadius: 18))
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(granted ? OmilTheme.mint.opacity(0.2) : OmilTheme.line))
-    }
-}
-
-private struct ReadyChip: View {
-    let icon: String
-    let text: String
-
-    var body: some View {
-        Label(text, systemImage: icon)
-            .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(OmilTheme.muted)
-            .padding(.horizontal, 12)
-            .frame(height: 32)
-            .background(OmilTheme.panel, in: Capsule())
-            .overlay(Capsule().stroke(OmilTheme.line))
     }
 }
 
