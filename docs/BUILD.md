@@ -11,7 +11,7 @@
 
 - `Sources/OmilCore` — shared package: audio, transcription, cleanup, session, delivery
 - `Sources/OmilEval` — `omil-eval` command (corpus eval, bench, probe, asr-eval, debug)
-- `Tests/OmilCoreTests` — 42 tests + `Fixtures/corpus.json` (25 cases) + synthetic TTS audio
+- `Tests/OmilCoreTests` — 53 tests + `Fixtures/corpus.json` (25 cases) + synthetic TTS audio
 - `Apps/Mac` — menu-bar Mac app (`OmilMac`)
 - `Apps/iOS` — containing app (`OmilIOS`)
 - `Apps/Keyboard` — keyboard extension (`OmilKeyboard`)
@@ -21,7 +21,7 @@
 
 ```sh
 swift build
-swift test                       # 47 tests, all headless
+swift test                       # 53 tests, all headless
 swift run omil-eval --corpus Tests/OmilCoreTests/Fixtures/corpus.json
 swift run omil-eval --bench      # cleanup latency + mock session round trip
 swift run omil-eval --probe      # device, backend availability, negotiated format
@@ -29,26 +29,27 @@ swift run omil-eval --asr-eval   # on-device Apple inference over synthetic TTS
 swift run omil-eval --debug "make it 42, sorry 21"   # tokens + edits + journal
 ```
 
-## Omil server core (inference; runs on your Mac)
+## Omil server core (inference; owned by the Mac app)
 
 ```sh
 brew install whisper-cpp llama.cpp   # sidecar binaries (one time)
 cd server && bun install
 bun src/main.ts --download-models    # ~1.6 GB + ~2.5 GB, first run only (detached-safe)
-bun src/main.ts                      # http://127.0.0.1:3217; prints LAN token on first boot
-cd server && bun test                # 13 tests
+bun src/main.ts                      # standalone development / mobile-LAN hosting
+cd server && bun test                # 43 tests
 ```
 
 - `GET /v1/health` — readiness, no auth, never downloads.
+- `POST /v1/models/prepare` authenticates, downloads, verifies, and pins selected models. Send `{ "model": "<catalog-id>" }` to prepare only one model.
 - `POST /v1/transcribe?language=en` — WAV bytes, Bearer token → transcript + segments.
-- `POST /v1/cleanup` — `{text, mode, dictionary}` → cleaned text + grounded edits + abstentions.
-- Token: `server/data/omil-token` (0600). Rotate by deleting it and restarting.
-- Auto-start: copy `server/com.omil.server.plist.example` to
-  `~/Library/LaunchAgents/` (edit paths), `launchctl load` it.
-- Mac app: Settings → General → Omil inference core (`127.0.0.1`, token).
-  iPhone/iPad: same screen with the Mac's LAN address.
+- `POST /v1/cleanup` — `{text, mode, dictionary, snippets, style}` → cleaned text + grounded edits + abstentions and personalization metadata.
+- The Mac app uses its own data directory and 0600 token, binds to loopback,
+  selects a free port, launches the bundled binary, and stops it on exit.
+- Engine → Use another server opts out of the managed process and stores the
+  chosen host, port, and token.
+- iPhone/iPad connect to a standalone server using the Mac's LAN address.
 
-## Mac app (direct-distribution build, pure client)
+## Mac app (direct-distribution build)
 
 One command (Xcode project → ad-hoc build):
 
@@ -56,15 +57,8 @@ One command (Xcode project → ad-hoc build):
 ./scripts/bootstrap-mac.sh
 ```
 
-The Mac app holds no server code: it talks to the inference core over its
-LAN API. Run the server first (same machine for now):
-
-```sh
-cd server && bun src/main.ts   # first boot prints the LAN token + downloads weights on first use
-```
-
-Then launch the app and enter host/port/token under Models → Connection
-(`127.0.0.1:3217` when local):
+The build embeds the compiled Effect/Bun server. Launching the app is enough;
+no terminal command, host, or token is required for local dictation:
 
 ```sh
 open ~/Library/Developer/Xcode/DerivedData/Omil-*/Build/Products/Debug/OmilMac.app
@@ -98,12 +92,11 @@ changes are needed. Do NOT publish a release without authorization.
 ### Mac test run (for the tester)
 
 1. Launch `OmilMac.app` — the mic icon appears in the menu bar and the main
-   Omil window opens. First launch shows guided onboarding (permissions →
-   server connection); afterwards the Hub opens (sidebar: Home, Dictate,
-   History, Dictionary, Models). If no window appears, click the menu-bar
+   Omil window opens. First launch shows guided onboarding while the owned
+   server starts and prepares its models. If no window appears, click the menu-bar
    icon → Open Omil.
-2. Start the inference server first (see above) and connect under Models →
-   Connection. Missing weights download server-side on first use.
+2. Engine shows the managed local endpoint and model-preparation status.
+   Use another server only when intentionally moving inference elsewhere.
 3. Dictate tab (or the floating pill while recording): first Start prompts for **microphone access**; grant it.
    Without it, Start fails with an actionable message.
 3. Focus a text field in another app (e.g. TextEdit), then Start (big round
@@ -142,16 +135,13 @@ keyboard shows an explicit "needs Full Access" state and inserts nothing).
 
 ## Model assets
 
-- Apple Speech (`SpeechTranscriber`, en-US): system-managed assets, already
-  installed on the reference Mac (`omil-eval --probe` shows
-  `assetState=ready`). No app download needed.
-- Legacy fallback (`SFSpeechRecognizer`, on-device enforced): no download.
-- No other model is bundled. Any future model pack must ship a manifest entry
-  (`ModelManifestEntry`: version, languages, size, RAM class, license,
-  checksum) and verify SHA-256 before install (`ModelAssets.verify`).
+- The app-owned Effect/Bun service owns Whisper and Qwen model downloads.
+- The Mac app does not download or run Apple Speech assets.
+- `bun src/main.ts --download-models` installs the selected server models.
+- Model files stay on the server Mac and are verified before use.
 
-Offline check: install assets once, enable Airplane Mode, run
-`omil-eval --asr-eval` — inference completes with no network.
+Offline check: finish model preparation, disconnect the WAN, then dictate from
+the Mac app. No third-party connection is used.
 
 ## Device-validation checklist (physical hardware)
 

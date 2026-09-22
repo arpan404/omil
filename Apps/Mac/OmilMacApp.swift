@@ -1,7 +1,7 @@
 import SwiftUI
 import OmilCore
 
-// MARK: - Omil Mac app (menu bar agent, owns the inference server)
+// MARK: - Omil Mac app (menu bar client)
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -22,24 +22,61 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func showMainWindow() {
         let c = controller
         if mainWindowController == nil {
+            let launchScreen = preferredScreen()
+            let visible = launchScreen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1120, height: 740)
+            let contentSize = NSSize(
+                width: min(1040, max(760, visible.width - 32)),
+                height: min(680, max(540, visible.height - 32))
+            )
             let hosting = NSHostingView(rootView: RootView(controller: c))
-            hosting.frame = NSRect(x: 0, y: 0, width: 1000, height: 640)
+            hosting.frame = NSRect(origin: .zero, size: contentSize)
             hosting.autoresizingMask = [.width, .height]
             let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 1000, height: 640),
-                styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                contentRect: NSRect(origin: .zero, size: contentSize),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                 backing: .buffered, defer: false)
             window.title = "Omil"
+            window.titlebarAppearsTransparent = true
+            window.titleVisibility = .hidden
+            window.minSize = NSSize(
+                width: min(760, visible.width - 16),
+                height: min(540, visible.height - 16)
+            )
+            window.backgroundColor = .windowBackgroundColor
             window.contentView = hosting
-            window.center()
+            position(window, in: visible)
             window.isReleasedWhenClosed = false
             mainWindowController = NSWindowController(window: window)
+        }
+        if let window = mainWindowController?.window, !isVisibleOnAnyScreen(window) {
+            let visible = preferredScreen()?.visibleFrame ?? NSScreen.screens.first?.visibleFrame
+            if let visible { position(window, in: visible) }
         }
         NSApp.activate(ignoringOtherApps: true)
         mainWindowController?.showWindow(nil)
         mainWindowController?.window?.makeKeyAndOrderFront(nil)
         NSLog("Omil: main window shown (visible=%d)",
               mainWindowController?.window?.isVisible == true ? 1 : 0)
+    }
+
+    private func preferredScreen() -> NSScreen? {
+        let pointer = NSEvent.mouseLocation
+        return NSScreen.screens.first(where: { NSMouseInRect(pointer, $0.frame, false) })
+            ?? NSScreen.screens.first
+    }
+
+    private func position(_ window: NSWindow, in visible: NSRect) {
+        window.setFrameOrigin(NSPoint(
+            x: visible.midX - window.frame.width / 2,
+            y: visible.midY - window.frame.height / 2
+        ))
+    }
+
+    private func isVisibleOnAnyScreen(_ window: NSWindow) -> Bool {
+        NSScreen.screens.contains { screen in
+            let intersection = window.frame.intersection(screen.visibleFrame)
+            return intersection.width >= 240 && intersection.height >= 160
+        }
     }
 
     /// Kept for the menu action name.
@@ -56,37 +93,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
+    func applicationDidBecomeActive(_ notification: Notification) {
+        controller.refreshMicPermission()
+        controller.refreshAXTrust()
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
-        // The inference server runs separately; nothing owned to stop.
+        AppContext.localServer.stop()
         HotkeyManager.shared.stop()
     }
 }
 @MainActor
 enum AppContext {
-    static let controller = DictationController()
+    static let localServer = LocalServerManager()
+    static let controller = DictationController(localServer: localServer)
 }
 
 @main
+@MainActor
 struct OmilMacApp: App {
-    @StateObject private var controller: DictationController
-
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
-
-    init() {
-        _controller = StateObject(wrappedValue: AppContext.controller)
-    }
 
     var body: some Scene {
         MenuBarExtra {
-            MenuBarView(controller: controller)
+            MenuBarView(controller: AppContext.controller)
         } label: {
-            Label("Omil", systemImage: controller.phase == .recording ? "mic.fill" : "mic")
+            Label("Omil", systemImage: "mic")
         }
         .menuBarExtraStyle(.window)
 
         Settings {
-            SettingsView(controller: controller)
-                .frame(minWidth: 480, minHeight: 420)
+            SettingsView(controller: AppContext.controller)
+                .frame(minWidth: 700, minHeight: 520)
         }
     }
 }
@@ -97,162 +135,141 @@ struct MenuBarView: View {
     @ObservedObject var controller: DictationController
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                RecordingDot(active: controller.phase == .recording)
-                Text(statusTitle)
-                    .font(.headline)
-                    .fontDesign(.rounded)
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                OmilMark(size: 32, active: controller.phase == .recording)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Omil")
+                        .font(OmilType.display(16))
+                    Text(statusTitle)
+                        .font(OmilType.utility(9, weight: .semibold))
+                        .foregroundStyle(statusColor)
+                }
+                Spacer()
+                Button {
+                    (NSApp.delegate as? AppDelegate)?.openMainWindow()
+                } label: {
+                    Image(systemName: "arrow.up.forward.app")
+                        .frame(width: 26, height: 26)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(OmilTheme.muted)
+                .help("Open Omil")
+            }
+            .padding(14)
+
+            Group {
+                if controller.phase == .recording {
+                    SignalRail(levels: controller.audioLevels, active: true)
+                } else if controller.phase == .processing {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(OmilTheme.signal)
+                } else {
+                    Color.clear
+                }
+            }
+            .frame(height: 42)
+            .padding(.horizontal, 18)
+
+            Button {
+                controller.toggle()
+            } label: {
+                Label(controller.phase == .recording ? "Stop recording" : "Start dictation",
+                      systemImage: controller.phase == .recording ? "stop.fill" : "mic.fill")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(SignalButtonStyle())
+            .disabled(
+                controller.phase == .preparing
+                    || controller.phase == .processing
+                    || !controller.serverIsReady
+            )
+            .padding(14)
+
+            if !controller.lastCleaned.isEmpty {
+                Divider().overlay(OmilTheme.line)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("LAST RESULT")
+                        .font(OmilType.utility(9, weight: .bold))
+                        .tracking(0.8)
+                        .foregroundStyle(OmilTheme.faint)
+                    Text(controller.lastCleaned)
+                        .font(.system(size: 12))
+                        .lineLimit(3)
+                    HStack {
+                        Button("Copy") { controller.copyLast() }
+                        Button("Paste") { controller.pasteLast() }
+                    }
+                    .buttonStyle(QuietButtonStyle())
+                }
+                .padding(14)
             }
 
-            Button("Open Omil") {
-                (NSApp.delegate as? AppDelegate)?.openMainWindow()
+            Divider().overlay(OmilTheme.line)
+            HStack {
+                Button("Open Omil") { (NSApp.delegate as? AppDelegate)?.openMainWindow() }
+                Spacer()
+                Button("Quit") { NSApp.terminate(nil) }
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.small)
-
-            Divider()
-
-            if controller.phase == .recording {
-                Button("Stop") { controller.stop() }
-                    .keyboardShortcut(".", modifiers: [.command])
-            } else {
-                Button("Start dictation") { controller.toggle() }
-                    .keyboardShortcut("r", modifiers: [.command])
-                    .disabled(controller.phase == .preparing || controller.phase == .processing)
-            }
-
-            Button("Paste last result") { controller.pasteLast() }
-                .disabled(controller.lastCleaned.isEmpty)
-
-            Divider()
-
-            Button("Quit Omil") { NSApp.terminate(nil) }
+            .buttonStyle(.plain)
+            .font(.system(size: 11, weight: .medium))
+            .foregroundStyle(OmilTheme.muted)
+            .padding(14)
         }
-        .padding(12)
-        .frame(width: 250)
+        .frame(width: 290)
+        .background(OmilTheme.panel)
+        .preferredColorScheme(controller.appearance.colorScheme)
     }
 
     var statusTitle: String {
         switch controller.phase {
-        case .idle: return "Omil"
-        case .preparing: return "Omil — preparing"
-        case .recording: return "Omil — recording"
-        case .processing: return "Omil — finalizing"
-        case .ready: return "Omil"
-        case .failed: return "Omil — attention needed"
-        }
-    }
-}
-
-// MARK: - History
-
-struct HistoryView: View {
-    @ObservedObject var controller: DictationController
-    @State private var search = ""
-    @State private var hovered: UUID?
-    @State private var confirmDelete: DictationController.HistoryEntry?
-
-    var filtered: [(day: Date, entries: [DictationController.HistoryEntry])] {
-        let groups = controller.historyByDay
-        guard !search.isEmpty else { return groups }
-        let q = search.lowercased()
-        return groups.compactMap { day, entries in
-            let hit = entries.filter {
-                $0.cleaned.lowercased().contains(q) || $0.raw.lowercased().contains(q)
-            }
-            return hit.isEmpty ? nil : (day, hit)
+        case .idle: return controller.serverIsReady ? "READY" : "SETUP NEEDED"
+        case .preparing: return "PREPARING"
+        case .recording: return "RECORDING"
+        case .processing: return "CLEANING UP"
+        case .ready: return "RESULT READY"
+        case .failed: return "CHECK SETUP"
         }
     }
 
-    var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                if controller.history.isEmpty {
-                    ContentUnavailableView(
-                        "No history",
-                        systemImage: "mic.slash",
-                        description: Text("Dictation results appear here when history is on. Raw audio is never stored.")
-                    )
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    List {
-                        ForEach(filtered, id: \.day) { day, entries in
-                            Section(controller.dayLabel(for: day)) {
-                                ForEach(entries) { entry in
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        Text(entry.cleaned)
-                                            .font(.body)
-                                            .textSelection(.enabled)
-                                        Text("Raw: \(entry.raw)")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                            .textSelection(.enabled)
-                                        HStack {
-                                            Text("\(entry.date.formatted(date: .omitted, time: .shortened)) • \(entry.wordCount) words • \(entry.backend)")
-                                                .font(.caption2)
-                                                .foregroundStyle(.tertiary)
-                                            Spacer()
-                                            if hovered == entry.id {
-                                                Button("Copy") {
-                                                    NSPasteboard.general.declareTypes([.string], owner: nil)
-                                                    NSPasteboard.general.setString(entry.cleaned, forType: .string)
-                                                }
-                                                .buttonStyle(.bordered)
-                                                Button("Delete") { confirmDelete = entry }
-                                                    .buttonStyle(.bordered)
-                                            }
-                                        }
-                                    }
-                                    .padding(.vertical, 4)
-                                    .onHover { hovering in
-                                        hovered = hovering ? entry.id : nil
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    .searchable(text: $search, prompt: "Search transcripts")
-                }
-            }
-            .navigationTitle("History (kept on this Mac)")
-            .toolbar {
-                Toggle("Keep history", isOn: Binding(
-                    get: { controller.historyEnabled },
-                    set: { controller.setHistoryEnabled($0) }
-                ))
-                Button("Clear") { controller.clearHistory() }
-                    .disabled(controller.history.isEmpty)
-            }
-            .confirmationDialog(
-                "Delete this transcript? This is permanent.",
-                isPresented: Binding(
-                    get: { confirmDelete != nil },
-                    set: { if !$0 { confirmDelete = nil } }
-                ),
-                titleVisibility: .visible
-            ) {
-                Button("Delete", role: .destructive) {
-                    if let entry = confirmDelete { controller.deleteHistoryEntry(entry) }
-                    confirmDelete = nil
-                }
-                Button("Cancel", role: .cancel) { confirmDelete = nil }
-            }
+    var statusColor: Color {
+        switch controller.phase {
+        case .recording: return OmilTheme.coral
+        case .failed: return OmilTheme.warning
+        case .preparing, .processing: return OmilTheme.signal
+        case .idle: return controller.serverIsReady ? OmilTheme.mint : OmilTheme.warning
+        case .ready: return OmilTheme.mint
         }
     }
 }
 
 // MARK: - Settings
 
+private enum SettingsPane: String, CaseIterable {
+    case general = "General"
+    case permissions = "Permissions"
+    case shortcuts = "Shortcuts"
+
+    var icon: String {
+        switch self {
+        case .general: return "slider.horizontal.3"
+        case .permissions: return "lock.shield"
+        case .shortcuts: return "command"
+        }
+    }
+}
+
 struct SettingsView: View {
     @ObservedObject var controller: DictationController
+    @State private var pane: SettingsPane = .general
     @State private var recordingShortcut = false
     @State private var shortcutMonitor: Any?
 
     var micStatusText: String {
         switch controller.micPermission {
         case .granted: return "granted"
-        case .denied: return "denied — grant access to record"
+        case .denied: return "denied. Grant access to record"
         case .unknown: return "not determined yet"
         }
     }
@@ -277,121 +294,317 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        TabView {
-            Form {
-                Picker("Cleanup mode", selection: $controller.cleanupMode) {
-                    Text("Clean (default)").tag(CleanupMode.clean)
-                    Text("Verbatim").tag(CleanupMode.verbatim)
+        HStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 10) {
+                    OmilMark(size: 32, active: false)
+                    Text("Settings")
+                        .font(OmilType.display(17))
                 }
-                Picker("Transcription", selection: $controller.backendPreference) {
-                    Text("Omil server (Whisper + Qwen, recommended)").tag(BackendChoice.omilServer)
-                    Text("Automatic (on-device)").tag(BackendChoice.automatic)
-                    Text("System speech").tag(BackendChoice.appleSpeech)
-                    Text("Legacy on-device").tag(BackendChoice.legacySFSpeech)
-                }
-                Text("Backend: \(controller.backendDescription)")
-                    .font(.caption)
-                Text("Assets: \(controller.assetState)")
-                    .font(.caption)
-                HStack {
-                    Button("Refresh model status") {
-                        Task { await controller.refreshBackendStatus() }
+                .padding(.horizontal, 16)
+                .padding(.top, 18)
+                .padding(.bottom, 22)
+
+                VStack(spacing: 4) {
+                    ForEach(SettingsPane.allCases, id: \.self) { item in
+                        Button {
+                            pane = item
+                        } label: {
+                            Label(item.rawValue, systemImage: item.icon)
+                                .font(.system(size: 12, weight: pane == item ? .semibold : .medium))
+                                .foregroundStyle(pane == item ? OmilTheme.ink : OmilTheme.muted)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 10)
+                                .frame(height: 36)
+                                .background(
+                                    pane == item ? OmilTheme.panelLifted : .clear,
+                                    in: RoundedRectangle(cornerRadius: 8)
+                                )
+                        }
+                        .buttonStyle(.plain)
                     }
-                    Button("Download system assets") {
-                        controller.downloadAssets()
-                    }
                 }
-                Text("Changing transcription never changes cleanup behavior. Server models and the rewrite prompt live under Models in the main window.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                .padding(.horizontal, 10)
+                Spacer()
+                Text("Audio stays on your Mac")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(OmilTheme.faint)
+                    .padding(16)
             }
-            .tabItem { Label("General", systemImage: "gear") }
-            .padding()
+            .frame(width: 168)
+            .background(OmilTheme.sidebar)
 
-            Form {
-                Section("Microphone") {
-                    Text("Status: \(micStatusText)")
-                    HStack {
-                        Button("Request microphone access") {
-                            controller.requestMic()
-                        }
-                        .disabled(controller.micPermission == .granted)
-                        Button("Open Microphone settings") {
-                            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")!)
-                        }
+            Divider().overlay(OmilTheme.line)
+
+            ScrollView {
+                Group {
+                    switch pane {
+                    case .general: generalPane
+                    case .permissions: permissionsPane
+                    case .shortcuts: shortcutsPane
                     }
-                    Text("Recording is visible in the menu bar and recorder window. Raw audio is never stored.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
+                .padding(28)
+            }
+            .background(OmilTheme.canvas)
+        }
+        .frame(minWidth: 700, minHeight: 520)
+        .preferredColorScheme(controller.appearance.colorScheme)
+        .onAppear {
+            controller.refreshMicPermission()
+            controller.refreshAXTrust()
+        }
+        .onDisappear { stopShortcutCapture() }
+    }
 
-                Section("Direct insertion (Accessibility)") {
-                    Text("Status: \(controller.axTrusted ? "granted — Omil can insert into the focused field" : "not granted — Omil will keep results for copy/paste")")
-                    HStack {
-                        Button("Ask for access…") {
-                            controller.requestAXTrust()
-                        }
-                        .disabled(controller.axTrusted)
-                        Button("Check again") {
-                            controller.refreshMicPermission()
-                        }
-                        Button("Open Accessibility settings") {
-                            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
-                        }
-                    }
-                    Text("Undo reverses only Omil's insertion, and refuses when you typed after it.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+    private var generalPane: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            SettingsPageHeader(title: "General", detail: "How Omil records, cleans, and starts.")
 
-                Section("Shortcuts") {
-                    HStack {
-                        Text("Push-to-talk: \(HotkeyManager.shared.pushToTalkName)")
-                        Spacer()
-                        if recordingShortcut {
-                            Button("Cancel") { stopShortcutCapture() }
-                        } else {
-                            Button("Change…") { startShortcutCapture() }
+            SettingsGroup(title: "Appearance") {
+                SettingsRow(title: "Theme", detail: "Follow this Mac or keep Omil light or dark.") {
+                    Picker("Theme", selection: $controller.appearance) {
+                        ForEach(AppearancePreference.allCases) { appearance in
+                            Text(appearance.title).tag(appearance)
                         }
                     }
-                    if recordingShortcut {
-                        Text("Press a modifier key (Option, Control, Command, Shift, or Fn)…")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Toggle("Toggle shortcut (Ctrl+Option+O)", isOn: Binding(
-                        get: { HotkeyManager.shared.toggleEnabled },
-                        set: { HotkeyManager.shared.toggleEnabled = $0 }
-                    ))
-                    Text("Background shortcuts need Input Monitoring permission. The Start/Stop buttons always work.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: 190)
                 }
             }
-            .tabItem { Label("Permissions", systemImage: "mic.badge.plus") }
-            .padding()
-            .onAppear { controller.refreshMicPermission() }
 
-            Form {
-                Section("Startup") {
-                    Toggle("Launch at login", isOn: Binding(
-                        get: { controller.launchAtLogin },
-                        set: { controller.launchAtLogin = $0 }
-                    ))
+            SettingsGroup(title: "Dictation") {
+                SettingsRow(title: "Cleanup", detail: "Clean removes fillers. Verbatim keeps every spoken word.") {
+                    Picker("", selection: $controller.cleanupMode) {
+                        Text("Clean").tag(CleanupMode.clean)
+                        Text("Verbatim").tag(CleanupMode.verbatim)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: 180)
                 }
-                Section("Dictation control") {
-                    Toggle("Floating pill while recording", isOn: Binding(
+                SettingsDivider()
+                SettingsRow(title: "Floating pill", detail: "Keep recording and processing visible above other apps.") {
+                    Toggle("", isOn: Binding(
                         get: { controller.pillEnabled },
                         set: { controller.setPillEnabled($0) }
                     ))
-                    Text("The pill shows the live draft with Stop/Cancel where you work. The menu bar icon always shows recording state.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
                 }
             }
-            .tabItem { Label("System", systemImage: "desktopcomputer") }
-            .padding()
+
+            SettingsGroup(title: "This Mac") {
+                SettingsRow(title: "Launch at login", detail: "Start Omil after you sign in.") {
+                    Toggle("", isOn: Binding(
+                        get: { controller.launchAtLogin },
+                        set: { controller.launchAtLogin = $0 }
+                    ))
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                }
+                SettingsDivider()
+                SettingsRow(
+                    title: controller.usesCustomServer ? "Other server" : "Local engine",
+                    detail: controller.serverHealth
+                ) {
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(controller.serverIsReady ? OmilTheme.mint : OmilTheme.warning)
+                            .frame(width: 7, height: 7)
+                        Button("Check") { Task { await controller.refreshBackendStatus() } }
+                            .buttonStyle(QuietButtonStyle())
+                    }
+                }
+            }
         }
-        .frame(minWidth: 480, minHeight: 420)
+    }
+
+    private var permissionsPane: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            SettingsPageHeader(title: "Permissions", detail: "Two permissions make dictation work anywhere.")
+
+            SettingsGroup(title: "Microphone") {
+                PermissionSettingsRow(
+                    icon: "mic.fill",
+                    title: controller.micPermission == .granted ? "Microphone allowed" : "Microphone access needed",
+                    detail: controller.micPermission == .granted
+                        ? "Omil can record. Raw audio is discarded after transcription."
+                        : "Allow access before starting a recording.",
+                    granted: controller.micPermission == .granted,
+                    actionTitle: controller.micPermission == .denied ? "Open Settings" : "Allow"
+                ) {
+                    controller.requestMic()
+                }
+            }
+
+            SettingsGroup(title: "Typing into apps") {
+                PermissionSettingsRow(
+                    icon: "cursorarrow.motionlines",
+                    title: controller.axTrusted ? "Direct insertion allowed" : "Accessibility access needed",
+                    detail: controller.axTrusted
+                        ? "Omil can type the result into the field you started from."
+                        : "Without it, Omil keeps the result ready to copy and paste.",
+                    granted: controller.axTrusted,
+                    actionTitle: controller.axTrusted ? "Check again" : "Allow"
+                ) {
+                    controller.axTrusted ? controller.refreshAXTrust() : controller.requestAXTrust()
+                }
+                SettingsDivider()
+                SettingsRow(title: "System Settings", detail: "Review or remove Accessibility access.") {
+                    Button("Open") {
+                        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
+                    }
+                    .buttonStyle(QuietButtonStyle())
+                }
+            }
+        }
+    }
+
+    private var shortcutsPane: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            SettingsPageHeader(title: "Shortcuts", detail: "Start dictation without leaving the app you are using.")
+
+            SettingsGroup(title: "Push to talk") {
+                SettingsRow(
+                    title: HotkeyManager.shared.pushToTalkName,
+                    detail: recordingShortcut ? "Press one modifier key now." : "Hold to record. Release to transcribe."
+                ) {
+                    if recordingShortcut {
+                        Button("Cancel") { stopShortcutCapture() }
+                            .buttonStyle(QuietButtonStyle())
+                    } else {
+                        Button("Change") { startShortcutCapture() }
+                            .buttonStyle(SignalButtonStyle())
+                    }
+                }
+            }
+
+            SettingsGroup(title: "Hands-free") {
+                SettingsRow(title: "Control + Option + O", detail: "Press once to start and once to stop.") {
+                    Toggle("", isOn: Binding(
+                        get: { HotkeyManager.shared.toggleEnabled },
+                        set: { HotkeyManager.shared.toggleEnabled = $0 }
+                    ))
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                }
+                SettingsDivider()
+                HStack(spacing: 9) {
+                    Image(systemName: "info.circle")
+                    Text("Background shortcuts need Input Monitoring access. The recorder buttons always work.")
+                }
+                .font(.system(size: 10))
+                .foregroundStyle(OmilTheme.faint)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+            }
+        }
+    }
+}
+
+private struct SettingsPageHeader: View {
+    let title: String
+    let detail: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(OmilType.display(25))
+            Text(detail)
+                .font(.system(size: 12))
+                .foregroundStyle(OmilTheme.muted)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct SettingsGroup<Content: View>: View {
+    let title: String
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Text(title.uppercased())
+                .font(OmilType.utility(9, weight: .bold))
+                .tracking(0.8)
+                .foregroundStyle(OmilTheme.faint)
+                .padding(.leading, 3)
+            VStack(spacing: 0) { content() }
+                .background(OmilTheme.panel, in: RoundedRectangle(cornerRadius: 12))
+                .overlay(RoundedRectangle(cornerRadius: 12).stroke(OmilTheme.line))
+        }
+    }
+}
+
+private struct SettingsRow<Accessory: View>: View {
+    let title: String
+    let detail: String
+    @ViewBuilder let accessory: () -> Accessory
+
+    var body: some View {
+        HStack(spacing: 16) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(OmilTheme.ink)
+                Text(detail)
+                    .font(.system(size: 10))
+                    .foregroundStyle(OmilTheme.muted)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 16)
+            accessory()
+        }
+        .padding(.horizontal, 16)
+        .frame(minHeight: 64)
+    }
+}
+
+private struct PermissionSettingsRow: View {
+    let icon: String
+    let title: String
+    let detail: String
+    let granted: Bool
+    let actionTitle: String
+    let action: () -> Void
+
+    var body: some View {
+        HStack(spacing: 13) {
+            Image(systemName: granted ? "checkmark" : icon)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(granted ? OmilTheme.mint : OmilTheme.signal)
+                .frame(width: 34, height: 34)
+                .background(
+                    (granted ? OmilTheme.mint : OmilTheme.signal).opacity(0.1),
+                    in: RoundedRectangle(cornerRadius: 9)
+                )
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.system(size: 12, weight: .semibold))
+                Text(detail)
+                    .font(.system(size: 10))
+                    .foregroundStyle(OmilTheme.muted)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 14)
+            if granted {
+                Button(actionTitle, action: action)
+                    .buttonStyle(QuietButtonStyle())
+            } else {
+                Button(actionTitle, action: action)
+                    .buttonStyle(SignalButtonStyle())
+            }
+        }
+        .padding(16)
+    }
+}
+
+private struct SettingsDivider: View {
+    var body: some View {
+        Divider()
+            .overlay(OmilTheme.line)
+            .padding(.leading, 16)
     }
 }

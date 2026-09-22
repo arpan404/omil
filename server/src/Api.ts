@@ -7,20 +7,22 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import type { ServerConfig } from "./Config"
 import { checkAuth } from "./Auth"
-import { checkBinaries, checkModelReady } from "./Models"
-import { transcribeFile } from "./Whisper"
-import { ensureLlama, stopLlama, liveLlmModel, type LlamaHandle } from "./LlamaServer"
+import { checkBinaries, checkModelReady, ensureModel, modelFileLifecycle } from "./Models"
+import { transcribeFile, whisperMemoryState } from "./Whisper"
+import {
+  acquireLlama, llamaRuntime, liveLlmModel, stopLlama, unloadLlama,
+} from "./LlamaServer"
 import { cleanWithQwen } from "./QwenCleanup"
 import { MODELS, modelSpec } from "./Config"
 import {
   loadPrompt, savePrompt, resetPrompt, saveSelection, type ModelSelection,
 } from "./ServerState"
+import type { WritingStyle } from "./Personalization"
 
 export interface ApiContext {
   readonly cfg: ServerConfig
   readonly token: string
   selection: ModelSelection
-  llama: LlamaHandle | null
 }
 
 const unauthorized = HttpServerResponse.text("unauthorized", { status: 401 })
@@ -37,12 +39,14 @@ export const makeRouter = (ctx: ApiContext) =>
       // Non-mutating: never triggers downloads.
       const whisperReady = yield* checkModelReady(ctx.cfg, ctx.selection.whisper)
       const llmReady = yield* checkModelReady(ctx.cfg, ctx.selection.llm)
+      const runtime = llamaRuntime()
       return yield* json({
         ok: true,
         whisperBin: bins.whisper, llamaBin: bins.llama,
         whisperModelReady: whisperReady, llmModelReady: llmReady,
-        llamaLive: ctx.llama !== null,
+        llamaLive: runtime.state === "ready" || runtime.state === "inUse",
         liveLlmModel: liveLlmModel(),
+        llmRuntime: runtime,
         whisperModel: ctx.selection.whisper, llmModel: ctx.selection.llm,
       })
     })),
@@ -50,16 +54,27 @@ export const makeRouter = (ctx: ApiContext) =>
       const req = yield* HttpServerRequest.HttpServerRequest
       if (!authed(ctx, req)) return unauthorized
       const out = []
+      const runtime = llamaRuntime()
       for (const m of MODELS) {
+        const downloaded = yield* checkModelReady(ctx.cfg, m.id)
+        const file = modelFileLifecycle(ctx.cfg, m.id)
         out.push({
           id: m.id, kind: m.kind, description: m.description,
           filename: m.filename,
           approxBytes: m.expectedBytes,
-          downloaded: yield* checkModelReady(ctx.cfg, m.id),
+          downloaded,
           selected: (m.kind === "whisper" ? ctx.selection.whisper : ctx.selection.llm) === m.id,
+          fileState: file?.state ?? (downloaded ? "ready" : "missing"),
+          receivedBytes: file?.receivedBytes ?? (downloaded ? m.expectedBytes : 0),
+          totalBytes: file?.totalBytes ?? m.expectedBytes,
+          fileError: file?.error ?? null,
+          memoryState: m.kind === "whisper"
+            ? whisperMemoryState(m.id)
+            : runtime.modelId === m.id ? runtime.state : "unloaded",
+          activeUses: m.kind === "llm" && runtime.modelId === m.id ? runtime.activeUses : 0,
         })
       }
-      return yield* json({ models: out, selection: ctx.selection })
+      return yield* json({ models: out, selection: ctx.selection, llmRuntime: runtime })
     })),
     HttpRouter.post("/v1/models/select", Effect.gen(function* () {
       const req = yield* HttpServerRequest.HttpServerRequest
@@ -80,11 +95,46 @@ export const makeRouter = (ctx: ApiContext) =>
       ctx.selection = next
       yield* Effect.promise(() => saveSelection(ctx.cfg.dataDir, next))
       if (llmChanged) {
-        // Restart the sidecar lazily: drop the handle; next cleanup boots it.
-        stopLlama()
-        ctx.llama = null
+        // An active cleanup keeps its lease. Memory releases immediately after
+        // that request; an idle model releases now.
+        yield* Effect.promise(() => unloadLlama())
       }
       return yield* json({ selection: next, note: llmChanged ? "llm sidecar restarts on next cleanup" : "selection saved" })
+    })),
+    HttpRouter.post("/v1/models/prepare", Effect.gen(function* () {
+      const req = yield* HttpServerRequest.HttpServerRequest
+      if (!authed(ctx, req)) return unauthorized
+      const body = yield* req.json.pipe(
+        Effect.map((value) => value as { model?: unknown }),
+        Effect.catchAll(() => Effect.succeed({} as { model?: unknown })),
+      )
+      if (body.model !== undefined) {
+        if (typeof body.model !== "string") {
+          return yield* json({ error: "model must be a string" }, 400)
+        }
+        const spec = modelSpec(body.model)
+        if (!spec) return yield* json({ error: `unknown model '${body.model}'` }, 400)
+        const prepared = yield* Effect.either(ensureModel(ctx.cfg, spec.id))
+        if (prepared._tag === "Left") {
+          return yield* json({ error: prepared.left.reason, model: spec.id }, 503)
+        }
+        return yield* json({ ready: true, model: spec.id })
+      }
+      const whisper = yield* Effect.either(ensureModel(ctx.cfg, ctx.selection.whisper))
+      if (whisper._tag === "Left") {
+        return yield* json({ error: whisper.left.reason, model: ctx.selection.whisper }, 503)
+      }
+      const llm = yield* Effect.either(ensureModel(ctx.cfg, ctx.selection.llm))
+      if (llm._tag === "Left") {
+        return yield* json({ error: llm.left.reason, model: ctx.selection.llm }, 503)
+      }
+      return yield* json({ ready: true, whisper: ctx.selection.whisper, llm: ctx.selection.llm })
+    })),
+    HttpRouter.post("/v1/models/unload", Effect.gen(function* () {
+      const req = yield* HttpServerRequest.HttpServerRequest
+      if (!authed(ctx, req)) return unauthorized
+      const unloaded = yield* Effect.promise(() => unloadLlama())
+      return yield* json({ unloaded, runtime: llamaRuntime() })
     })),
     HttpRouter.get("/v1/prompt", Effect.gen(function* () {
       const req = yield* HttpServerRequest.HttpServerRequest
@@ -143,23 +193,34 @@ export const makeRouter = (ctx: ApiContext) =>
       const req = yield* HttpServerRequest.HttpServerRequest
       if (!authed(ctx, req)) return unauthorized
       const body = (yield* req.json) as {
-        text?: string; mode?: "verbatim" | "clean"; dictionary?: Record<string, string>
+        text?: string
+        mode?: "verbatim" | "clean"
+        dictionary?: Record<string, string>
+        snippets?: Record<string, string>
+        style?: WritingStyle
       }
       if (!body.text || typeof body.text !== "string") return yield* json({ error: "missing text" }, 400)
       if (body.text.length > 200_000) return yield* json({ error: "text too long" }, 413)
-      if (!ctx.llama || ctx.llama.modelId !== ctx.selection.llm) {
-        const started = yield* Effect.either(ensureLlama(ctx.cfg, ctx.selection.llm))
-        if (started._tag === "Left") {
-          return yield* json({ error: `cleanup model unavailable: ${started.left.reason}` }, 503)
-        }
-        ctx.llama = started.right
-      }
+      const mode = body.mode === "verbatim" ? "verbatim" : "clean"
       const prompt = yield* Effect.promise(() => loadPrompt(ctx.cfg.dataDir))
-      const result = yield* cleanWithQwen(ctx.llama, {
+      const lease = mode === "clean"
+        ? yield* Effect.either(acquireLlama(ctx.cfg, ctx.selection.llm))
+        : null
+      if (lease?._tag === "Left") {
+        return yield* json({ error: `cleanup model unavailable: ${lease.left.reason}` }, 503)
+      }
+      const handle = lease?._tag === "Right" ? lease.right.handle : null
+      const result = yield* cleanWithQwen(handle, {
         text: body.text,
-        mode: body.mode === "verbatim" ? "verbatim" : "clean",
+        mode,
         dictionary: body.dictionary,
-      }, prompt.text)
+        snippets: body.snippets,
+        style: body.style,
+      }, prompt.text).pipe(
+        Effect.ensuring(Effect.sync(() => {
+          if (lease?._tag === "Right") lease.right.release()
+        })),
+      )
       return yield* json({ ...result, promptCustom: prompt.isCustom })
     })),
   )

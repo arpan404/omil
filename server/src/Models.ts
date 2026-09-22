@@ -17,6 +17,30 @@ export class ModelError {
   constructor(readonly reason: string) {}
 }
 
+export type ModelFileState = "checking" | "downloading" | "verifying" | "ready" | "failed"
+
+export interface ModelFileLifecycle {
+  readonly state: ModelFileState
+  readonly receivedBytes: number
+  readonly totalBytes: number | null
+  readonly error: string | null
+}
+
+const operations = new Map<string, ModelFileLifecycle>()
+const inFlight = new Map<string, Promise<string>>()
+const operationKey = (cfg: ServerConfig, id: string) => `${cfg.dataDir}\u0000${id}`
+
+const updateOperation = (
+  cfg: ServerConfig,
+  id: string,
+  lifecycle: ModelFileLifecycle,
+) => operations.set(operationKey(cfg, id), lifecycle)
+
+export const modelFileLifecycle = (
+  cfg: ServerConfig,
+  id: string,
+): ModelFileLifecycle | null => operations.get(operationKey(cfg, id)) ?? null
+
 export const modelsDir = (cfg: ServerConfig) => path.join(cfg.dataDir, "models")
 export const modelPath = (cfg: ServerConfig, id: string) => {
   const spec = modelSpec(id)
@@ -61,7 +85,8 @@ const writeManifest = async (cfg: ServerConfig, m: LocalManifest) => {
   await Bun.write(path.join(modelsDir(cfg), "manifest.local.json"), JSON.stringify(m, null, 2))
 }
 
-/** Non-mutating readiness probe for /v1/health (never downloads). */
+/** Fast, non-mutating readiness probe for /v1/health (never downloads).
+ * Full SHA verification happens in ensureModel before preparation/use. */
 export const checkModelReady = (
   cfg: ServerConfig,
   id: string,
@@ -75,18 +100,19 @@ export const checkModelReady = (
       const manifest = await readManifest(cfg).catch(() => ({} as LocalManifest))
       const pinned = manifest[spec.filename]
       if (pinned) {
-        if (f.size !== pinned.bytes) return false
-        return (await sha256File(modelPath(cfg, id))) === pinned.sha256
+        return f.size === pinned.bytes
       }
       if (spec.expectedBytes !== null) return sizeMatches(spec.expectedBytes, f.size)
-      return true // unpinned catalog entry: presence is readiness; verified on use
+      // Unknown-size entries are not ready until ensureModel hashes and pins
+      // the complete file. A nonempty partial must never appear installed.
+      return false
     } catch {
       return false
     }
   })
 
 /** Ensure a weight file exists and matches its pinned (or expected) identity. */
-export const ensureModel = (
+const ensureModelOnce = (
   cfg: ServerConfig,
   id: string,
 ): Effect.Effect<string, ModelError, never> =>
@@ -97,11 +123,19 @@ export const ensureModel = (
     const dest = modelPath(cfg, id)
     const manifest = yield* Effect.promise(() => readManifest(cfg))
     const pinned = manifest[spec.filename]
+    updateOperation(cfg, id, {
+      state: "checking", receivedBytes: 0,
+      totalBytes: spec.expectedBytes, error: null,
+    })
 
     const file = Bun.file(dest)
     if (yield* Effect.promise(() => file.exists())) {
       const size = file.size
       if (pinned) {
+        updateOperation(cfg, id, {
+          state: "verifying", receivedBytes: size,
+          totalBytes: pinned.bytes, error: null,
+        })
         const actual = yield* Effect.promise(() => sha256File(dest))
         if (actual !== pinned.sha256) {
           return yield* Effect.fail(
@@ -119,6 +153,10 @@ export const ensureModel = (
         console.log(`${spec.filename}: removing stale partial (${(size / 1e6).toFixed(1)} MB)`)
         yield* Effect.promise(() => rm(dest, { force: true }))
       } else {
+        updateOperation(cfg, id, {
+          state: "verifying", receivedBytes: size,
+          totalBytes: spec.expectedBytes ?? size, error: null,
+        })
         const sha = yield* Effect.promise(() => sha256File(dest))
         manifest[spec.filename] = { sha256: sha, bytes: size, url: spec.url }
         yield* Effect.promise(() => writeManifest(cfg, manifest))
@@ -136,12 +174,20 @@ export const ensureModel = (
     const writer = file.writer()
     let received = 0
     const total = Number(res.headers.get("content-length") ?? spec.expectedBytes ?? 0)
+    updateOperation(cfg, id, {
+      state: "downloading", receivedBytes: 0,
+      totalBytes: total > 0 ? total : null, error: null,
+    })
     const reader = res.body.getReader()
     for (;;) {
       const { done, value } = yield* Effect.promise(() => reader.read() as Promise<ReadableStreamReadResult<Uint8Array>>)
       if (done) break
       writer.write(value)
       received += value.byteLength
+      updateOperation(cfg, id, {
+        state: "downloading", receivedBytes: received,
+        totalBytes: total > 0 ? total : null, error: null,
+      })
       if (received % (64 * 1024 * 1024) < value.byteLength) {
         console.log(total > 0
           ? `  ${(received / 1e9).toFixed(2)} / ${(total / 1e9).toFixed(2)} GB`
@@ -156,11 +202,52 @@ export const ensureModel = (
         new ModelError(`download incomplete: got ${received} bytes` + (spec.expectedBytes !== null ? `, expected ~${spec.expectedBytes}` : `, server reported ${contentLength}`)),
       )
     }
+    updateOperation(cfg, id, {
+      state: "verifying", receivedBytes: received,
+      totalBytes: total > 0 ? total : received, error: null,
+    })
     const sha = yield* Effect.promise(() => sha256File(dest))
     manifest[spec.filename] = { sha256: sha, bytes: received, url: spec.url }
     yield* Effect.promise(() => writeManifest(cfg, manifest))
     console.log(`downloaded + pinned ${spec.filename} sha256=${sha.slice(0, 16)}…`)
     return dest
+  })
+
+/** Coalesces duplicate preparation requests and publishes one honest state. */
+export const ensureModel = (
+  cfg: ServerConfig,
+  id: string,
+): Effect.Effect<string, ModelError, never> =>
+  Effect.tryPromise({
+    try: () => {
+      const key = operationKey(cfg, id)
+      const existing = inFlight.get(key)
+      if (existing) return existing
+
+      const pending = Effect.runPromise(Effect.either(ensureModelOnce(cfg, id)))
+        .then((outcome) => {
+          if (outcome._tag === "Left") throw outcome.left
+          const spec = modelSpec(id)
+          const bytes = spec ? Bun.file(outcome.right).size : 0
+          updateOperation(cfg, id, {
+            state: "ready", receivedBytes: bytes,
+            totalBytes: bytes, error: null,
+          })
+          return outcome.right
+        })
+        .catch((error) => {
+          const reason = error instanceof ModelError ? error.reason : String(error)
+          updateOperation(cfg, id, {
+            state: "failed", receivedBytes: 0,
+            totalBytes: modelSpec(id)?.expectedBytes ?? null, error: reason,
+          })
+          throw error instanceof ModelError ? error : new ModelError(reason)
+        })
+        .finally(() => inFlight.delete(key))
+      inFlight.set(key, pending)
+      return pending
+    },
+    catch: (error) => error instanceof ModelError ? error : new ModelError(String(error)),
   })
 
 function sizeMatches(expected: number | null, actual: number, contentLength?: number): boolean {

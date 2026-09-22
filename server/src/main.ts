@@ -6,6 +6,7 @@ import { loadOrCreateToken } from "./Auth"
 import { ensureModel } from "./Models"
 import { loadSelection } from "./ServerState"
 import { makeRouter, stopLlama, type ApiContext } from "./Api"
+import { stopWhisper } from "./Whisper"
 
 /**
  * Omil inference core. Serves Whisper transcription + Qwen cleanup to
@@ -20,6 +21,19 @@ import { makeRouter, stopLlama, type ApiContext } from "./Api"
 
 const program = Effect.gen(function* () {
   const cfg = yield* loadConfig
+  const ownerPid = Number(process.env.OMIL_PARENT_PID ?? 0)
+  if (Number.isInteger(ownerPid) && ownerPid > 1) {
+    const ownerWatch = setInterval(() => {
+      try {
+        process.kill(ownerPid, 0)
+      } catch {
+        stopLlama()
+        stopWhisper()
+        process.exit(0)
+      }
+    }, 1_000)
+    ownerWatch.unref()
+  }
   // Reclaim a stale llama sidecar port left by a killed predecessor
   // (single-user Mac; the app owns this port).
   yield* Effect.promise(async () => {
@@ -49,12 +63,18 @@ const program = Effect.gen(function* () {
   }
   const token = yield* loadOrCreateToken(cfg.dataDir)
   const selection = yield* Effect.promise(() => loadSelection(cfg.dataDir))
-  const ctx: ApiContext = { cfg, token, selection, llama: null }
+  const ctx: ApiContext = { cfg, token, selection }
   console.log(`Omil inference core: http://${cfg.host}:${cfg.port}`)
   console.log(`whisper=${cfg.whisperModelId} llm=${cfg.llmModelId} (downloaded on first use)`)
-  yield* Effect.addFinalizer(() => Effect.sync(() => stopLlama()))
+  yield* Effect.addFinalizer(() => Effect.sync(() => {
+    stopLlama()
+    stopWhisper()
+  }))
   const server = HttpServer.serve(makeRouter(ctx))
-  yield* Layer.launch(Layer.provide(server, BunHttpServer.layer({ port: cfg.port })))
+  yield* Layer.launch(Layer.provide(server, BunHttpServer.layer({
+    port: cfg.port,
+    hostname: cfg.host,
+  })))
   // Park forever; Ctrl-C triggers the scope finalizer (llama shutdown).
   yield* Effect.never
 })

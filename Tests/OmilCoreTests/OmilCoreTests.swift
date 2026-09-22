@@ -2,6 +2,28 @@ import Foundation
 import Testing
 @testable import OmilCore
 
+@Suite("Audio level metering")
+struct AudioLevelMeterTests {
+    @Test func silenceIsZeroAndLoudAudioReadsHigher() {
+        let silence = pcmData(Array(repeating: 0, count: 512))
+        let quiet = pcmData((0..<512).map { $0.isMultiple(of: 2) ? 250 : -250 })
+        let loud = pcmData((0..<512).map { $0.isMultiple(of: 2) ? 24_000 : -24_000 })
+
+        let silentLevel = AudioLevelMeter.normalizedRMS(pcm16: silence)
+        let quietLevel = AudioLevelMeter.normalizedRMS(pcm16: quiet)
+        let loudLevel = AudioLevelMeter.normalizedRMS(pcm16: loud)
+
+        #expect(silentLevel == 0)
+        #expect(quietLevel > silentLevel)
+        #expect(loudLevel > quietLevel)
+        #expect(loudLevel <= 1)
+    }
+
+    private func pcmData(_ samples: [Int16]) -> Data {
+        samples.withUnsafeBytes { Data($0) }
+    }
+}
+
 // MARK: - Test helpers
 
 func snapshot(_ text: String, revision: Int = 1) -> TranscriptSnapshot {
@@ -192,6 +214,18 @@ struct SnapshotTests {
 
 @Suite("Session lifecycle")
 struct SessionTests {
+    @Test func cancelDuringPreparationStaysCancelled() async {
+        let backend = SlowPreparationBackend(delay: .milliseconds(80))
+        let session = DictationSession()
+        let start = Task { try? await session.start(backend: backend) }
+
+        try? await Task.sleep(for: .milliseconds(10))
+        await session.cancel()
+        await start.value
+
+        #expect(await session.currentPhase == .cancelled)
+    }
+
     @Test func injectAndCommitOnce() async {
         let session = DictationSession()
         let view = await session.injectFinalTranscript(text: "make it 42, sorry 21", backend: .mock(name: "t"))
@@ -218,6 +252,17 @@ struct SessionTests {
         #expect(view.text.lowercased().contains("um"))
     }
 
+    @Test func serverOwnedCleanupBypassesSwiftPipeline() async {
+        let session = DictationSession(mode: .clean, performsCleanup: false)
+        let view = await session.injectFinalTranscript(
+            text: "um make it 42, sorry 21",
+            backend: .server
+        )
+        #expect(view.text == "um make it 42, sorry 21")
+        #expect(view.journal.acceptedEdits.isEmpty)
+        #expect(view.rulesVersion == "server-pending")
+    }
+
     @Test func pauseBoundaryReversal() async {
         // "Make it 42, sorry 21" <pause> "keep the original" in one session.
         let session = DictationSession()
@@ -240,6 +285,43 @@ struct SessionTests {
         }
         #expect(edited == cases.count)
     }
+}
+
+private actor SlowPreparationBackend: TranscriptionBackend {
+    nonisolated let identity = BackendIdentity.mock(name: "slow-prepare")
+    nonisolated let capabilities = BackendCapabilities(
+        supportsStreaming: true,
+        supportsPartials: false,
+        supportsTimestamps: false,
+        supportsAlternatives: false,
+        requiresAssetDownload: false
+    )
+    nonisolated let requiredAudioFormat = AudioFormatRequirements(
+        sampleRate: 16_000,
+        channelCount: 1,
+        description: "test 16kHz mono PCM"
+    )
+    nonisolated let locale = "en-US"
+
+    private let delay: Duration
+
+    init(delay: Duration) {
+        self.delay = delay
+    }
+
+    func prepare() async throws {
+        try await Task.sleep(for: delay)
+    }
+
+    func currentAssetState() async -> AssetState { .ready }
+
+    func startStreaming(sessionId: SessionID) async -> AsyncStream<BackendEvent> {
+        AsyncStream { _ in }
+    }
+
+    func appendAudio(_ data: Data, timestamp: Double) async {}
+    func finishStreaming() async {}
+    func cancelStreaming() async {}
 }
 
 // MARK: - Delivery: destination changes, clipboard, undo

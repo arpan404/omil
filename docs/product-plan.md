@@ -29,8 +29,8 @@ Sources: [Wispr Flow feature overview](https://try.wisprflow.ai/), [Wispr Flow p
 | Spoken self-corrections | MVP | Grounded edit history, including reversals to an earlier choice |
 | Punctuation and lists | MVP | Explicit formatting operations with literal and quoted speech preserved |
 | Personal dictionary | Mac alpha | Local, user-controlled, no silent learning |
-| Snippets | After core dictation | Exact static expansion before any stylistic rewrite |
-| Per-app writing style | Later | Opt-in Polish mode, separate from faithful Clean mode |
+| Snippets | Mac alpha, implemented | Exact server-side expansion after faithful cleanup, with longest-trigger matching |
+| Per-app writing style | Mac alpha, implemented | App-category punctuation and casing profiles applied by the service |
 | App context | Later on Mac | Per-app consent and a narrow nearby-text window |
 | 100+ languages | Not an early promise | Publish only locales that pass Omil's ASR and correction tests |
 | Offline operation | Core differentiator | No network fallback; model downloads are explicit |
@@ -62,37 +62,13 @@ In-app recording with copy/share remains a fallback. Do not reduce the mobile pr
 
 Sources: [Apple custom keyboard restrictions](https://developer.apple.com/documentation/uikit/configuring-open-access-for-a-custom-keyboard), [Wispr's iPhone workflow](https://docs.wisprflow.ai/articles/6409258247-starting-your-first-dictation), [AudioRecordingIntent](https://developer.apple.com/documentation/appintents/audiorecordingintent).
 
-### Keep transcription choice separate from cleanup behavior
+### Keep inference in the Effect and Bun service
 
-Start with one recommended speech backend and an explicit advanced override for the comparison backend. Select eligible configurations using OS, locale, installed assets, and measured device results. Automatic onboarding benchmarks and a larger model catalog can follow when multiple configurations justify them.
+The Mac app is a SwiftUI client that owns a bundled local Omil service by default. It starts and stops that service, captures PCM audio, uploads a WAV, displays the returned transcript, and inserts the cleaned result. A user can explicitly override the managed service with another host. The app does not select or run an Apple Speech, WhisperKit, or Swift cleanup fallback.
 
-Transcription settings choose the engine and its measured speed, size, and accuracy tradeoffs. Cleanup settings independently choose Verbatim, Clean, or later Polish. A faster transcription setting must not silently disable correction handling. If the selected cleanup capability is unavailable, show that state and preserve the transcript or apply only validated edits.
+The service owns both inference stages. Whisper transcribes through `/v1/transcribe`; Qwen plus the TypeScript validator clean through `/v1/cleanup`. Model selection, downloads, prompt configuration, and readiness checks also belong to the service. The app may expose those controls, but only by calling the service API.
 
-Future Fast and Accurate presets may select different speech configurations once benchmarks justify those labels. Keep the selected cleanup mode unchanged. Advanced settings should expose the actual model, version, language support, and required download so users can make the choice they asked for.
-
-### Evaluate Apple system models as the primary candidate
-
-For OS 26 and newer, start evaluation with `SpeechAnalyzer` and `SpeechTranscriber`:
-
-- It runs entirely on device.
-- It supports live volatile results followed by final results.
-- Results can carry audio time ranges.
-- Apple stores the language model in system storage, outside the app's memory budget, and updates it independently.
-- `AssetInventory` handles optional language asset downloads.
-
-Use `DictationTranscriber` where `SpeechTranscriber` does not support a locale or device. Add an open ASR backend only after it wins our benchmark for a real user segment. Bundling Whisper on day one would add model downloads, memory pressure, battery work, and another decoder to maintain before we know that it improves the product.
-
-Add one comparison backend to the initial prototype, chosen for the first target language and devices. The shortlist is:
-
-- FluidAudio Parakeet EOU 120M for low-latency English streaming on iOS 17 and newer.
-- FluidAudio Parakeet TDT 0.6B for batch quality and 25 European languages.
-- WhisperKit as the broad-language baseline, starting with `base` and `small`, not the largest model that fits.
-
-FluidAudio targets Core ML and the Neural Engine. WhisperKit gives us a mature Swift/Core ML implementation of Whisper and much wider language coverage. Moonshine is CPU-only in its current Apple build, and SenseVoice is best treated as a later specialist for Mandarin, Cantonese, Japanese, Korean, and English.
-
-For custom models, compare eligible Core ML compute configurations in the intended execution state. `.all` is a foreground baseline, not a blanket policy for background mobile inference. Confirm actual operator placement with profiling. OS-specific background execution requirements need validation before enabling a backend for keyboard sessions. Treat the OS 27 Core AI path as a later experiment with an explicit deployment target.
-
-Sources: [SpeechAnalyzer session](https://developer.apple.com/videos/play/wwdc2025/277/), [Core ML compute units](https://developer.apple.com/documentation/coreml/mlcomputeunits), [Core AI model integration](https://developer.apple.com/documentation/foundationmodels/running-a-core-ai-model-in-a-foundation-models-session).
+Clean and Verbatim remain user-facing behavior choices. They do not change this boundary. If the server cannot transcribe, the session fails without a transcript. If cleanup fails after transcription, the Mac app retains the raw transcript and inserts nothing. It never claims a locally cleaned result.
 
 ### Compare correction strategies before choosing the implementation
 
@@ -162,7 +138,7 @@ Keep "Clean" and "Polish" separate. The user should know when Omil is editing de
 ### Version 0.1, technical proof
 
 - One shared Swift package, a minimal recorder, and thin Mac and mobile integrations.
-- Apple Speech as the primary ASR candidate and one comparison backend. Adapt input audio to each backend's supported format.
+- Whisper transcription and Qwen cleanup in the Effect/Bun service, with the SwiftUI Mac app acting only as a client.
 - A consented recorded corpus covering replacements, reversals, pauses, quoted corrections, ordinary apologies, numbers, names, negation, and unchanged speech. Maintain separate development and held-out examples.
 - Compare rules, local-model edits, and the hybrid on human transcripts first, then actual ASR output. Measure loss of correction cues and alternatives during recognition.
 - A Mac shortcut-to-insertion demonstration, including destination changes and scoped undo.
@@ -178,6 +154,8 @@ Exit condition: all three demonstrations have measured results and a written cap
 - One recommended transcription configuration, an advanced override where supported, and an independent cleanup setting.
 - Verbatim and Clean output.
 - Personal dictionary for names, acronyms, and product terms.
+- Voice snippets with explicit conflict checks and longest-trigger matching.
+- Per-app-category writing styles that change punctuation and casing without free rewriting.
 - Spoken formatting commands: new line, new paragraph, bullet list, numbered list, literal punctuation.
 - Raw/Cleaned/Diff history with undo and configurable retention.
 - English first. Add another locale only when its ASR and correction suites meet the release bar.

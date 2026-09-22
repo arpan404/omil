@@ -18,6 +18,7 @@ final class HotkeyManager: ObservableObject {
     var onPushStart: (() -> Void)?
     var onPushStop: (() -> Void)?
     var onToggle: (() -> Void)?
+    var onCancel: (() -> Void)?
 
     private var monitors: [Any] = []
     private var pushActive = false
@@ -47,13 +48,15 @@ final class HotkeyManager: ObservableObject {
         if let m = NSEvent.addGlobalMonitorForEvents(matching: .keyDown, handler: { [weak self] e in
             let flags = e.modifierFlags
             let chars = e.charactersIgnoringModifiers
-            Task { @MainActor in self?.handleToggle(flags: flags, chars: chars) }
+            let code = e.keyCode
+            Task { @MainActor in self?.handleKeyDown(keyCode: code, flags: flags, chars: chars) }
         }) { monitors.append(m) }
         if let m = NSEvent.addLocalMonitorForEvents(matching: .keyDown, handler: { [weak self] e in
             let flags = e.modifierFlags
             let chars = e.charactersIgnoringModifiers
-            Task { @MainActor in self?.handleToggle(flags: flags, chars: chars) }
-            return e
+            let code = e.keyCode
+            Task { @MainActor in self?.handleKeyDown(keyCode: code, flags: flags, chars: chars) }
+            return code == 53 ? nil : e
         }) { monitors.append(m) }
     }
 
@@ -77,7 +80,11 @@ final class HotkeyManager: ObservableObject {
         }
     }
 
-    private func handleToggle(flags: NSEvent.ModifierFlags, chars: String?) {
+    private func handleKeyDown(keyCode: UInt16, flags: NSEvent.ModifierFlags, chars: String?) {
+        if keyCode == 53 {
+            onCancel?()
+            return
+        }
         guard toggleEnabled else { return }
         if flags.contains([.control, .option]), chars?.lowercased() == "o" {
             onToggle?()
@@ -92,16 +99,16 @@ final class HotkeyManager: ObservableObject {
     /// Human-readable name for the configured push-to-talk modifier.
     var pushToTalkName: String {
         switch pushToTalkKeyCode {
-        case 61: return "Right Option (hold)"
-        case 58: return "Left Option (hold)"
-        case 59: return "Left Control (hold)"
-        case 62: return "Right Control (hold)"
-        case 55: return "Left Command (hold)"
-        case 54: return "Right Command (hold)"
-        case 56: return "Left Shift (hold)"
-        case 60: return "Right Shift (hold)"
-        case 63: return "Fn (hold)"
-        default: return "key code \(pushToTalkKeyCode) (hold)"
+        case 61: return "Right Option"
+        case 58: return "Left Option"
+        case 59: return "Left Control"
+        case 62: return "Right Control"
+        case 55: return "Left Command"
+        case 54: return "Right Command"
+        case 56: return "Left Shift"
+        case 60: return "Right Shift"
+        case 63: return "Fn"
+        default: return "Key code \(pushToTalkKeyCode)"
         }
     }
 }

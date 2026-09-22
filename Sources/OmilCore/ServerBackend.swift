@@ -41,11 +41,17 @@ public actor ServerTranscriptionBackend: TranscriptionBackend {
         self.locale = locale
     }
 
-    private func request(path: String, method: String = "GET", body: Data? = nil, contentType: String? = nil) throws -> URLRequest {
-        guard let base = config.baseURL else {
+    private func request(
+        path: String,
+        queryItems: [URLQueryItem] = [],
+        method: String = "GET",
+        body: Data? = nil,
+        contentType: String? = nil
+    ) throws -> URLRequest {
+        guard let endpoint = config.endpoint(path: path, queryItems: queryItems) else {
             throw BackendError.notAvailable(reason: "server not configured (host/token missing)")
         }
-        var req = URLRequest(url: base.appendingPathComponent(path))
+        var req = URLRequest(url: endpoint)
         req.httpMethod = method
         req.setValue("Bearer \(config.token)", forHTTPHeaderField: "Authorization")
         if let body {
@@ -89,11 +95,14 @@ public actor ServerTranscriptionBackend: TranscriptionBackend {
 
     /// Lightweight health probe for Settings (never triggers downloads).
     public func serverHealth() async -> String {
-        guard let base = config.baseURL, config.isConfigured else {
-            return "Not configured — enter host and token below"
+        guard config.baseURL != nil, config.isConfigured else {
+            return "Server connection not configured"
         }
         do {
-            var req = URLRequest(url: base.appendingPathComponent("/v1/health"))
+            guard let endpoint = config.endpoint(path: "/v1/health") else {
+                return "Server connection not configured"
+            }
+            var req = URLRequest(url: endpoint)
             req.timeoutInterval = 10
             let (data, response) = try await URLSession.shared.data(for: req)
             guard (response as? HTTPURLResponse)?.statusCode == 200 else { return "Unreachable" }
@@ -143,7 +152,8 @@ public actor ServerTranscriptionBackend: TranscriptionBackend {
         do {
             let wav = WavEncoder().encode(pcm16: pcm, sampleRate: Int(sampleRate))
             var req = try request(
-                path: "/v1/transcribe?language=\(config.language)",
+                path: "/v1/transcribe",
+                queryItems: [URLQueryItem(name: "language", value: config.language)],
                 method: "POST", body: wav, contentType: "audio/wav")
             req.timeoutInterval = 900
             let (data, response) = try await URLSession.shared.data(for: req)
@@ -183,6 +193,24 @@ public actor ServerTranscriptionBackend: TranscriptionBackend {
 
 // MARK: - ServerCleanupClient (Qwen cleanup via Omil server)
 
+public enum WritingStyle: String, Codable, Sendable, CaseIterable {
+    case automatic
+    case formal
+    case casual
+    case veryCasual
+    case excited
+
+    public var displayName: String {
+        switch self {
+        case .automatic: return "Automatic"
+        case .formal: return "Formal"
+        case .casual: return "Casual"
+        case .veryCasual: return "Very casual"
+        case .excited: return "Excited"
+        }
+    }
+}
+
 public struct ServerToken: Codable, Sendable {
     public var id: String
     public var text: String
@@ -213,6 +241,8 @@ public struct ServerCleanedResult: Codable, Sendable {
     public var rejected: [ServerRejectedEdit]
     public var abstentions: [ServerAbstention]
     public var rulesVersion: String
+    public var appliedSnippetTriggers: [String]?
+    public var writingStyle: WritingStyle?
 }
 
 public struct ServerRejectedEdit: Codable, Sendable {
@@ -230,17 +260,29 @@ public enum ServerCleanupError: Error, Sendable {
 public struct ServerCleanupClient: Sendable {
     public var config: ServerConfig
     public var dictionary: PersonalDictionary
+    public var snippets: [String: String]
+    public var style: WritingStyle
 
-    public init(config: ServerConfig, dictionary: PersonalDictionary = PersonalDictionary()) {
+    public init(
+        config: ServerConfig,
+        dictionary: PersonalDictionary = PersonalDictionary(),
+        snippets: [String: String] = [:],
+        style: WritingStyle = .automatic
+    ) {
         self.config = config
         self.dictionary = dictionary
+        self.snippets = snippets
+        self.style = style
     }
 
     public func clean(text: String, mode: CleanupMode) async throws -> ServerCleanedResult {
-        guard let base = config.baseURL, config.isConfigured else {
+        guard config.baseURL != nil, config.isConfigured else {
             throw ServerCleanupError.notConfigured
         }
-        var req = URLRequest(url: base.appendingPathComponent("/v1/cleanup"))
+        guard let endpoint = config.endpoint(path: "/v1/cleanup") else {
+            throw ServerCleanupError.notConfigured
+        }
+        var req = URLRequest(url: endpoint)
         req.httpMethod = "POST"
         req.setValue("Bearer \(config.token)", forHTTPHeaderField: "Authorization")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -249,6 +291,8 @@ public struct ServerCleanupClient: Sendable {
             "text": text,
             "mode": mode == .verbatim ? "verbatim" : "clean",
             "dictionary": dictionary.entries,
+            "snippets": snippets,
+            "style": style.rawValue,
         ]
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (data, response) = try await URLSession.shared.data(for: req)

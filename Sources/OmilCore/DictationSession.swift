@@ -50,6 +50,7 @@ public actor DictationSession {
     private var assembler = TranscriptAssembler()
     private var pipeline: CleanupPipeline
     private var mode: CleanupMode
+    private let performsCleanup: Bool
     private var finalizedSegments: [SegmentRevision] = []
     private var volatileSegments: [SegmentRevision] = []
     private var alternatives: [AlternativeHypothesis] = []
@@ -63,10 +64,15 @@ public actor DictationSession {
     private var lastResult: SessionResult?
     private var finalizedCountAtSnapshot = -1
 
-    public init(mode: CleanupMode = .clean, dictionary: PersonalDictionary = PersonalDictionary()) {
+    public init(
+        mode: CleanupMode = .clean,
+        dictionary: PersonalDictionary = PersonalDictionary(),
+        performsCleanup: Bool = true
+    ) {
         self.sessionId = SessionID()
         self.pipeline = CleanupPipeline(dictionary: dictionary)
         self.mode = mode
+        self.performsCleanup = performsCleanup
     }
 
     public func events() -> AsyncStream<SessionEvent> {
@@ -86,13 +92,22 @@ public actor DictationSession {
         do {
             try await backend.prepare()
         } catch {
+            if phase == .cancelled { throw SessionError.cancelled }
             phase = .failed
             eventContinuation?.yield(.failed(error: .backendUnavailable(reason: "\(error)")))
             throw error
         }
+        guard phase == .preparing else {
+            await backend.cancelStreaming()
+            throw SessionError.cancelled
+        }
         startedAt = Date()
-        phase = .recording
         let stream = await backend.startStreaming(sessionId: sessionId)
+        guard phase == .preparing else {
+            await backend.cancelStreaming()
+            throw SessionError.cancelled
+        }
+        phase = .recording
         consumeTask = Task { await self.consume(stream: stream, backend: backend) }
     }
 
@@ -199,14 +214,31 @@ public actor DictationSession {
 
     @discardableResult
     private func finalizeSnapshot(_ snapshot: TranscriptSnapshot) -> CleanedView {
-        let view = pipeline.clean(snapshot: snapshot, mode: mode, priorCandidates: candidates)
+        let view: CleanedView
+        if performsCleanup {
+            view = pipeline.clean(snapshot: snapshot, mode: mode, priorCandidates: candidates)
+        } else {
+            var journal = EditJournal(sessionId: snapshot.sessionId, baseSnapshotId: snapshot.snapshotId)
+            journal.derivedRevision = 1
+            view = CleanedView(
+                sessionId: snapshot.sessionId,
+                snapshotId: snapshot.snapshotId,
+                text: snapshot.rawText,
+                journal: journal,
+                mode: mode,
+                backend: snapshot.backend,
+                rulesVersion: "server-pending"
+            )
+        }
         candidates = view.journal.candidates
         let duration = startedAt.map { Date().timeIntervalSince($0) } ?? 0
         lastResult = SessionResult(
             sessionId: sessionId, rawSnapshot: snapshot, cleaned: view,
             backend: snapshot.backend, duration: duration, commitSequence: 0)
         if phase == .recording || phase == .processing || phase == .idle {
-            eventContinuation?.yield(.cleaned(view: view))
+            if performsCleanup {
+                eventContinuation?.yield(.cleaned(view: view))
+            }
             eventContinuation?.yield(.finalized(snapshot: snapshot))
             if phase == .idle {
                 // injectFinalTranscript path (no streaming lifecycle).

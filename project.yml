@@ -26,6 +26,8 @@ targets:
     deploymentTarget: "14.0"
     sources:
       - path: Apps/Mac
+      - path: server/dist/omil-server
+        buildPhase: resources
     dependencies:
       - package: OmilCore
     settings:

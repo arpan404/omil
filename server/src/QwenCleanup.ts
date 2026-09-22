@@ -5,7 +5,8 @@ import {
 } from "./Cleanup"
 import { resolve as resolveDeterministic } from "./Resolver"
 import { chatJson, type LlamaHandle, type ChatMessage } from "./LlamaServer"
-import type { ModelError } from "./Models"
+import { ModelError } from "./Models"
+import { applyWritingStyle, expandSnippets, type WritingStyle } from "./Personalization"
 
 export interface CleanedResult {
   readonly snapshotId: string
@@ -15,6 +16,8 @@ export interface CleanedResult {
   readonly rejected: Array<{ edit: ProposedEdit; reason: string }>
   readonly abstentions: Abstention[]
   readonly rulesVersion: string
+  readonly appliedSnippetTriggers?: readonly string[]
+  readonly writingStyle?: WritingStyle
 }
 
 const SYSTEM_PROMPT = `You repair spoken dictation transcripts. You NEVER rewrite freely: you output ONLY grounded edit operations over the given tokens, or no edits.
@@ -39,10 +42,12 @@ export interface CleanupInput {
   readonly text: string
   readonly mode: "verbatim" | "clean"
   readonly dictionary?: Record<string, string>
+  readonly snippets?: Record<string, string>
+  readonly style?: WritingStyle
 }
 
 export const cleanWithQwen = (
-  handle: LlamaHandle,
+  handle: LlamaHandle | null,
   input: CleanupInput,
   systemPrompt?: string,
 ): Effect.Effect<CleanedResult, ModelError, never> =>
@@ -52,11 +57,16 @@ export const cleanWithQwen = (
     const snap: Snapshot = { id: snapshotId, revision: 1, tokens }
 
     if (input.mode === "verbatim") {
+      const personalized = expandSnippets(verbatim(input.text), input.snippets)
       return {
-        snapshotId, tokens, text: verbatim(input.text),
+        snapshotId, tokens, text: personalized.text,
         acceptedEdits: [], rejected: [], abstentions: [], rulesVersion: `${RULES_VERSION}/verbatim`,
+        appliedSnippetTriggers: personalized.appliedSnippetTriggers,
+        writingStyle: "automatic" as const,
       }
     }
+
+    if (!handle) return yield* Effect.fail(new ModelError("cleanup model is not running"))
 
     const abstentions: Abstention[] = []
     const fill = fillerEdits(snapshotId, tokens)
@@ -121,10 +131,15 @@ export const cleanWithQwen = (
       }
     }
 
+    const styled = applyWritingStyle(text, input.style)
+    const personalized = expandSnippets(styled, input.snippets)
     return {
-      snapshotId, tokens, text,
+      snapshotId, tokens,
       acceptedEdits: final, rejected, abstentions,
-      rulesVersion: `${RULES_VERSION}/qwen-hybrid`,
+      text: personalized.text,
+      rulesVersion: `${RULES_VERSION}/qwen-hybrid+personalization`,
+      appliedSnippetTriggers: personalized.appliedSnippetTriggers,
+      writingStyle: input.style ?? "automatic",
     }
   })
 

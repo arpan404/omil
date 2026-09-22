@@ -27,6 +27,16 @@ public struct ServerConfig: Codable, Sendable, Equatable {
         return comps.url
     }
 
+    public func endpoint(path: String, queryItems: [URLQueryItem] = []) -> URL? {
+        guard let baseURL,
+              var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
+            return nil
+        }
+        components.path = path.hasPrefix("/") ? path : "/\(path)"
+        components.queryItems = queryItems.isEmpty ? nil : queryItems
+        return components.url
+    }
+
     public var isConfigured: Bool {
         !(host.trimmingCharacters(in: .whitespaces).isEmpty || token.isEmpty)
     }

@@ -1,5 +1,5 @@
 import Foundation
-import AVFAudio
+@preconcurrency import AVFAudio
 #if canImport(AVFoundation)
 import AVFoundation
 #endif
@@ -31,6 +31,32 @@ public struct CapturedChunk: Sendable {
         self.sampleRate = sampleRate
         self.timestamp = timestamp
         self.isFinal = isFinal
+    }
+}
+
+/// Converts captured PCM16 samples into a display-ready microphone level.
+/// The logarithmic scale keeps speech readable while a noise gate holds true
+/// silence at zero. This value is for UI feedback, not audio processing.
+public enum AudioLevelMeter {
+    public static func normalizedRMS(pcm16: Data, floorDB: Double = -60) -> Double {
+        let sampleCount = pcm16.count / MemoryLayout<Int16>.size
+        guard sampleCount > 0 else { return 0 }
+
+        let sumOfSquares = pcm16.withUnsafeBytes { bytes -> Double in
+            var sum = 0.0
+            for offset in stride(from: 0, to: sampleCount * 2, by: 2) {
+                let raw = bytes.loadUnaligned(fromByteOffset: offset, as: Int16.self)
+                let sample = Double(Int16(littleEndian: raw)) / 32_768.0
+                sum += sample * sample
+            }
+            return sum
+        }
+
+        let rms = sqrt(sumOfSquares / Double(sampleCount))
+        guard rms > 0 else { return 0 }
+        let decibels = 20 * log10(rms)
+        let linear = min(1, max(0, (decibels - floorDB) / -floorDB))
+        return pow(linear, 0.72)
     }
 }
 
@@ -110,6 +136,10 @@ public final class AudioCapture: NSObject, @unchecked Sendable {
         do {
             try engine.start()
         } catch {
+            input.removeTap(onBus: 0)
+            self.chunkHandler = nil
+            converter = nil
+            targetFormat = nil
             setState(.failed)
             throw CaptureError.engineFailure(underlying: "\(error)")
         }
@@ -158,7 +188,7 @@ public final class AudioCapture: NSObject, @unchecked Sendable {
             }
         }
         accumulatedFrames += out16.count / 2
-        if accumulatedFrames * 1 > Self.maxBytes {
+        if accumulatedFrames * MemoryLayout<Int16>.size > Self.maxBytes {
             // Bound the pipeline: stop with a clear state instead of growing.
             stop()
             return
@@ -171,6 +201,9 @@ public final class AudioCapture: NSObject, @unchecked Sendable {
         setState(.stopping)
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
+        chunkHandler = nil
+        converter = nil
+        targetFormat = nil
         setState(.stopped)
     }
 
@@ -178,6 +211,8 @@ public final class AudioCapture: NSObject, @unchecked Sendable {
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         chunkHandler = nil
+        converter = nil
+        targetFormat = nil
         setState(.idle)
     }
 }

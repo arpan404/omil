@@ -1,0 +1,218 @@
+import Foundation
+import OmilCore
+
+/// Owns the bundled Effect/Bun server for the normal Mac experience.
+/// A custom server is an explicit override managed by DictationController.
+@MainActor
+final class LocalServerManager: ObservableObject {
+    enum State: Equatable {
+        case stopped
+        case starting
+        case running(port: Int)
+        case failed(String)
+    }
+
+    @Published private(set) var state: State = .stopped
+
+    private var process: Process?
+    private var logHandle: FileHandle?
+    private var activeConfig: ServerConfig?
+
+    var isRunning: Bool { process?.isRunning == true }
+
+    func start() async throws -> ServerConfig {
+        if let activeConfig, isRunning { return activeConfig }
+
+        stop()
+        state = .starting
+
+        let fileManager = FileManager.default
+        let root = try serverDirectory(fileManager: fileManager)
+        try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+        let token = try loadOrCreateToken(in: root, fileManager: fileManager)
+        let ports = choosePorts()
+        let executable = try bundledServerURL(fileManager: fileManager)
+        let logURL = root.appendingPathComponent("omil-server.log")
+        if !fileManager.fileExists(atPath: logURL.path) {
+            fileManager.createFile(atPath: logURL.path, contents: nil)
+        }
+
+        let log = try FileHandle(forWritingTo: logURL)
+        try log.seekToEnd()
+        let child = Process()
+        child.executableURL = executable
+        child.currentDirectoryURL = root
+        child.standardOutput = log
+        child.standardError = log
+
+        var environment = ProcessInfo.processInfo.environment
+        environment["OMIL_HOST"] = "127.0.0.1"
+        environment["OMIL_PORT"] = String(ports.api)
+        environment["OMIL_LLAMA_PORT"] = String(ports.llama)
+        environment["OMIL_DATA"] = root.path
+        environment["OMIL_PARENT_PID"] = String(ProcessInfo.processInfo.processIdentifier)
+        environment["PATH"] = mergedPath(environment["PATH"])
+        environment["OMIL_WHISPER_BIN"] = executablePath(named: "whisper-cli") ?? "whisper-cli"
+        environment["OMIL_LLAMA_BIN"] = executablePath(named: "llama-server") ?? "llama-server"
+        child.environment = environment
+
+        do {
+            try child.run()
+        } catch {
+            try? log.close()
+            state = .failed("Could not launch the bundled server: \(error.localizedDescription)")
+            throw error
+        }
+
+        process = child
+        logHandle = log
+        let launchedPID = child.processIdentifier
+        child.terminationHandler = { [weak self] exited in
+            let status = exited.terminationStatus
+            Task { @MainActor [weak self] in
+                guard let self, self.process?.processIdentifier == launchedPID else { return }
+                self.process = nil
+                self.activeConfig = nil
+                try? self.logHandle?.close()
+                self.logHandle = nil
+                self.state = .failed("The local server exited with status \(status).")
+            }
+        }
+        let config = ServerConfig(host: "127.0.0.1", port: ports.api, token: token)
+        activeConfig = config
+
+        for _ in 0..<60 {
+            if !child.isRunning {
+                let message = "The bundled server exited during startup."
+                state = .failed(message)
+                throw LocalServerError.startupFailed(message)
+            }
+            if await responds(at: config) {
+                state = .running(port: ports.api)
+                return config
+            }
+            try await Task.sleep(for: .milliseconds(200))
+        }
+
+        stop()
+        let message = "The bundled server did not become ready."
+        state = .failed(message)
+        throw LocalServerError.startupFailed(message)
+    }
+
+    func restart() async throws -> ServerConfig {
+        stop()
+        return try await start()
+    }
+
+    func stop() {
+        if let process, process.isRunning {
+            process.terminate()
+        }
+        process = nil
+        activeConfig = nil
+        try? logHandle?.close()
+        logHandle = nil
+        state = .stopped
+    }
+
+    private func responds(at config: ServerConfig) async -> Bool {
+        guard let base = config.baseURL else { return false }
+        var request = URLRequest(url: base.appendingPathComponent("/v1/health"))
+        request.timeoutInterval = 1
+        do {
+            let (_, response) = try await URLSession.shared.data(for: request)
+            return (response as? HTTPURLResponse)?.statusCode == 200
+        } catch {
+            return false
+        }
+    }
+
+    private func serverDirectory(fileManager: FileManager) throws -> URL {
+        if let override = ProcessInfo.processInfo.environment["OMIL_MANAGED_DATA"], !override.isEmpty {
+            return URL(fileURLWithPath: override, isDirectory: true)
+        }
+        let support = try fileManager.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )
+        return support.appendingPathComponent("Omil/Server", isDirectory: true)
+    }
+
+    private func bundledServerURL(fileManager: FileManager) throws -> URL {
+        guard let url = Bundle.main.url(forResource: "omil-server", withExtension: nil),
+              fileManager.isExecutableFile(atPath: url.path) else {
+            throw LocalServerError.missingBundle
+        }
+        return url
+    }
+
+    private func loadOrCreateToken(in directory: URL, fileManager: FileManager) throws -> String {
+        let url = directory.appendingPathComponent("omil-token")
+        if let value = try? String(contentsOf: url, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines), value.count >= 16 {
+            return value
+        }
+
+        let value = (UUID().uuidString + UUID().uuidString)
+            .replacingOccurrences(of: "-", with: "")
+        try value.write(to: url, atomically: true, encoding: .utf8)
+        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        return value
+    }
+
+    private func choosePorts() -> (api: Int, llama: Int) {
+        for api in stride(from: 3217, through: 3317, by: 10) {
+            if !hasListener(on: api), !hasListener(on: api + 1) {
+                return (api, api + 1)
+            }
+        }
+        return (4317, 4318)
+    }
+
+    private func hasListener(on port: Int) -> Bool {
+        let check = Process()
+        check.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+        check.arguments = ["-nP", "-iTCP:\(port)", "-sTCP:LISTEN", "-t"]
+        check.standardOutput = Pipe()
+        check.standardError = Pipe()
+        do {
+            try check.run()
+            check.waitUntilExit()
+            return check.terminationStatus == 0
+        } catch {
+            return false
+        }
+    }
+
+    private func mergedPath(_ current: String?) -> String {
+        let required = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+        let existing = (current ?? "").split(separator: ":").map(String.init)
+        return Array(Set(required + existing)).joined(separator: ":")
+    }
+
+    private func executablePath(named name: String) -> String? {
+        let candidates = [
+            Bundle.main.resourceURL?.appendingPathComponent(name).path,
+            "/opt/homebrew/bin/\(name)",
+            "/usr/local/bin/\(name)"
+        ].compactMap { $0 }
+        return candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) })
+    }
+}
+
+enum LocalServerError: LocalizedError {
+    case missingBundle
+    case startupFailed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .missingBundle:
+            return "The Effect/Bun server is missing from this app build."
+        case .startupFailed(let message):
+            return message
+        }
+    }
+}

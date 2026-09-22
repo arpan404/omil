@@ -10,10 +10,11 @@ Inference moved to the **Omil server core on the user's Mac**
 proposes ordinary repairs, a deterministic TypeScript resolver handles
 restarts/reversals/scope/structure, and a validator applies only grounded
 edits (type compatibility, subject scope, negation, preservation with
-fallback). Swift apps are thin clients. iPhone/iPad reach the server over
+fallback). The Mac client owns the bundled server process by default;
+an external server is an explicit override. iPhone/iPad reach a server over
 the LAN — no third party, but the Mac must be reachable and the LAN trusted.
-The deterministic local engine stays as an offline fallback and for all
-unit tests.
+The Mac app has no Swift inference fallback. Its deterministic Swift engine
+remains test infrastructure for the shared transcript and delivery model.
 
 ## Measured results, server core (2026-09-19, reference Mac)
 
@@ -29,7 +30,7 @@ unit tests.
 | Model catalog | 6 Whisper sizes + 3 Qwen sizes listed, select validated | `/v1/models`, `/v1/models/select` live (incl. 400 on unknown id) |
 | Prompt override | set → used (flagged) → reset round-trip | `/v1/prompt` live |
 | Compiled engine (`bun build --compile`, 62 MB) | boots standalone, token auth, transcribe works | embedded binary on :3229 vs fresh data dir |
-| App-owned sidecars | implemented, not yet exercised end-to-end | needs a clean-machine (or wiped bin dir) install test |
+| App-owned Effect/Bun server | embedded binary launches, authenticates, prepares models, and shuts down with app | clean build + live health/prepare smoke test |
 
 Qwen evidence: zero-shot+few-shot proposes correct simple repairs but fails
 reversals and scoped restatements and once proposed a scope-violating deletion
@@ -43,8 +44,8 @@ ordinary cue repairs only; conflicts lose to deterministic edits.
 | --- | --- | --- |
 | Text cleanup corpus, Swift engine (human transcripts) | 25/25 exact, 0 harmful, 0 over-edits, coverage 14/14 | `omil-eval --corpus …` |
 | Mandatory examples (all 6 incl. negation + scope) | pass | `swift test` (MandatoryCorrectionTests) |
-| Unit tests (Swift) | 47/47 pass | `swift test` |
-| Server unit tests (TS validator, tokenizer, corpus parity) | 39/39 pass | `cd server && bun test` |
+| Unit tests (Swift) | 53/53 pass | `swift test` |
+| Server unit tests (TS validator, tokenizer, corpus parity) | 43/43 pass | `cd server && bun test` |
 | Apple `SpeechTranscriber` availability (en-US, fallback path) | available, assets ready | `omil-eval --probe` |
 | Cleanup latency, Swift engine (text-only, 25 cases) | avg 0.1 ms, p95 0.3 ms | `omil-eval --bench` |
 | Mock session stop→commit round trip | 0.013 s (drain loop, no audio/ASR) | `--bench` |
@@ -58,32 +59,32 @@ numbers above are component measurements with stated exclusions.
 
 ## Supported workflows (headless-verified)
 
-- Record → transcribe (Apple primary, SFSpeech on-device fallback, mock for tests)
-- Verbatim and Clean modes, independent of transcription choice
-- Visible recording state; explicit start, stop, cancel
+- Record → upload WAV → Whisper transcription in the Effect/Bun service
+- Verbatim and Clean modes, with cleanup performed by the service
+- Server-owned snippets with exact/inline expansion and longest-trigger matching
+- App-category writing styles, selected by the SwiftUI client and applied by the service
+- Hold-to-talk, hands-free toggle, and Escape-to-cancel shortcuts
+- Microphone-sensitive recording meter; explicit start, stop, cancel
 - Raw / Cleaned / Diff inspection; replayable edit journal
 - Guarded insertion: destination revalidation, single commit, duplicate/ack protection
 - Clipboard fallback with ownership (never overwrites newer user copies)
 - Scoped undo (refuses after unrelated user typing)
 - Keyboard session handoff: request → complete → insert-once → ack; expired/
   unacknowledged sessions surface explicit states, never silent failure
-- Offline after asset install; no account; no network inference path exists
+- No account; the Mac defaults to its loopback-only managed server
 
 ## Known limits / unverified (need physical devices)
 
 - No human-speech evaluation yet — synthetic TTS only, labeled as such.
-- App-owned sidecar install (bottle download → verify → smoke check) is
-  implemented but untested on a clean machine; sidecar bottles target macOS
-  Tahoe+ while the app floor is macOS 14 (older Macs keep the Apple/legacy
-  fallback).
+- Native `whisper-cli` and `llama-server` still need to be present on the Mac;
+  packaging those native sidecars is separate from ownership of the Effect/Bun process.
 - No microphone recording test through the Swift apps (no mic in this environment).
 - No AX insertion test against a live host app (needs granted Accessibility trust).
 - No iPhone→Mac round trip on device (needs LAN + token setup, provisioning for keyboard).
 - No background/lock/interrupt/suspend lifecycle runs on iPhone/iPad.
 - No latency, memory, energy, or thermal measurements on device (server-side
   warm numbers above are component timings, not product p95s).
-- Apple on-device path retained as fallback (local transcription + rules),
-  not the default. Parakeet/WhisperKit not integrated: Whisper large covers
+- Parakeet/WhisperKit are not integrated. Whisper in the Bun service covers
   the target segment.
 - Locales: English only. Other locales are explicit future capabilities with
   their own suites, not promises.

@@ -36,6 +36,11 @@ final class AXInserter: TextDestination, @unchecked Sendable {
 
     var isTrusted: Bool { AXIsProcessTrusted() }
 
+    var capturedBundleId: String? {
+        lock.lock(); defer { lock.unlock() }
+        return target?.bundleId
+    }
+
     func requestTrust() {
         let opts = [axPromptKey as String: true] as CFDictionary
         _ = AXIsProcessTrustedWithOptions(opts)
@@ -44,6 +49,9 @@ final class AXInserter: TextDestination, @unchecked Sendable {
     /// Capture the frontmost app's focused text field. Call at recording start.
     @discardableResult
     func captureTarget() -> Bool {
+        lock.lock()
+        target = nil
+        lock.unlock()
         guard isTrusted else { return false }
         guard let app = NSWorkspace.shared.frontmostApplication else { return false }
         let appEl = AXUIElementCreateApplication(app.processIdentifier)

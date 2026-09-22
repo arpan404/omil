@@ -24,16 +24,36 @@ struct ServerClientTests {
         #expect(!ServerConfig(host: "", token: "").isConfigured)
     }
 
+    @Test func transcriptionEndpointKeepsLanguageAsQuery() {
+        let cfg = ServerConfig(host: "127.0.0.1", port: 3217, token: "test", language: "en-US")
+        let url = cfg.endpoint(
+            path: "/v1/transcribe",
+            queryItems: [URLQueryItem(name: "language", value: cfg.language)]
+        )
+        #expect(url?.path == "/v1/transcribe")
+        #expect(URLComponents(url: url!, resolvingAgainstBaseURL: false)?.queryItems == [
+            URLQueryItem(name: "language", value: "en-US")
+        ])
+    }
+
     @Test func cleanupResponseDecodes() throws {
         let json = """
         {"snapshotId":"s1","tokens":[{"id":"s1-0","text":"Make","normalized":"make","kind":"word","isProtected":false}],
          "text":"Make it 21.","acceptedEdits":[{"op":"replaceFromSource","targetTokenIds":["s1-2"],"evidenceTokenIds":["s1-4"],"reason":"cue"}],
-         "rejected":[],"abstentions":[],"rulesVersion":"omil-ts-1/qwen-hybrid"}
+         "rejected":[],"abstentions":[],"rulesVersion":"omil-ts-1/qwen-hybrid+personalization",
+         "appliedSnippetTriggers":["my intro"],"writingStyle":"casual"}
         """
         let r = try JSONDecoder().decode(ServerCleanedResult.self, from: Data(json.utf8))
         #expect(r.text == "Make it 21.")
         #expect(r.acceptedEdits.count == 1)
         #expect(r.rulesVersion.contains("qwen"))
+        #expect(r.appliedSnippetTriggers == ["my intro"])
+        #expect(r.writingStyle == .casual)
+    }
+
+    @Test func writingStyleWireValuesMatchServer() throws {
+        #expect(WritingStyle.allCases.map(\.rawValue) == ["automatic", "formal", "casual", "veryCasual", "excited"])
+        #expect(try JSONEncoder().encode(WritingStyle.veryCasual) == Data("\"veryCasual\"".utf8))
     }
 
     @Test func transcriptDecodes() throws {

@@ -1,8 +1,11 @@
 import { describe, expect, test } from "bun:test"
+import { Effect } from "effect"
 import {
   tokenize, deriveNumber, fillerEdits, numberEdits, validateEdit, render,
   verifyPreservation, type Snapshot,
 } from "../src/Cleanup"
+import { applyWritingStyle, expandSnippets } from "../src/Personalization"
+import { cleanWithQwen } from "../src/QwenCleanup"
 
 const snap = (text: string): Snapshot => {
   const id = "test-snap"
@@ -137,5 +140,41 @@ describe("filler rules", () => {
     const r = fillerEdits(b.id, b.tokens)
     expect(r.edits.length).toBe(0)
     expect(r.abstentions.length).toBe(1)
+  })
+})
+
+describe("personalization", () => {
+  test("verbatim snippets do not require the Qwen sidecar", async () => {
+    const result = await Effect.runPromise(cleanWithQwen(null, {
+      text: "my signature",
+      mode: "verbatim",
+      snippets: { "my signature": "Arpan\nFounder, Omil" },
+      style: "excited",
+    }))
+    expect(result.text).toBe("Arpan\nFounder, Omil")
+    expect(result.writingStyle).toBe("automatic")
+  })
+
+  test("whole-utterance snippet expansion stays exact", () => {
+    const result = expandSnippets("My email signature.", {
+      "my email signature": "Arpan\nFounder, Omil",
+    })
+    expect(result.text).toBe("Arpan\nFounder, Omil")
+    expect(result.appliedSnippetTriggers).toEqual(["my email signature"])
+  })
+
+  test("longest inline snippet trigger wins first", () => {
+    const result = expandSnippets("Send my work address, please.", {
+      "my work": "wrong",
+      "my work address": "1600 Market Street",
+    })
+    expect(result.text).toBe("Send 1600 Market Street, please.")
+  })
+
+  test("writing styles only change casing and final punctuation", () => {
+    expect(applyWritingStyle("Sounds good.", "casual")).toBe("Sounds good")
+    expect(applyWritingStyle("Sounds good.", "veryCasual")).toBe("sounds good")
+    expect(applyWritingStyle("Sounds good.", "excited")).toBe("Sounds good!")
+    expect(applyWritingStyle("Sounds good.", "formal")).toBe("Sounds good.")
   })
 })
