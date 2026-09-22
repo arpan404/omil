@@ -68,3 +68,26 @@ swift build && swift test
 swift run omil-eval --corpus Tests/OmilCoreTests/Fixtures/corpus.json
 swift run omil-eval --bench && swift run omil-eval --probe && swift run omil-eval --asr-eval
 ```
+
+## Releases
+
+Set a release version and increment its internal build number with:
+
+```sh
+./scripts/release.sh prepare 0.2.0
+```
+
+Commit and push that version change. Copy `.env.release.example` to `.env`,
+fill in the credentials, and publish the signed, notarized release. The CLI
+loads `.env` automatically, while credentials exported in the shell take
+precedence.
+
+```sh
+cp .env.release.example .env
+./scripts/release.sh status
+./scripts/release.sh publish --notes-file RELEASE_NOTES.md
+```
+
+The command creates `Omil-<version>.zip` and `appcast.xml`, signs the update
+with Sparkle's EdDSA key, and uploads both files to a GitHub Release. The app
+checks the `appcast.xml` attached to the latest release.

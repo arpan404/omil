@@ -15,6 +15,6 @@ xcodebuild -project Omil.xcodeproj -scheme OmilMac -configuration Debug \
   -destination 'platform=macOS' \
   CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="-" build
 
-APP=$(find ~/Library/Developer/Xcode/DerivedData/Omil-*/Build/Products/Debug -maxdepth 1 -name "OmilMac.app" | head -n 1)
+APP=$(find ~/Library/Developer/Xcode/DerivedData/Omil-*/Build/Products/Debug -maxdepth 1 -name "Omil.app" | head -n 1)
 echo "==> app: $APP"
 echo "Launch the app with: open \"$APP\""

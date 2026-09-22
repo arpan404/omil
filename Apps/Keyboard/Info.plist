@@ -7,11 +7,15 @@
 	<key>CFBundleDisplayName</key>
 	<string>Omil Dictation</string>
 	<key>CFBundleIdentifier</key>
-	<string>com.omil.ios.keyboard</string>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
 	<key>CFBundleName</key>
 	<string>Omil Dictation</string>
 	<key>CFBundlePackageType</key>
 	<string>XPC!</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>NSExtension</key>
 	<dict>
 		<key>NSExtensionPointIdentifier</key>

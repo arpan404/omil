@@ -7,20 +7,24 @@
 	<key>CFBundleDisplayName</key>
 	<string>Omil</string>
 	<key>CFBundleIdentifier</key>
-	<string>com.omil.mac</string>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
 	<key>CFBundleName</key>
 	<string>Omil</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.1.0</string>
+	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
-	<string>1</string>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Omil records your voice and sends it to its local engine, or to the server you explicitly choose, for transcription.</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>Copyright © 2026 Omil. All rights reserved.</string>
+	<key>SUFeedURL</key>
+	<string>https://github.com/arpan404/omil/releases/latest/download/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>$(SPARKLE_PUBLIC_ED_KEY)</string>
 </dict>
 </plist>

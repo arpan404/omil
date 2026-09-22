@@ -107,6 +107,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 enum AppContext {
     static let localServer = LocalServerManager()
     static let controller = DictationController(localServer: localServer)
+    static let updater = UpdateController()
 }
 
 @main
@@ -209,6 +210,8 @@ struct MenuBarView: View {
             Divider().overlay(OmilTheme.line)
             HStack {
                 Button("Open Omil") { (NSApp.delegate as? AppDelegate)?.openMainWindow() }
+                Button("Check for Updates…") { AppContext.updater.checkForUpdates() }
+                    .disabled(!AppContext.updater.canCheckForUpdates)
                 Spacer()
                 Button("Quit") { NSApp.terminate(nil) }
             }
@@ -416,6 +419,14 @@ struct SettingsView: View {
                         Button("Check") { Task { await controller.refreshBackendStatus() } }
                             .buttonStyle(QuietButtonStyle())
                     }
+                }
+            }
+
+            SettingsGroup(title: "Updates") {
+                SettingsRow(title: AppVersion.display, detail: "Updates are delivered from GitHub Releases.") {
+                    Button("Check now") { AppContext.updater.checkForUpdates() }
+                        .buttonStyle(QuietButtonStyle())
+                        .disabled(!AppContext.updater.canCheckForUpdates)
                 }
             }
         }

@@ -16,6 +16,8 @@ build/
 *.ipa
 *.dmg
 OmilMac.app/
+.env
+.env.release
 
 # Omil server runtime
 server/data/models/
