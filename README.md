@@ -1,49 +1,36 @@
 # Omil
 
-Omil is local voice dictation for macOS. Hold Right Option, speak, and release
-to insert the result into the app you were using. A selected Whisper model
-transcribes the audio. A hybrid pipeline combines deterministic correction
-rules with a selected Qwen model, then validates every proposed edit.
+**Local dictation for Mac. A Wispr Flow alternative without cloud transcription.**
 
-Inference runs on your Mac. Omil does not require an account or send recordings
-to a hosted transcription service.
+Talk naturally, and Omil puts your words into the app you were using. Whisper
+transcribes; Qwen cleans up filler words and spoken corrections. Both run on
+your Mac, with no account required.
 
-> Omil is under active development. The Mac app is the primary client. The iOS
-> app and keyboard extension are present in the repository but still need
-> physical-device validation.
+## What you get
 
-## What it does
+- Hold Right Option to dictate into the selected text field. You can also use
+  the toggle shortcut, menu bar, or an always-visible floating Start control.
+- Choose Clean or Verbatim. Add preferred spellings and snippets, or edit the
+  cleanup prompt in Advanced settings.
+- Compare Raw, Changes, and Clean versions in History. Replay saved recordings
+  or transcribe them again.
+- Adjust speech sensitivity for a distant voice or background noise.
+- Keep the server private to your Mac, or enable local network sharing for an
+  iPhone or iPad.
 
-- Hold Right Option for push-to-talk, or press Control + Option + O to toggle
-  recording. An optional always-visible floating pill can start dictation with
-  one click instead.
-- Review Raw, Changes, and Clean versions of a transcript in History, and play
-  or transcribe saved recordings again.
-- Add snippets, preferred spellings, and writing styles for different app
-  categories.
-- Choose speech sensitivity for distant voices or noisier rooms, and edit the
-  cleanup system prompt in Advanced settings. Each device sends its own prompt
-  override for cleanup requests.
-- Insert text through macOS Accessibility, with a guarded clipboard fallback.
-- Keep dictation history and preferences on the Mac.
-- Follow the system appearance or choose a light or dark theme.
-- Keep the inference server private to the Mac by default, or explicitly share
-  it with an iPhone or iPad on the local network using generated credentials.
-- Queue simultaneous transcription and cleanup requests without mixing the
-  model, dictionary, snippet, style, prompt, or cleanup settings chosen by each client.
+The Mac app is the primary client. The iOS app and keyboard extension are
+still being tested on physical devices.
 
 ## How it works
 
-The SwiftUI app records audio and manages a bundled Effect and Bun server. The
-server calls `whisper.cpp` with one of nine transcription models and
-`llama.cpp` with one of six cleanup models. The Engine screen controls model
-selection, downloads, deletion, and local-network access. A validator rejects
-cleanup edits that change the meaning of the transcript.
+The Mac app records audio and runs a local server. `whisper.cpp` transcribes
+speech; `llama.cpp` runs the selected Qwen cleanup model. Omil checks proposed
+edits before applying them. The Engine screen manages models and local network
+access.
 
-The managed server listens only on loopback until local-network sharing is
-enabled. Omil then shows the endpoint and bearer token an iPhone or iPad needs
-to use the same Mac-hosted engine. Transcription and cleanup have independent
-single-worker queues so multiple devices can submit work safely.
+You can optionally connect an iPhone or iPad to the Mac server over your local
+network. Each device sends its own speech sensitivity and cleanup prompt. The
+server keeps those requests separate.
 
 On Mac, Settings → General → Floating pill offers Off, While dictating, and
 Always. Always keeps a draggable Start control on screen between recordings.
