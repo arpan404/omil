@@ -71,6 +71,11 @@ struct ServerClientTests {
         #expect(b.capabilities.supportsTimestamps == true)
         #expect(b.identity == .server)
     }
+
+    @Test func speechSensitivityHasStablePerRequestValues() {
+        #expect(SpeechSensitivity.allCases.map(\.rawValue) == ["strict", "balanced", "distant"])
+        #expect(SpeechSensitivity.distant.detail.contains("quieter"))
+    }
 }
 
 @Suite("Server catalog consistency")

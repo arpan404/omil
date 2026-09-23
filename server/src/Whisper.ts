@@ -1,9 +1,11 @@
 import { Effect } from "effect"
-import { mkdtemp, rm, readFile } from "node:fs/promises"
+import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import type { ServerConfig } from "./Config"
+import { VAD_MODEL, type ServerConfig } from "./Config"
+import { AUDIO_PROFILES, type AudioSensitivity } from "./AudioSensitivity"
 import { ensureModel, ModelError } from "./Models"
+import { preprocessWav } from "./AudioPreprocessor"
 
 export interface TranscriptSegment {
   readonly start: number
@@ -37,17 +39,30 @@ export const transcribeFile = (
   audioPath: string,
   language = "en",
   modelId?: string,
+  sensitivity: AudioSensitivity = "balanced",
 ): Effect.Effect<Transcript, ModelError, never> =>
   Effect.gen(function* () {
     const selected = modelId ?? cfg.whisperModelId
     const whisperLanguage = normalizeWhisperLanguage(language)
+    const profile = AUDIO_PROFILES[sensitivity]
+    const prepared = yield* Effect.promise(() => readFile(audioPath).then((wav) => preprocessWav(wav, sensitivity)))
+    if (prepared.silent) return { text: "", segments: [], model: selected }
     const model = yield* ensureModel(cfg, selected)
+    const vadModel = yield* ensureModel(cfg, VAD_MODEL.id)
     const dir = yield* Effect.promise(() => mkdtemp(path.join(tmpdir(), "omil-whisper-")))
     let proc: Bun.Subprocess | null = null
     try {
       const base = path.join(dir, "out")
+      const input = path.join(dir, "input.wav")
+      yield* Effect.promise(() => writeFile(input, prepared.wav))
       const child = Bun.spawn(
-        [cfg.whisperBin, "-m", model, "-f", audioPath, "-l", whisperLanguage, "-oj", "-of", base, "-np"],
+        [cfg.whisperBin, "-m", model, "-f", input, "-l", whisperLanguage,
+          "--vad", "--vad-model", vadModel,
+          "--vad-threshold", String(profile.vadThreshold),
+          "--vad-min-speech-duration-ms", String(profile.minSpeechMs),
+          "--vad-min-silence-duration-ms", String(profile.minSilenceMs),
+          "--vad-speech-pad-ms", String(profile.speechPadMs),
+          "-oj", "-of", base, "-np"],
         { stdout: "pipe", stderr: "pipe" },
       )
       proc = child

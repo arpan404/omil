@@ -54,7 +54,7 @@ final class DictationController: ObservableObject {
         }
     }
 
-    enum RecordingSource { case app, shortcut, menuBar }
+    enum RecordingSource { case app, shortcut, menuBar, pill }
     @Published private(set) var recordingSource: RecordingSource = .app
     @Published var phase: Phase = .idle
     @Published var draftText = ""
@@ -68,12 +68,18 @@ final class DictationController: ObservableObject {
     @Published var cleanupMode: CleanupMode = .clean {
         didSet { UserDefaults.standard.set(cleanupMode.rawValue, forKey: "omil.mode") }
     }
+    @Published var speechSensitivity: SpeechSensitivity = .balanced {
+        didSet { UserDefaults.standard.set(speechSensitivity.rawValue, forKey: "omil.speechSensitivity") }
+    }
     @Published var history: [HistoryEntry] = []
     @Published private(set) var recoveryRecordings: [RecoveryRecording] = []
     @Published private(set) var audioRetentionDays = 7
     @Published var lastReceipt: InsertionReceipt?
     @Published var lastDeliveryMethod = ""
     @Published var micPermission: MicPermission = .unknown
+    @Published var automaticallyCopyTranscripts = false {
+        didSet { UserDefaults.standard.set(automaticallyCopyTranscripts, forKey: "omil.automaticallyCopyTranscripts") }
+    }
     @Published var historyEnabled = true
     @Published var serverConfig = ServerConfig()
     @Published var externalServerConfig = ServerConfig(host: "", port: 3217)
@@ -94,6 +100,7 @@ final class DictationController: ObservableObject {
     @Published private(set) var pendingLLMFile: String?
     @Published var promptText = ""
     @Published var promptCustom = false
+    private var activePromptOverride: String?
     @Published var serverOpNote = ""
     @Published private(set) var modelsPreparing = false
     @Published private(set) var downloadingModelIDs: Set<String> = []
@@ -101,6 +108,9 @@ final class DictationController: ObservableObject {
     @Published private(set) var audioLevel = 0.0
     @Published var pillEnabled = true {
         didSet { UserDefaults.standard.set(pillEnabled, forKey: "omil.pillEnabled") }
+    }
+    @Published var pillAlwaysVisible = false {
+        didSet { UserDefaults.standard.set(pillAlwaysVisible, forKey: "omil.pillAlwaysVisible") }
     }
     @Published var appearance: AppearancePreference = .system {
         didSet {
@@ -165,9 +175,11 @@ final class DictationController: ObservableObject {
 
     private var session: DictationSession?
     private var capture = AudioCapture()
+    private var audioForwarder: AudioChunkForwarder?
     private var backend: (any TranscriptionBackend)?
     private var ax = AXInserter()
     private var clipboard = ClipboardInserter()
+    private let recentTargetApp = RecentTargetApp.shared
     private var precondition: SelectionPrecondition?
     private var sessionSeq = 0
     private var eventTask: Task<Void, Never>?
@@ -183,8 +195,17 @@ final class DictationController: ObservableObject {
 
     init(localServer: LocalServerManager) {
         self.localServer = localServer
+        activePromptOverride = UserDefaults.standard.string(forKey: "omil.cleanupSystemPrompt")
+        if let activePromptOverride {
+            promptText = activePromptOverride
+            promptCustom = true
+        }
         if let raw = UserDefaults.standard.string(forKey: "omil.mode"), let m = CleanupMode(rawValue: raw) {
             cleanupMode = m
+        }
+        if let raw = UserDefaults.standard.string(forKey: "omil.speechSensitivity"),
+           let saved = SpeechSensitivity(rawValue: raw) {
+            speechSensitivity = saved
         }
         dictionary = LocalHistory.loadDictionary()
         snippets = LocalHistory.loadSnippets()
@@ -202,7 +223,9 @@ final class DictationController: ObservableObject {
         if usesCustomServer { serverConfig = externalServerConfig }
         whisperFile = UserDefaults.standard.string(forKey: "omil.whisperFile") ?? whisperFile
         llmFile = UserDefaults.standard.string(forKey: "omil.llmFile") ?? llmFile
+        automaticallyCopyTranscripts = UserDefaults.standard.bool(forKey: "omil.automaticallyCopyTranscripts")
         pillEnabled = UserDefaults.standard.object(forKey: "omil.pillEnabled") as? Bool ?? true
+        pillAlwaysVisible = UserDefaults.standard.bool(forKey: "omil.pillAlwaysVisible")
         if let raw = UserDefaults.standard.string(forKey: "omil.appearance"),
            let savedAppearance = AppearancePreference(rawValue: raw) {
             appearance = savedAppearance
@@ -662,21 +685,27 @@ final class DictationController: ObservableObject {
 
     func setPillEnabled(_ on: Bool) {
         pillEnabled = on
-        UserDefaults.standard.set(on, forKey: "omil.pillEnabled")
+    }
+
+    func setPillAlwaysVisible(_ on: Bool) {
+        pillAlwaysVisible = on
+        if on { pillEnabled = true }
     }
 
     // MARK: Prompt override
 
     func loadPrompt() {
         guard let req = serverRequest(path: "/v1/prompt") else { return }
+        let textBeforeRequest = promptText
         Task {
             do {
                 let (data, response) = try await URLSession.shared.data(for: req)
                 guard (response as? HTTPURLResponse)?.statusCode == 200,
                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
                 await MainActor.run {
-                    self.promptText = (json["text"] as? String) ?? ""
-                    self.promptCustom = (json["isCustom"] as? Bool) ?? false
+                    if !self.promptCustom && self.promptText == textBeforeRequest {
+                        self.promptText = (json["text"] as? String) ?? ""
+                    }
                 }
             } catch { /* server not up yet */ }
         }
@@ -684,37 +713,23 @@ final class DictationController: ObservableObject {
 
     func savePrompt() {
         guard promptText.trimmingCharacters(in: .whitespacesAndNewlines).count >= 50,
-              let req = serverRequest(path: "/v1/prompt", method: "POST", jsonBody: ["text": promptText]) else {
-            serverOpNote = "Prompt too short (min 50 chars)"
+              promptText.count <= 50_000 else {
+            serverOpNote = "Prompt must be between 50 and 50,000 characters"
             return
         }
-        Task {
-            do {
-                let (_, response) = try await URLSession.shared.data(for: req)
-                await MainActor.run {
-                    if (response as? HTTPURLResponse)?.statusCode == 200 {
-                        self.promptCustom = true
-                        self.serverOpNote = "Custom prompt saved. It applies to the next cleanup."
-                    } else {
-                        self.serverOpNote = "Prompt rejected by server"
-                    }
-                }
-            } catch {
-                await MainActor.run { self.serverOpNote = "Prompt save failed: server unreachable?" }
-            }
-        }
+        activePromptOverride = promptText
+        UserDefaults.standard.set(promptText, forKey: "omil.cleanupSystemPrompt")
+        promptCustom = true
+        serverOpNote = "Prompt saved for cleanup requests from this Mac."
     }
 
     func resetPrompt() {
-        guard let req = serverRequest(path: "/v1/prompt", method: "DELETE") else { return }
-        Task {
-            _ = try? await URLSession.shared.data(for: req)
-            await MainActor.run {
-                self.promptCustom = false
-                self.loadPrompt()
-                self.serverOpNote = "Prompt reset to default"
-            }
-        }
+        activePromptOverride = nil
+        UserDefaults.standard.removeObject(forKey: "omil.cleanupSystemPrompt")
+        promptCustom = false
+        promptText = ""
+        loadPrompt()
+        serverOpNote = "Using the server's default cleanup prompt."
     }
 
     func refreshServerHealth() async {
@@ -793,7 +808,8 @@ final class DictationController: ObservableObject {
             dictionary: dictionary,
             snippets: Dictionary(uniqueKeysWithValues: snippets.map { ($0.trigger, $0.expansion) }),
             style: styleForCapturedTarget(),
-            modelId: ServerCatalog.llmIdForFile[llmFile]
+            modelId: ServerCatalog.llmIdForFile[llmFile],
+            systemPrompt: activePromptOverride
         )
         let result = try await client.clean(
             text: rawText,
@@ -811,7 +827,8 @@ final class DictationController: ObservableObject {
     func makeBackend() -> (any TranscriptionBackend)? {
         ServerTranscriptionBackend(
             config: serverConfig,
-            modelId: ServerCatalog.whisperIdForFile[whisperFile]
+            modelId: ServerCatalog.whisperIdForFile[whisperFile],
+            sensitivity: speechSensitivity
         )
     }
 
@@ -872,7 +889,7 @@ final class DictationController: ObservableObject {
             return
         }
         // Capture the intended destination + selection first.
-        let axOk = ax.captureTarget()
+        let axOk = ax.captureTarget(application: recentTargetApp.target(for: source))
         precondition = ax.capturePrecondition()
         sessionSeq += 1
         let session = DictationSession(
@@ -884,7 +901,9 @@ final class DictationController: ObservableObject {
         self.backend = backend
         recoveryBuffer.reset()
         phase = .preparing
-        statusMessage = axOk ? "Preparing" : "Preparing. No text field was found, so Omil will keep the result."
+        statusMessage = !axTrusted
+            ? "Accessibility access is needed to insert into other apps. The transcript will stay in Omil."
+            : axOk ? "Preparing microphone" : "No text field selected. Transcript stays in Omil."
         draftText = ""
         resetAudioMeter()
         let sessionID = session.sessionId
@@ -955,17 +974,22 @@ final class DictationController: ObservableObject {
     private func startCapture(backend: any TranscriptionBackend, session: DictationSession) {
         let sessionID = session.sessionId
         let recoveryBuffer = self.recoveryBuffer
+        let forwarder = AudioChunkForwarder { chunk in
+            await backend.appendAudio(chunk.pcm16, timestamp: chunk.timestamp)
+        }
+        audioForwarder = forwarder
         do {
-            let captureBackend = backend
             try capture.start(targetSampleRate: 16_000, targetChannels: 1) { chunk in
                 recoveryBuffer.append(chunk.pcm16)
                 let level = AudioLevelMeter.normalizedRMS(pcm16: chunk.pcm16)
                 Task { @MainActor [weak self] in
                     self?.pushAudioLevel(level, timestamp: chunk.timestamp)
                 }
-                Task { await captureBackend.appendAudio(chunk.pcm16, timestamp: chunk.timestamp) }
+                forwarder.append(chunk)
             }
         } catch {
+            forwarder.cancel()
+            audioForwarder = nil
             Task { @MainActor in
                 guard self.session?.sessionId == sessionID else { return }
                 self.phase = .failed
@@ -987,8 +1011,11 @@ final class DictationController: ObservableObject {
         phase = .processing
         statusMessage = "Transcribing your recording"
         capture.stop()
+        let forwarder = audioForwarder
+        audioForwarder = nil
         saveRecoveryAudio(for: sessionID)
         Task {
+            await forwarder?.finish()
             if let result = await activeSession.stop() {
                 guard self.session?.sessionId == sessionID else { return }
                 await deliver(result: result, session: activeSession)
@@ -1024,6 +1051,8 @@ final class DictationController: ObservableObject {
         eventTask?.cancel()
         eventTask = nil
         capture.cancel()
+        audioForwarder?.cancel()
+        audioForwarder = nil
         recoveryBuffer.reset()
         phase = .idle
         draftText = ""
@@ -1070,7 +1099,7 @@ final class DictationController: ObservableObject {
                 self.phase = .ready
                 self.lastCleaned = ""
                 self.statusMessage = "No speech was detected"
-                self.updateRecovery(for: committed.sessionId, state: .ready, transcript: "")
+                self.updateRecovery(for: committed.sessionId, state: .ready, transcript: "", rawTranscript: "")
             }
             return
         } else {
@@ -1101,6 +1130,7 @@ final class DictationController: ObservableObject {
                         for: committed.sessionId,
                         state: .ready,
                         transcript: committed.rawSnapshot.rawText,
+                        rawTranscript: committed.rawSnapshot.rawText,
                         failureReason: "Cleanup failed; raw transcript preserved."
                     )
                 }
@@ -1108,66 +1138,67 @@ final class DictationController: ObservableObject {
             }
         }
         serverNote = note
-        if recordingSource == .app {
+        if recordingSource == .app && ax.capturedPID == nil {
             finishDelivery(text: text, method: "Transcript ready", receipt: nil, result: committed)
             return
         }
         processingStage = .inserting
         statusMessage = "Inserting your text"
+        await restoreCapturedAppFocusIfNeeded()
+        guard self.session?.sessionId == committed.sessionId else { return }
         let pre = self.precondition ?? SelectionPrecondition()
-        // 1. Try direct AX insertion with revalidation.
-        if axTrusted, case .ok = ax.revalidate(precondition: pre) {
-            do {
-                let receipt = try ax.insert(text: text, precondition: pre, sessionId: committed.sessionId, sequence: committed.commitSequence)
-                finishDelivery(text: text, method: "Inserted into focused field", receipt: receipt, result: committed)
-                return
-            } catch {
-                // Fall through to clipboard recovery.
-            }
-        }
-        // 2. Explicit clipboard recovery. Auto-paste needs Accessibility trust
-        // (CGEvent); without it we copy and guide a manual paste instead.
-        let prepared = clipboard.prepare(text: text)
-        if axTrusted {
-            clipboard.paste()
-            // Restore prior contents after the host consumed the paste — only
-            // while Omil still owns the clipboard write. Never blocks delivery.
-            let inserter = clipboard
-            DispatchQueue.global().async {
-                let restored = inserter.restoreIfOwned(prepared: prepared)
-                Task { @MainActor in
-                    self.statusMessage = restored
-                        ? "Pasted via clipboard (prior clipboard restored)"
-                        : "Pasted via clipboard"
+        let outcome = TextDelivery.attempt(
+            text: text, precondition: pre,
+            sessionId: committed.sessionId, sequence: committed.commitSequence,
+            destination: ax, trusted: axTrusted,
+            paste: { text in
+                guard let prepared = clipboard.prepare(text: text) else { return .unavailable }
+                guard clipboard.paste() else { return .copied }
+                let inserter = clipboard
+                DispatchQueue.global().async {
+                    _ = inserter.restoreIfOwned(prepared: prepared)
                 }
+                return .sent
             }
+        )
+        switch outcome {
+        case .inserted(let receipt):
+            finishDelivery(text: text, method: "Inserted into focused field", receipt: receipt, result: committed)
+        case .pasteSent:
+            finishDelivery(text: text, method: "Sent paste to focused field", receipt: nil, result: committed)
+        case .copiedForManualPaste:
+            finishDelivery(text: text, method: "Copied. Press ⌘V to paste.", receipt: nil, result: committed)
+        case .retained(let reason):
+            finishDelivery(text: text, method: reason, receipt: nil, result: committed)
         }
-        let receipt = InsertionReceipt(
-            sessionId: committed.sessionId,
-            destination: DestinationIdentity(appBundleId: "clipboard", fieldIdentifier: "pasteboard"),
-            precondition: pre, insertedText: text, commitSequence: committed.commitSequence,
-            undoSupported: false)
-        finishDelivery(
-            text: text,
-            method: axTrusted
-                ? "Pasted via clipboard"
-                : "Copied. Press ⌘V to paste.",
-            receipt: receipt, result: committed)
+    }
+
+    private func restoreCapturedAppFocusIfNeeded() async {
+        guard let targetPID = ax.capturedPID,
+              targetPID != NSRunningApplication.current.processIdentifier,
+              NSWorkspace.shared.frontmostApplication?.processIdentifier == NSRunningApplication.current.processIdentifier,
+              let app = NSRunningApplication(processIdentifier: targetPID),
+              app.activate() else { return }
+        for _ in 0..<10 {
+            if NSWorkspace.shared.frontmostApplication?.processIdentifier == targetPID { return }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
     }
 
     private func finishDelivery(text: String, method: String, receipt: InsertionReceipt?, result: SessionResult) {
         lastReceipt = receipt
-        lastDeliveryMethod = method
+        let copied = TranscriptClipboard.copyIfEnabled(text, enabled: automaticallyCopyTranscripts)
+        lastDeliveryMethod = copied ? "\(method). Copied to clipboard." : method
         lastCleaned = text
         phase = .ready
-        statusMessage = method
+        statusMessage = lastDeliveryMethod
         recordHistory(
             raw: result.rawSnapshot.rawText,
             cleaned: text,
             backend: result.backend.displayName,
             duration: result.duration
         )
-        updateRecovery(for: result.sessionId, state: .ready, transcript: text)
+        updateRecovery(for: result.sessionId, state: .ready, transcript: text, rawTranscript: result.rawSnapshot.rawText)
     }
 
     private func recordHistory(raw: String, cleaned: String, backend: String, duration: Double) {
@@ -1239,7 +1270,10 @@ final class DictationController: ObservableObject {
             statusMessage = "Nothing to paste yet"
             return
         }
-        let prepared = clipboard.prepare(text: lastCleaned)
+        guard let prepared = clipboard.prepare(text: lastCleaned) else {
+            statusMessage = "Clipboard contents could not be preserved. Copy the transcript manually."
+            return
+        }
         guard axTrusted else {
             statusMessage = "Copied. Press ⌘V to paste."
             return
@@ -1288,7 +1322,8 @@ final class DictationController: ObservableObject {
         let requestID = "recovery-\(recording.id.uuidString.lowercased())-\(UUID().uuidString.lowercased())"
         let transcriber = ServerTranscriptionBackend(
             config: serverConfig,
-            modelId: ServerCatalog.whisperIdForFile[whisperFile]
+            modelId: ServerCatalog.whisperIdForFile[whisperFile],
+            sensitivity: speechSensitivity
         )
         recordingSource = .app
         phase = .processing
@@ -1314,9 +1349,12 @@ final class DictationController: ObservableObject {
                     backend: "Whisper recovery",
                     duration: recording.duration
                 )
-                updateRecovery(recording.id, state: .ready, transcript: cleaned.text)
+                updateRecovery(recording.id, state: .ready, transcript: cleaned.text, rawTranscript: transcript.text)
                 phase = .ready
-                statusMessage = "Recovered transcript ready"
+                lastReceipt = nil
+                let copied = TranscriptClipboard.copyIfEnabled(cleaned.text, enabled: automaticallyCopyTranscripts)
+                lastDeliveryMethod = copied ? "Transcript ready. Copied to clipboard." : "Transcript ready"
+                statusMessage = lastDeliveryMethod
             } catch {
                 updateRecovery(recording.id, state: .failed, failureReason: "\(error)")
                 phase = .failed
@@ -1364,21 +1402,24 @@ final class DictationController: ObservableObject {
         for sessionID: SessionID,
         state: RecoveryRecordingState,
         transcript: String? = nil,
+        rawTranscript: String? = nil,
         failureReason: String? = nil
     ) {
         guard let id = recoveryIDsBySession[sessionID] else { return }
-        updateRecovery(id, state: state, transcript: transcript, failureReason: failureReason)
+        updateRecovery(id, state: state, transcript: transcript, rawTranscript: rawTranscript, failureReason: failureReason)
     }
 
     private func updateRecovery(
         _ id: UUID,
         state: RecoveryRecordingState,
         transcript: String? = nil,
+        rawTranscript: String? = nil,
         failureReason: String? = nil
     ) {
         guard let index = recoveryRecordings.firstIndex(where: { $0.id == id }) else { return }
         recoveryRecordings[index].state = state
         recoveryRecordings[index].transcript = transcript
+        if let rawTranscript { recoveryRecordings[index].rawTranscript = rawTranscript }
         recoveryRecordings[index].failureReason = failureReason
         do {
             try recoveryStore.update(recoveryRecordings[index])

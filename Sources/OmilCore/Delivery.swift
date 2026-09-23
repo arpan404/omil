@@ -54,6 +54,8 @@ public struct InsertionReceipt: Hashable, Sendable, Codable {
 
 public enum DestinationCheck: Sendable {
     case ok
+    /// The same field is focused, but it does not expose a selection for direct AX insertion.
+    case pasteOnly
     /// Destination changed or cannot be verified: retain for explicit insertion.
     case stale(reason: String)
 }

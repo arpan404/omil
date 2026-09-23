@@ -15,18 +15,22 @@ to a hosted transcription service.
 ## What it does
 
 - Hold Right Option for push-to-talk, or press Control + Option + O to toggle
-  recording.
-- Review the raw transcript, cleaned text, and applied edits before reinserting
-  a result.
+  recording. An optional always-visible floating pill can start dictation with
+  one click instead.
+- Review Raw, Changes, and Clean versions of a transcript in History, and play
+  or transcribe saved recordings again.
 - Add snippets, preferred spellings, and writing styles for different app
   categories.
+- Choose speech sensitivity for distant voices or noisier rooms, and edit the
+  cleanup system prompt in Advanced settings. Each device sends its own prompt
+  override for cleanup requests.
 - Insert text through macOS Accessibility, with a guarded clipboard fallback.
 - Keep dictation history and preferences on the Mac.
 - Follow the system appearance or choose a light or dark theme.
 - Keep the inference server private to the Mac by default, or explicitly share
   it with an iPhone or iPad on the local network using generated credentials.
 - Queue simultaneous transcription and cleanup requests without mixing the
-  model, dictionary, snippet, style, or cleanup settings chosen by each client.
+  model, dictionary, snippet, style, prompt, or cleanup settings chosen by each client.
 
 ## How it works
 
@@ -40,6 +44,9 @@ The managed server listens only on loopback until local-network sharing is
 enabled. Omil then shows the endpoint and bearer token an iPhone or iPad needs
 to use the same Mac-hosted engine. Transcription and cleanup have independent
 single-worker queues so multiple devices can submit work safely.
+
+On Mac, Settings → General → Floating pill offers Off, While dictating, and
+Always. Always keeps a draggable Start control on screen between recordings.
 
 ## Requirements
 
@@ -72,9 +79,42 @@ The script installs server dependencies, type-checks and tests the server,
 compiles the bundled server, regenerates the Xcode project, and builds the Mac
 app. It prints the path to `Omil.app` when it finishes.
 
+To build a local Mac app in Release configuration with Apple Development signing, run:
+
+```sh
+./scripts/build-local-mac.sh --install
+```
+
+To give that build a different app version without editing project files, pass
+the version and build number:
+
+```sh
+./scripts/build-local-mac.sh --install 0.2.0 2
+```
+
+The script builds the bundled server, regenerates the Xcode project, and puts
+`Omil.app` in `.build/local-derived-data/Build/Products/Release/`. With `--install`,
+it replaces `/Applications/Omil.app` and opens it. It requires
+the Apple Development certificate for team `BVT55BT25R`; it does not notarize
+or publish the app. Install each build at the same path (`/Applications/Omil.app`)
+to keep macOS privacy permissions tied to the same app identity. Switching from
+an earlier ad hoc build may require one final permission grant. The app and its
+bundled Sparkle framework use the same signing identity with hardened runtime.
+
 On first launch, Omil asks for microphone access and downloads the selected
 models. Accessibility permission enables direct text insertion. Input
 Monitoring permission enables global shortcuts when Omil is not focused.
+Right-click the floating pill to hide it without stopping the recording.
+The menu bar can show or hide the pill, and Settings offers all three display
+modes.
+The Omil window and menu bar can return to the last focused field in another
+app when that field is still available. If focus changed, the transcript stays
+in Omil.
+Mac Settings and iPhone Settings each have a Speech sensitivity choice. Balanced
+is the default. Distant voice can catch quieter or shorter speech, while Filter
+more noise is less likely to treat background sound as speech. Each app sends
+its own choice with the recording; these settings apply when using the Omil
+server.
 
 ## Development
 

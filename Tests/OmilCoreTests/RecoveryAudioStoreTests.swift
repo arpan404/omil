@@ -16,12 +16,24 @@ struct RecoveryAudioStoreTests {
 
         recording.state = .ready
         recording.transcript = "Recovered text"
+        recording.rawTranscript = "Recovered raw text"
         try store.update(recording)
         #expect(store.load(retentionDays: 7).first?.transcript == "Recovered text")
+        #expect(store.load(retentionDays: 7).first?.rawTranscript == "Recovered raw text")
 
         try store.delete(recording)
         #expect(store.load(retentionDays: 7).isEmpty)
         #expect(!FileManager.default.fileExists(atPath: store.audioURL(for: recording).path))
+    }
+
+    @Test func olderRecordingMetadataWithoutRawTranscriptStillDecodes() throws {
+        let json = """
+        [{"id":"00000000-0000-0000-0000-000000000001","createdAt":0,"duration":1,
+          "filename":"old.wav","state":"ready","transcript":"clean"}]
+        """
+        let recordings = try JSONDecoder().decode([RecoveryRecording].self, from: Data(json.utf8))
+        #expect(recordings.first?.transcript == "clean")
+        #expect(recordings.first?.rawTranscript == nil)
     }
 
     @Test func prunesExpiredAudioAndKeepsRecentAudio() throws {

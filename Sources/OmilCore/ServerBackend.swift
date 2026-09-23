@@ -32,16 +32,23 @@ public actor ServerTranscriptionBackend: TranscriptionBackend {
 
     private let config: ServerConfig
     private let modelId: String?
+    private let sensitivity: SpeechSensitivity
     private var pcm = Data()
     private var sampleRate = 16_000.0
     private var events: AsyncStream<BackendEvent>.Continuation?
     private var finished = false
     private var requestId: String?
 
-    public init(config: ServerConfig, locale: String = "en-US", modelId: String? = nil) {
+    public init(
+        config: ServerConfig,
+        locale: String = "en-US",
+        modelId: String? = nil,
+        sensitivity: SpeechSensitivity = .balanced
+    ) {
         self.config = config
         self.locale = locale
         self.modelId = modelId
+        self.sensitivity = sensitivity
     }
 
     private func request(
@@ -192,7 +199,10 @@ public actor ServerTranscriptionBackend: TranscriptionBackend {
     }
 
     private func transcribe(wav: Data, requestId: String?) async throws -> ServerTranscript {
-        var queryItems = [URLQueryItem(name: "language", value: config.language)]
+        var queryItems = [
+            URLQueryItem(name: "language", value: config.language),
+            URLQueryItem(name: "sensitivity", value: sensitivity.rawValue)
+        ]
         if let modelId { queryItems.append(URLQueryItem(name: "model", value: modelId)) }
         var req = try request(
             path: "/v1/transcribe",
@@ -300,19 +310,22 @@ public struct ServerCleanupClient: Sendable {
     public var snippets: [String: String]
     public var style: WritingStyle
     public var modelId: String?
+    public var systemPrompt: String?
 
     public init(
         config: ServerConfig,
         dictionary: PersonalDictionary = PersonalDictionary(),
         snippets: [String: String] = [:],
         style: WritingStyle = .automatic,
-        modelId: String? = nil
+        modelId: String? = nil,
+        systemPrompt: String? = nil
     ) {
         self.config = config
         self.dictionary = dictionary
         self.snippets = snippets
         self.style = style
         self.modelId = modelId
+        self.systemPrompt = systemPrompt
     }
 
     public func clean(
@@ -340,6 +353,7 @@ public struct ServerCleanupClient: Sendable {
             "style": style.rawValue,
         ]
         if let modelId { body["model"] = modelId }
+        if let systemPrompt { body["systemPrompt"] = systemPrompt }
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (data, response) = try await URLSession.shared.data(for: req)
         let code = (response as? HTTPURLResponse)?.statusCode ?? 0

@@ -12,11 +12,12 @@ import { Effect, Config as Cfg } from "effect"
 
 export interface ModelSpec {
   readonly id: string
-  readonly kind: "whisper" | "llm"
+  readonly kind: "whisper" | "llm" | "vad"
   readonly url: string
   readonly filename: string
   /** Exact size when pinned; null = accept server's content-length, SHA pinned on first download. */
   readonly expectedBytes: number | null
+  readonly expectedSha256?: string
   readonly description: string
 }
 
@@ -140,6 +141,17 @@ export const MODELS: ReadonlyArray<ModelSpec> = [
 
 export const DEFAULT_WHISPER = "whisper-large-v3-turbo"
 export const DEFAULT_LLM = "qwen3-4b-instruct"
+
+// Internal preprocessing asset, intentionally absent from the user model catalog.
+export const VAD_MODEL: ModelSpec = {
+  id: "silero-vad-v6.2.0",
+  kind: "vad",
+  url: "https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v6.2.0.bin",
+  filename: "ggml-silero-v6.2.0.bin",
+  expectedBytes: 885_098,
+  expectedSha256: "2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987",
+  description: "Silero voice activity detector for whisper.cpp",
+}
 
 export interface ServerConfig {
   readonly host: string

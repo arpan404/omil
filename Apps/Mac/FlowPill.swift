@@ -8,18 +8,71 @@ import OmilCore
 private enum PillLayout {
     static func size(for phase: DictationController.Phase) -> NSSize {
         switch phase {
-        case .idle: return NSSize(width: 92, height: 36)
-        case .preparing: return NSSize(width: 132, height: 40)
+        case .idle: return NSSize(width: 116, height: 36)
+        case .preparing: return NSSize(width: 150, height: 40)
         case .recording: return NSSize(width: 160, height: 44)
-        case .processing: return NSSize(width: 158, height: 40)
-        case .ready: return NSSize(width: 132, height: 38)
-        case .failed: return NSSize(width: 196, height: 42)
+        case .processing: return NSSize(width: 150, height: 40)
+        case .ready: return NSSize(width: 150, height: 38)
+        case .failed: return NSSize(width: 168, height: 42)
         }
     }
 }
 
+struct PillVisibility {
+    private(set) var hiddenForCurrentRecording = false
+    private var lastPhase: DictationController.Phase = .idle
+
+    mutating func observe(_ phase: DictationController.Phase, alwaysVisible: Bool = false) {
+        if phase == .preparing && lastPhase != .preparing {
+            hiddenForCurrentRecording = false
+        }
+        if alwaysVisible && (phase == .idle || phase == .ready || phase == .failed) {
+            hiddenForCurrentRecording = false
+        }
+        lastPhase = phase
+    }
+
+    mutating func hide() {
+        hiddenForCurrentRecording = true
+    }
+}
+
+/// Persist the bottom center, which stays fixed as the pill changes size.
+struct PillPosition {
+    private(set) var anchor: NSPoint?
+    private let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        if let value = defaults.string(forKey: "omil.pillAnchor") {
+            anchor = NSPointFromString(value)
+        } else if let value = defaults.string(forKey: "omil.pillPosition") {
+            let origin = NSPointFromString(value)
+            anchor = NSPoint(x: origin.x + 80, y: origin.y)
+        }
+    }
+
+    mutating func remember(_ frame: NSRect) {
+        let point = NSPoint(x: frame.midX, y: frame.minY)
+        anchor = point
+        defaults.set(NSStringFromPoint(point), forKey: "omil.pillAnchor")
+    }
+
+    func frame(size: NSSize, fallback: NSPoint, screens: [NSRect]) -> NSRect {
+        let point = anchor ?? fallback
+        var frame = NSRect(x: point.x - size.width / 2, y: point.y, width: size.width, height: size.height)
+        guard let screen = screens.first(where: { $0.contains(point) })
+            ?? screens.first(where: { $0.intersects(frame) })
+            ?? screens.first else { return frame }
+        let bounds = screen.insetBy(dx: 8, dy: 8)
+        frame.origin.x = max(bounds.minX, min(frame.minX, bounds.maxX - size.width))
+        frame.origin.y = max(bounds.minY, min(frame.minY, bounds.maxY - size.height))
+        return frame
+    }
+}
+
 @MainActor
-final class PillManager: ObservableObject {
+final class PillManager: NSObject, ObservableObject, NSWindowDelegate {
     static let shared = PillManager()
 
     private var panel: NSPanel?
@@ -27,8 +80,12 @@ final class PillManager: ObservableObject {
     private weak var controller: DictationController?
     private var presentation: PillPresentation?
     private var dismissTask: Task<Void, Never>?
+    private var visibility = PillVisibility()
 
-    private init() {}
+    private var position = PillPosition()
+    private var placingPanel = false
+
+    private override init() { super.init() }
 
     func debugInfo() -> String {
         guard let p = panel else { return "no panel" }
@@ -60,38 +117,54 @@ final class PillManager: ObservableObject {
         p.hidesOnDeactivate = false
         p.animationBehavior = .utilityWindow
         p.isReleasedWhenClosed = false
-        if let saved = UserDefaults.standard.string(forKey: "omil.pillPosition") {
-            p.setFrameOrigin(NSPointFromString(saved))
-            keepOnScreen(p)
-        } else {
-            positionBottomCenter(p)
-        }
         p.alphaValue = 0.72
         self.panel = p
+        resize(p, to: initialSize)
+        p.delegate = self
+        NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)
+            .sink { [weak self] _ in
+                guard let self, let panel = self.panel else { return }
+                self.resize(panel, to: panel.frame.size)
+            }.store(in: &cancellables)
         controller.$phase.sink { [weak self] phase in
             self?.reflect(phase: phase)
         }.store(in: &cancellables)
-        controller.$pillEnabled.sink { [weak self] _ in
+        controller.$pillEnabled.sink { [weak self] enabled in
             guard let self, let c = self.controller else { return }
-            self.reflect(phase: c.phase)
+            self.reflect(phase: c.phase, pillEnabled: enabled)
+        }.store(in: &cancellables)
+        controller.$pillAlwaysVisible.sink { [weak self] alwaysVisible in
+            guard let self, let c = self.controller else { return }
+            self.reflect(phase: c.phase, alwaysVisible: alwaysVisible, pillEnabled: c.pillEnabled)
         }.store(in: &cancellables)
     }
 
-    private func positionBottomCenter(_ p: NSPanel) {
-        guard let screen = NSScreen.main else { return }
-        let frame = screen.visibleFrame
-        p.setFrameOrigin(NSPoint(
-            x: frame.midX - p.frame.width / 2,
-            y: frame.minY + 24))
-    }
-
-    private func reflect(phase: DictationController.Phase) {
+    private func reflect(
+        phase: DictationController.Phase,
+        alwaysVisible: Bool? = nil,
+        pillEnabled: Bool? = nil
+    ) {
         guard let p = panel else { return }
-        let enabled = Self.isEligible(source: controller?.recordingSource ?? .app, enabled: controller?.pillEnabled ?? true)
+        let always = alwaysVisible ?? controller?.pillAlwaysVisible ?? false
+        visibility.observe(phase, alwaysVisible: always)
+        let enabled = Self.isEligible(
+            source: controller?.recordingSource ?? .app,
+            enabled: pillEnabled ?? controller?.pillEnabled ?? true,
+            alwaysVisible: always
+        )
         dismissTask?.cancel()
         dismissTask = nil
         resize(p, to: PillLayout.size(for: phase))
+        if visibility.hiddenForCurrentRecording {
+            if p.isVisible { p.orderOut(nil) }
+            return
+        }
         switch phase {
+        case .idle where enabled && always:
+            if !p.isVisible {
+                keepOnScreen(p)
+                p.orderFrontRegardless()
+            }
         case .preparing where enabled, .recording where enabled, .processing where enabled:
             if !p.isVisible {
                 keepOnScreen(p)
@@ -102,34 +175,42 @@ final class PillManager: ObservableObject {
                 keepOnScreen(p)
                 p.orderFrontRegardless()
             }
-            dismissTask = Task { @MainActor [weak self, weak p] in
-                try? await Task.sleep(for: .seconds(1.4))
-                guard !Task.isCancelled,
-                      self?.controller?.phase == .ready else { return }
-                p?.orderOut(nil)
+            if !always {
+                dismissTask = Task { @MainActor [weak self, weak p] in
+                    try? await Task.sleep(for: .seconds(1.4))
+                    guard !Task.isCancelled,
+                          self?.controller?.phase == .ready else { return }
+                    p?.orderOut(nil)
+                }
             }
         case .failed where enabled:
-            if p.isVisible { p.orderFrontRegardless() }
+            if always && !p.isVisible { keepOnScreen(p) }
+            if always || p.isVisible { p.orderFrontRegardless() }
         default:
             if p.isVisible { p.orderOut(nil) }
         }
     }
 
     private func resize(_ panel: NSPanel, to size: NSSize) {
-        guard panel.frame.size != size else { return }
-        let current = panel.frame
-        let next = NSRect(
-            x: current.midX - size.width / 2,
-            y: current.minY,
-            width: size.width,
-            height: size.height
-        )
-        panel.setFrame(next, display: true)
-        keepOnScreen(panel)
+        let screen = NSScreen.main?.visibleFrame ?? .zero
+        let fallback = NSPoint(x: screen.midX, y: screen.minY + 24)
+        let frame = position.frame(size: size, fallback: fallback, screens: NSScreen.screens.map(\.visibleFrame))
+        placingPanel = true
+        defer { placingPanel = false }
+        panel.setFrame(frame, display: true)
     }
 
-    static func isEligible(source: DictationController.RecordingSource, enabled: Bool) -> Bool {
-        enabled && (source == .shortcut || source == .menuBar)
+    func windowDidMove(_ notification: Notification) {
+        guard !placingPanel, let panel else { return }
+        position.remember(panel.frame)
+    }
+
+    static func isEligible(
+        source: DictationController.RecordingSource,
+        enabled: Bool,
+        alwaysVisible: Bool = false
+    ) -> Bool {
+        enabled && (alwaysVisible || source == .shortcut || source == .menuBar || source == .pill)
     }
 
     func setHovered(_ hovered: Bool) {
@@ -139,26 +220,28 @@ final class PillManager: ObservableObject {
     func drag(with event: NSEvent) {
         guard let panel else { return }
         panel.performDrag(with: event)
+        position.remember(panel.frame)
         keepOnScreen(panel)
-        UserDefaults.standard.set(NSStringFromPoint(panel.frame.origin), forKey: "omil.pillPosition")
     }
 
     private func keepOnScreen(_ panel: NSPanel) {
-        guard let screen = NSScreen.screens.first(where: { $0.visibleFrame.intersects(panel.frame) }) else {
-            positionBottomCenter(panel)
-            return
-        }
-        let bounds = screen.visibleFrame.insetBy(dx: 8, dy: 8)
-        panel.setFrameOrigin(NSPoint(
-            x: min(max(panel.frame.minX, bounds.minX), bounds.maxX - panel.frame.width),
-            y: min(max(panel.frame.minY, bounds.minY), bounds.maxY - panel.frame.height)
-        ))
+        resize(panel, to: panel.frame.size)
     }
 
-    func dismiss() {
+    func hideForCurrentRecording() {
+        visibility.hide()
         dismissTask?.cancel()
         dismissTask = nil
         panel?.orderOut(nil)
+    }
+
+    func hideFromContextMenu() {
+        guard let controller else { return }
+        if controller.pillAlwaysVisible {
+            controller.setPillEnabled(false)
+        } else {
+            hideForCurrentRecording()
+        }
     }
 }
 
@@ -169,6 +252,7 @@ final class PillPresentation: ObservableObject {
     @Published private(set) var lastCleaned: String
     @Published private(set) var statusMessage: String
     @Published private(set) var audioLevels: [Double]
+    @Published private(set) var pillAlwaysVisible: Bool
 
     private weak var controller: DictationController?
     private var cancellables = Set<AnyCancellable>()
@@ -180,16 +264,19 @@ final class PillPresentation: ObservableObject {
         lastCleaned = controller.lastCleaned
         statusMessage = controller.statusMessage
         audioLevels = controller.audioLevels
+        pillAlwaysVisible = controller.pillAlwaysVisible
 
         controller.$phase.sink { [weak self] in self?.phase = $0 }.store(in: &cancellables)
         controller.$processingStage.sink { [weak self] in self?.processingStage = $0 }.store(in: &cancellables)
         controller.$lastCleaned.sink { [weak self] in self?.lastCleaned = $0 }.store(in: &cancellables)
         controller.$statusMessage.sink { [weak self] in self?.statusMessage = $0 }.store(in: &cancellables)
         controller.$audioLevels.sink { [weak self] in self?.audioLevels = $0 }.store(in: &cancellables)
+        controller.$pillAlwaysVisible.sink { [weak self] in self?.pillAlwaysVisible = $0 }.store(in: &cancellables)
     }
 
     func cancel() { controller?.cancel() }
     func stop() { controller?.stop() }
+    func start() { controller?.start(source: .pill) }
 }
 
 @MainActor
@@ -202,26 +289,32 @@ struct PillView: View {
             case .recording:
                 recordingContent
             case .preparing:
-                statusContent(icon: "mic.fill", title: "Starting", showsProgress: true, canDismiss: true)
+                statusContent(icon: "mic.fill", title: "Starting", showsProgress: true, canCancel: true)
             case .processing:
                 statusContent(
                     icon: presentation.processingStage.icon,
                     title: presentation.processingStage.title,
                     showsProgress: true,
-                    canDismiss: false
+                    canCancel: false
                 )
             case .ready:
                 statusContent(
                     icon: presentation.lastCleaned.isEmpty ? "waveform.slash" : "checkmark",
                     title: presentation.lastCleaned.isEmpty ? "Nothing heard" : "Done",
                     showsProgress: false,
-                    canDismiss: false
+                    canCancel: false,
+                    canStart: presentation.pillAlwaysVisible
                 )
             case .failed:
-                statusContent(icon: "exclamationmark", title: "Could not finish", showsProgress: false, canDismiss: true)
+                statusContent(
+                    icon: "exclamationmark",
+                    title: presentation.pillAlwaysVisible ? "Try again" : "Could not finish",
+                    showsProgress: false,
+                    canCancel: false,
+                    canStart: presentation.pillAlwaysVisible
+                )
             case .idle:
-                CompactWaveform(levels: Array(repeating: 0.18, count: 13))
-                    .frame(width: 66, height: 18)
+                idleContent
             }
         }
         .frame(
@@ -231,6 +324,12 @@ struct PillView: View {
         .background(Color(hex: 0x080808), in: Capsule())
         .overlay(Capsule().stroke(Color.white.opacity(0.14), lineWidth: 0.75))
         .contentShape(Capsule())
+        .contextMenu {
+            Button(presentation.pillAlwaysVisible ? "Hide floating pill" : "Hide pill for this recording") {
+                PillManager.shared.hideFromContextMenu()
+            }
+            Button("Open Omil") { AppContext.appDelegate?.showMainWindow() }
+        }
         .padding(3)
         .preferredColorScheme(.dark)
         .accessibilityElement(children: .contain)
@@ -238,15 +337,36 @@ struct PillView: View {
         .onHover { PillManager.shared.setHovered($0) }
     }
 
+    private var idleContent: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "line.3.horizontal")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(Color.white.opacity(0.48))
+                .frame(width: 17, height: 24)
+                .overlay(PillDragArea())
+                .help("Drag to move")
+            Button { presentation.start() } label: {
+                Label("Start", systemImage: "mic.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(height: 26)
+            }
+            .buttonStyle(.plain)
+            .help("Start dictation")
+            .accessibilityLabel("Start dictation")
+        }
+        .padding(.horizontal, 8)
+    }
+
     @ViewBuilder
     private var recordingContent: some View {
-        HStack(spacing: 7) {
+        HStack(spacing: 6) {
             pillIconButton(icon: "xmark", help: "Cancel recording") {
                 presentation.cancel()
             }
 
             CompactWaveform(levels: presentation.audioLevels)
-                .frame(width: 70, height: 24)
+                .frame(width: 60, height: 24)
                 .overlay(PillDragArea())
                 .help("Drag to move")
 
@@ -264,6 +384,7 @@ struct PillView: View {
             .buttonStyle(.plain)
             .help("Stop and transcribe")
             .accessibilityLabel("Stop and transcribe")
+
         }
         .padding(.horizontal, 8)
     }
@@ -273,7 +394,8 @@ struct PillView: View {
         icon: String,
         title: String,
         showsProgress: Bool,
-        canDismiss: Bool
+        canCancel: Bool,
+        canStart: Bool = false
     ) -> some View {
         HStack(spacing: 8) {
             if showsProgress {
@@ -295,14 +417,15 @@ struct PillView: View {
                 .overlay(PillDragArea())
                 .help("Drag to move")
 
-            if canDismiss {
-                Spacer(minLength: 0)
-                pillIconButton(icon: "xmark", help: presentation.phase == .preparing ? "Cancel" : "Dismiss") {
-                    if presentation.phase == .preparing {
-                        presentation.cancel()
-                    } else {
-                        PillManager.shared.dismiss()
-                    }
+            Spacer(minLength: 0)
+            if canCancel {
+                pillIconButton(icon: "xmark", help: "Cancel recording") {
+                    presentation.cancel()
+                }
+            }
+            if canStart {
+                pillIconButton(icon: "mic.fill", help: "Start new dictation") {
+                    presentation.start()
                 }
             }
         }
@@ -328,7 +451,7 @@ struct PillView: View {
 
     private var accessibilityLabel: String {
         switch presentation.phase {
-        case .idle: return "Omil is ready"
+        case .idle: return "Omil is ready to start dictation"
         case .preparing: return "Starting the microphone"
         case .recording: return "Recording"
         case .processing: return presentation.processingStage.title

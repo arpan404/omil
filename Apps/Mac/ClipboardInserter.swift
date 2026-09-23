@@ -11,35 +11,54 @@ import OmilCore
 final class ClipboardInserter: @unchecked Sendable {
     private var ownership = ClipboardOwnership()
     private let lock = NSLock()
+    private let pasteboard: NSPasteboard
 
-    struct PreparedPaste {
-        var previousChangeCount: Int
-        var previousString: String?
-        var omilChangeCount: Int
+    struct PreparedPaste: Sendable {
+        var previousItems: [[String: Data]]
+    }
+
+    init(pasteboard: NSPasteboard = .general) {
+        self.pasteboard = pasteboard
     }
 
     /// Copy `text` to the clipboard, remembering prior contents.
-    func prepare(text: String) -> PreparedPaste {
-        let pb = NSPasteboard.general
+    /// Returns nil if any existing representation cannot be saved intact.
+    func prepare(text: String) -> PreparedPaste? {
+        let pb = pasteboard
         lock.lock(); defer { lock.unlock() }
-        let prevCount = pb.changeCount
-        let prevString = pb.string(forType: .string)
+        var previousItems: [[String: Data]] = []
+        if pb.types?.isEmpty == false && pb.pasteboardItems == nil { return nil }
+        for item in pb.pasteboardItems ?? [] {
+            var representations: [String: Data] = [:]
+            for type in item.types {
+                guard let data = item.data(forType: type) else { return nil }
+                representations[type.rawValue] = data
+            }
+            previousItems.append(representations)
+        }
         pb.declareTypes([.string], owner: nil)
-        pb.setString(text, forType: .string)
+        guard pb.setString(text, forType: .string) else {
+            pb.clearContents()
+            _ = Self.write(previousItems, to: pb)
+            return nil
+        }
         let owned = pb.changeCount
         ownership.recordWrite(changeCount: owned, text: text)
-        return PreparedPaste(previousChangeCount: prevCount, previousString: prevString, omilChangeCount: owned)
+        return PreparedPaste(previousItems: previousItems)
     }
 
     /// Simulate Cmd+V into the frontmost app.
-    func paste() {
+    @discardableResult
+    func paste() -> Bool {
         let src = CGEventSource(stateID: .combinedSessionState)
         let keyDown = CGEvent(keyboardEventSource: src, virtualKey: 0x09, keyDown: true) // v
         let keyUp = CGEvent(keyboardEventSource: src, virtualKey: 0x09, keyDown: false)
-        keyDown?.flags = .maskCommand
-        keyUp?.flags = .maskCommand
-        keyDown?.post(tap: .cghidEventTap)
-        keyUp?.post(tap: .cghidEventTap)
+        guard let keyDown, let keyUp else { return false }
+        keyDown.flags = .maskCommand
+        keyUp.flags = .maskCommand
+        keyDown.post(tap: .cghidEventTap)
+        keyUp.post(tap: .cghidEventTap)
+        return true
     }
 
     /// Restore prior clipboard contents, but only while Omil still owns the
@@ -47,24 +66,45 @@ final class ClipboardInserter: @unchecked Sendable {
     @discardableResult
     func restoreIfOwned(prepared: PreparedPaste) -> Bool {
         Thread.sleep(forTimeInterval: 0.4) // host paste-consumption window (see docs)
-        let pb = NSPasteboard.general
+        let pb = pasteboard
         lock.lock(); defer { lock.unlock() }
         let current = pb.string(forType: .string)
         guard ownership.shouldRestore(currentChangeCount: pb.changeCount, currentContent: current) else {
             return false // user copied after Omil; never overwrite
         }
-        pb.declareTypes([.string], owner: nil)
-        if let prev = prepared.previousString {
-            pb.setString(prev, forType: .string)
-        } else {
-            pb.clearContents()
-        }
+        pb.clearContents()
+        guard Self.write(prepared.previousItems, to: pb) else { return false }
         ownership = ClipboardOwnership()
         return true
+    }
+
+    private static func write(_ snapshots: [[String: Data]], to pasteboard: NSPasteboard) -> Bool {
+        if snapshots.isEmpty { return true }
+        var items: [NSPasteboardItem] = []
+        for representations in snapshots {
+            let item = NSPasteboardItem()
+            for (type, data) in representations {
+                guard item.setData(data, forType: NSPasteboard.PasteboardType(type)) else { return false }
+            }
+            items.append(item)
+        }
+        return pasteboard.writeObjects(items)
     }
 
     func currentOwnership() -> ClipboardOwnership {
         lock.lock(); defer { lock.unlock() }
         return ownership
+    }
+}
+
+
+/// Automatic clipboard writes are strictly opt-in. Explicit Copy actions are separate.
+@MainActor
+enum TranscriptClipboard {
+    @discardableResult
+    static func copyIfEnabled(_ text: String, enabled: Bool = false, to pasteboard: NSPasteboard = .general) -> Bool {
+        guard enabled, !text.isEmpty else { return false }
+        pasteboard.clearContents()
+        return pasteboard.setString(text, forType: .string)
     }
 }

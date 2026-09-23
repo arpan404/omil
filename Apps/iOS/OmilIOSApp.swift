@@ -191,6 +191,14 @@ struct SettingsView: View {
             Section("Omil server (your Mac)") {
                 Text("In the Omil Mac app, open Engine and turn on Share on local network. Copy the host, port, and token shown there.")
                     .font(.caption)
+                Picker("Speech sensitivity", selection: $coordinator.speechSensitivity) {
+                    ForEach(SpeechSensitivity.allCases) { option in
+                        Text(option.title).tag(option)
+                    }
+                }
+                Text(coordinator.speechSensitivity.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 TextField("Mac host/IP", text: $coordinator.serverConfig.host)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
@@ -205,6 +213,24 @@ struct SettingsView: View {
                     get: { coordinator.serverCleanupEnabled },
                     set: { coordinator.serverCleanupEnabled = $0; coordinator.saveServerConfig() }
                 ))
+            }
+            Section("Advanced") {
+                DisclosureGroup("Cleanup system prompt") {
+                    Text("Sent with cleanup requests from this iPhone. The server prompt is used until you save an override.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    TextEditor(text: $coordinator.cleanupPromptText)
+                        .font(.system(.caption, design: .monospaced))
+                        .frame(minHeight: 180)
+                        .accessibilityLabel("Cleanup system prompt")
+                    HStack {
+                        Button("Use server prompt") { coordinator.resetCleanupPrompt() }
+                            .disabled(!coordinator.cleanupPromptCustom)
+                        Spacer()
+                        Button("Save prompt") { coordinator.saveCleanupPrompt() }
+                            .disabled(coordinator.cleanupPromptText.trimmingCharacters(in: .whitespacesAndNewlines).count < 50 || coordinator.cleanupPromptText.count > 50_000)
+                    }
+                }
             }
             Section("Personal dictionary") {
                 HStack {
@@ -234,6 +260,7 @@ struct SettingsView: View {
                     .font(.caption)
             }
         }
+        .task { await coordinator.loadCleanupPrompt() }
         .navigationTitle("Settings")
     }
 }

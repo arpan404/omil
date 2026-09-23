@@ -13,6 +13,41 @@ struct LANConnectionCredentials: Equatable {
     }
 }
 
+struct LocalServerPorts: Equatable {
+    let api: Int
+    let llama: Int
+}
+
+enum LocalPortPicker {
+    private static let defaultAPI = 3217
+    private static let fallbackStart = 24_000
+    private static let fallbackPairCount = 1_024
+
+    static func choose(identity: String, isFree: (Int) -> Bool) -> LocalServerPorts? {
+        if isFree(defaultAPI), isFree(defaultAPI + 1) {
+            return LocalServerPorts(api: defaultAPI, llama: defaultAPI + 1)
+        }
+
+        let first = Int(stableHash(identity) % UInt64(fallbackPairCount))
+        for offset in 0..<fallbackPairCount {
+            let index = (first + offset) % fallbackPairCount
+            let api = fallbackStart + index * 2
+            if isFree(api), isFree(api + 1) {
+                return LocalServerPorts(api: api, llama: api + 1)
+            }
+        }
+        return nil
+    }
+
+    private static func stableHash(_ value: String) -> UInt64 {
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for byte in value.utf8 {
+            hash = (hash ^ UInt64(byte)) &* 1_099_511_628_211
+        }
+        return hash
+    }
+}
+
 /// Owns the bundled Effect/Bun server for the normal Mac experience.
 /// A custom server is an explicit override managed by DictationController.
 @MainActor
@@ -44,7 +79,14 @@ final class LocalServerManager: ObservableObject {
         let root = try serverDirectory(fileManager: fileManager)
         try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
         let token = try loadOrCreateToken(in: root, fileManager: fileManager)
-        let ports = choosePorts()
+        guard let ports = LocalPortPicker.choose(
+            identity: Bundle.main.bundleURL.resolvingSymlinksInPath().path,
+            isFree: { [self] in !hasListener(on: $0) }
+        ) else {
+            let message = "Could not find a free local server port."
+            state = .failed(message)
+            throw LocalServerError.startupFailed(message)
+        }
         let executable = try bundledServerURL(fileManager: fileManager)
         let logURL = root.appendingPathComponent("omil-server.log")
         if !fileManager.fileExists(atPath: logURL.path) {
@@ -104,7 +146,7 @@ final class LocalServerManager: ObservableObject {
                 state = .failed(message)
                 throw LocalServerError.startupFailed(message)
             }
-            if await responds(at: config) {
+            if await responds(at: config), child.isRunning {
                 state = .running(port: ports.api)
                 sharedCredentials = allowLANAccess
                     ? LANConnectionCredentials(
@@ -222,15 +264,6 @@ final class LocalServerManager: ObservableObject {
         try value.write(to: url, atomically: true, encoding: .utf8)
         try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         return value
-    }
-
-    private func choosePorts() -> (api: Int, llama: Int) {
-        for api in stride(from: 3217, through: 3317, by: 10) {
-            if !hasListener(on: api), !hasListener(on: api + 1) {
-                return (api, api + 1)
-            }
-        }
-        return (4317, 4318)
     }
 
     private func hasListener(on port: Int) -> Bool {

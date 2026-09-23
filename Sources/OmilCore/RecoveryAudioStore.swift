@@ -13,6 +13,7 @@ public struct RecoveryRecording: Identifiable, Codable, Sendable, Equatable {
     public var filename: String
     public var state: RecoveryRecordingState
     public var transcript: String?
+    public var rawTranscript: String?
     public var failureReason: String?
 
     public init(
@@ -22,6 +23,7 @@ public struct RecoveryRecording: Identifiable, Codable, Sendable, Equatable {
         filename: String,
         state: RecoveryRecordingState = .pending,
         transcript: String? = nil,
+        rawTranscript: String? = nil,
         failureReason: String? = nil
     ) {
         self.id = id
@@ -30,6 +32,7 @@ public struct RecoveryRecording: Identifiable, Codable, Sendable, Equatable {
         self.filename = filename
         self.state = state
         self.transcript = transcript
+        self.rawTranscript = rawTranscript
         self.failureReason = failureReason
     }
 }

@@ -77,21 +77,38 @@ preparing or recording -> idle (cancel)
 When recording starts, the app captures the focused accessibility element and
 its current selection. `AudioCapture` converts microphone input to 16 kHz,
 mono, 16-bit PCM. The floating pill receives a throttled audio level for its
-meter, while `ServerTranscriptionBackend` buffers the PCM for the active
-session.
+meter. An ordered forwarder drains every captured chunk into
+`ServerTranscriptionBackend` before the session ends.
 
 Stopping performs the following work:
 
 1. The backend wraps the buffered PCM in a WAV container.
 2. It sends the WAV to `POST /v1/transcribe` with the bearer token.
-3. The server writes the upload to a temporary directory and runs the selected
-   Whisper model through `whisper-cli`.
-4. The server returns the transcript and timestamped segments, then deletes the
+3. The server removes low-frequency rumble from 16 kHz mono PCM uploads and
+   adjusts quiet speech levels when the frame levels vary like speech. It
+   returns an empty transcript for near-digital silence. This is a high-pass
+   filter and level adjustment, not general noise removal.
+4. For other audio, `whisper-cli` uses Silero voice activity detection to keep
+   speech segments before the selected Whisper model transcribes them. Mac and
+   iOS send their own `sensitivity` value on every `/v1/transcribe` request.
+   The server defaults to balanced for older clients.
+5. The server returns the transcript and timestamped segments, then deletes the
    temporary upload.
-5. The app sends the final transcript, cleanup mode, dictionary, snippets, and
-   app-category writing style to `POST /v1/cleanup`.
-6. The app inserts the returned text once and records the result in history if
+6. The app sends the final transcript, cleanup mode, dictionary, snippets, and
+   app-category writing style to `POST /v1/cleanup`. An optional `systemPrompt`
+   from that device's Advanced settings overrides the server prompt for this
+   request only; the server prompt remains the default for other requests.
+7. The app inserts the returned text once and records the result in history if
    history is enabled.
+
+| Sensitivity | VAD threshold | Max gain | Minimum speech | Minimum silence | Speech padding |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Filter more noise | 0.65 | 2x | 250 ms | 100 ms | 30 ms |
+| Balanced | 0.50 | 3x | 250 ms | 100 ms | 30 ms |
+| Distant voice | 0.30 | 5x | 120 ms | 450 ms | 90 ms |
+
+Lower thresholds keep more quiet speech but can admit more background sound.
+Amplification cannot restore speech already buried beneath noise.
 
 The client sends one request identifier through both stages. Each request also
 contains its chosen model and a snapshot of its cleanup preferences. The server
@@ -139,6 +156,9 @@ The server has a catalog of Whisper and Qwen models. A selection is saved before
 its weights are downloaded. Model preparation downloads the selected file,
 checks its size, calculates a SHA-256 hash, and records that hash in a local
 manifest. Later starts verify the stored file against the manifest.
+The server also downloads a small internal Silero VAD model on the first
+non-silent transcription and checks its fixed SHA-256 hash. It does not appear
+in the selectable model catalog.
 
 Whisper runs once per completed recording. `llama-server` starts when clean mode
 needs Qwen and stays loaded for later requests. The runtime tracks loading,
@@ -153,18 +173,20 @@ weight, then removes the corresponding manifest entry and lifecycle state.
 ## Text insertion and recovery
 
 At recording start, `AXInserter` records the destination app, focused field,
-selection, and available field value. Before insertion it checks that the same
-destination and selection are still active.
+selection, and available field value. When dictation starts from Omil's window
+or menu bar, it can use the last active external app. Before insertion it checks
+that the same field and selection are still active, restoring that app's focus
+only if Omil is still frontmost.
 
 If the check succeeds, Omil replaces only the captured selection and stores an
 insertion receipt. Undo works only while the inserted range still contains
 Omil's text. It refuses to overwrite unrelated typing.
 
-If direct insertion is unavailable, Omil writes the result to the clipboard.
-With Accessibility permission it also sends the paste command. The previous
-clipboard value is restored only when Omil still owns the clipboard change, so
-a newer user copy is never overwritten. Without Accessibility permission, the
-result stays copied for manual paste.
+If direct insertion fails, or the same focused field does not expose its
+selection, Omil saves the clipboard's current representations and sends a paste
+command. It restores those representations only when Omil still owns the
+clipboard change, so a newer user copy is never overwritten. Without
+Accessibility permission, the result stays in Omil for copying.
 
 If the destination changed while transcription was running, Omil keeps the
 result and requires an explicit insertion instead of sending text to the wrong
@@ -181,12 +203,12 @@ The Mac app stores data under `~/Library/Application Support/Omil`:
 | Snippets | `snippets.json` |
 | Model weights and manifest | `Server/models/` |
 | Selected models | `Server/selected-models.json` |
-| Custom cleanup prompt | `Server/system-prompt.md` |
+| Server-wide custom cleanup prompt | `Server/system-prompt.md` |
 | Server token and log | `Server/omil-token`, `Server/omil-server.log` |
 
-Theme, shortcut, cleanup, server, and writing-style preferences use
-`UserDefaults`. Microphone audio is buffered in memory by the client. The
-server deletes its temporary WAV after each transcription request.
+Theme, shortcut, cleanup, device cleanup prompt, server, and writing-style
+preferences use `UserDefaults`. Microphone audio is buffered in memory by the
+client. The server deletes its temporary WAV after each transcription request.
 
 The managed server accepts connections only from the local Mac by default.
 Every endpoint except `/v1/health` requires the bearer token. Enabling

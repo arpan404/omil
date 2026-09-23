@@ -98,3 +98,29 @@ final class RecoveryPlaybackTests: XCTestCase {
         }
     }
 }
+
+
+@MainActor
+final class TranscriptClipboardTests: XCTestCase {
+    func testAutomaticCopyIsOffByDefaultAndPreservesAllClipboardData() {
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        pasteboard.setString("Existing clipboard text", forType: .string)
+        pasteboard.setData(Data([1, 2, 3]), forType: .png)
+        let changeCount = pasteboard.changeCount
+        XCTAssertFalse(TranscriptClipboard.copyIfEnabled("New transcript", to: pasteboard))
+        XCTAssertEqual(pasteboard.changeCount, changeCount)
+        XCTAssertEqual(pasteboard.string(forType: .string), "Existing clipboard text")
+        XCTAssertEqual(pasteboard.data(forType: .png), Data([1, 2, 3]))
+    }
+
+    func testAutomaticCopyRequiresOptInAndIgnoresEmptyTranscripts() {
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        XCTAssertTrue(TranscriptClipboard.copyIfEnabled("New transcript", enabled: true, to: pasteboard))
+        XCTAssertEqual(pasteboard.string(forType: .string), "New transcript")
+        let changeCount = pasteboard.changeCount
+        XCTAssertFalse(TranscriptClipboard.copyIfEnabled("", enabled: true, to: pasteboard))
+        XCTAssertEqual(pasteboard.changeCount, changeCount)
+    }
+}

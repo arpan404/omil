@@ -34,19 +34,6 @@ const program = Effect.gen(function* () {
     }, 1_000)
     ownerWatch.unref()
   }
-  // Reclaim a stale llama sidecar port left by a killed predecessor
-  // (single-user Mac; the app owns this port).
-  yield* Effect.promise(async () => {
-    try {
-      const res = Bun.spawnSync(["sh", "-c", `lsof -ti tcp:${cfg.llamaPort} 2>/dev/null`])
-      const out = typeof res.stdout === "string" ? res.stdout : Buffer.from(res.stdout as Uint8Array).toString()
-      for (const pid of out.split(/\s+/).filter(Boolean)) {
-        if (/^\d+$/.test(pid) && Number(pid) !== process.pid) {
-          try { process.kill(Number(pid)) } catch { /* already gone */ }
-        }
-      }
-    } catch { /* lsof unavailable */ }
-  })
   // Detached prefetch: `bun src/main.ts --download-models` ensures both
   // weight files, then exits. Survives client disconnects.
   if (process.argv.includes("--download-models")) {

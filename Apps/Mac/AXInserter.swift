@@ -26,8 +26,8 @@ final class AXInserter: TextDestination, @unchecked Sendable {
         var bundleId: String?
         var element: AXUIElement
         var selectedText: String?
-        var selectedRange: CFRange
-        var valuePrefix: String
+        var selectedRange: CFRange?
+        var valueHash: Int?
     }
 
     private var target: CapturedTarget?
@@ -41,6 +41,11 @@ final class AXInserter: TextDestination, @unchecked Sendable {
         return target?.bundleId
     }
 
+    var capturedPID: pid_t? {
+        lock.lock(); defer { lock.unlock() }
+        return target?.pid
+    }
+
     func requestTrust() {
         let opts = [axPromptKey as String: true] as CFDictionary
         _ = AXIsProcessTrustedWithOptions(opts)
@@ -48,12 +53,12 @@ final class AXInserter: TextDestination, @unchecked Sendable {
 
     /// Capture the frontmost app's focused text field. Call at recording start.
     @discardableResult
-    func captureTarget() -> Bool {
+    func captureTarget(application: NSRunningApplication? = NSWorkspace.shared.frontmostApplication) -> Bool {
         lock.lock()
         target = nil
         lock.unlock()
         guard isTrusted else { return false }
-        guard let app = NSWorkspace.shared.frontmostApplication else { return false }
+        guard let app = application else { return false }
         let appEl = AXUIElementCreateApplication(app.processIdentifier)
         var focused: CFTypeRef?
         guard AXUIElementCopyAttributeValue(appEl, axAttr(.focusedUIElement), &focused) == .success,
@@ -63,24 +68,25 @@ final class AXInserter: TextDestination, @unchecked Sendable {
         var role: CFTypeRef?
         AXUIElementCopyAttributeValue(element, axAttr(.role), &role)
         let roleStr = (role as? String) ?? ""
-        guard ["AXTextField", "AXTextArea", "AXComboBox", "AXStaticText"].contains(roleStr) else { return false }
+        guard ["AXTextField", "AXTextArea", "AXComboBox"].contains(roleStr) else { return false }
         var selText: CFTypeRef?
         AXUIElementCopyAttributeValue(element, axAttr(.selectedText), &selText)
         var rangeValue: CFTypeRef?
         AXUIElementCopyAttributeValue(element, axAttr(.selectedTextRange), &rangeValue)
-        var range = CFRange(location: 0, length: 0)
+        var range: CFRange?
         if let rv = rangeValue, CFGetTypeID(rv) == AXValueGetTypeID() {
-            AXValueGetValue(rv as! AXValue, .cfRange, &range)
+            var candidate = CFRange(location: 0, length: 0)
+            if AXValueGetValue(rv as! AXValue, .cfRange, &candidate) {
+                range = candidate
+            }
         }
         var value: CFTypeRef?
         AXUIElementCopyAttributeValue(element, axAttr(.value), &value)
-        let valueStr = (value as? String) ?? ""
-        let prefix = String(valueStr.prefix(max(0, min(range.location + 64, valueStr.count))))
         lock.lock()
         target = CapturedTarget(
             pid: app.processIdentifier, bundleId: app.bundleIdentifier,
             element: element, selectedText: selText as? String,
-            selectedRange: range, valuePrefix: prefix)
+            selectedRange: range, valueHash: (value as? String)?.hashValue)
         lock.unlock()
         return true
     }
@@ -89,8 +95,8 @@ final class AXInserter: TextDestination, @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         guard let t = target else { return SelectionPrecondition() }
         return SelectionPrecondition(
-            selectedText: t.selectedText, rangeLocation: t.selectedRange.location,
-            rangeLength: t.selectedRange.length, surroundingHash: t.valuePrefix.hashValue)
+            selectedText: t.selectedText, rangeLocation: t.selectedRange?.location,
+            rangeLength: t.selectedRange?.length, surroundingHash: t.valueHash)
     }
 
     func revalidate(precondition: SelectionPrecondition) -> DestinationCheck {
@@ -100,6 +106,21 @@ final class AXInserter: TextDestination, @unchecked Sendable {
         guard NSWorkspace.shared.frontmostApplication?.processIdentifier == t.pid else {
             return .stale(reason: "frontmost app changed; result retained for explicit insertion")
         }
+        let appEl = AXUIElementCreateApplication(t.pid)
+        var focused: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(appEl, axAttr(.focusedUIElement), &focused) == .success,
+              let focused, CFGetTypeID(focused) == AXUIElementGetTypeID(),
+              CFEqual(focused, t.element) else {
+            return .stale(reason: "focused field changed; result retained")
+        }
+        if t.selectedRange == nil, let originalHash = t.valueHash {
+            var value: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(t.element, axAttr(.value), &value) == .success,
+                  (value as? String)?.hashValue == originalHash else {
+                return .stale(reason: "field text changed; result retained")
+            }
+        }
+        guard t.selectedRange != nil else { return .pasteOnly }
         var rangeValue: CFTypeRef?
         guard AXUIElementCopyAttributeValue(t.element, axAttr(.selectedTextRange), &rangeValue) == .success,
               let rv = rangeValue, CFGetTypeID(rv) == AXValueGetTypeID() else {

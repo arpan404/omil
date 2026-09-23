@@ -34,6 +34,36 @@ public struct CapturedChunk: Sendable {
     }
 }
 
+/// Preserves capture order and drains queued chunks before ASR finalization.
+public final class AudioChunkForwarder: Sendable {
+    private let continuation: AsyncStream<CapturedChunk>.Continuation
+    private let worker: Task<Void, Never>
+
+    public init(consume: @escaping @Sendable (CapturedChunk) async -> Void) {
+        let (stream, continuation) = AsyncStream<CapturedChunk>.makeStream()
+        self.continuation = continuation
+        self.worker = Task {
+            for await chunk in stream {
+                await consume(chunk)
+            }
+        }
+    }
+
+    public func append(_ chunk: CapturedChunk) {
+        continuation.yield(chunk)
+    }
+
+    public func finish() async {
+        continuation.finish()
+        await worker.value
+    }
+
+    public func cancel() {
+        continuation.finish()
+        worker.cancel()
+    }
+}
+
 /// Converts captured PCM16 samples into a display-ready microphone level.
 /// The logarithmic scale keeps speech readable while a noise gate holds true
 /// silence at zero. This value is for UI feedback, not audio processing.

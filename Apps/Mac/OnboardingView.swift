@@ -31,7 +31,6 @@ struct OnboardingView: View {
             }
             .padding(28)
         }
-        .omilAppearance()
         .onAppear {
             controller.refreshMicPermission()
             controller.refreshAXTrust()

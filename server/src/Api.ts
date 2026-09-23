@@ -12,13 +12,14 @@ import {
   modelFileLifecycle,
 } from "./Models"
 import { transcribeFile, whisperMemoryState } from "./Whisper"
+import { parseAudioSensitivity } from "./AudioSensitivity"
 import {
   acquireLlama, llamaRuntime, liveLlmModel, stopLlama, unloadLlama,
 } from "./LlamaServer"
 import { cleanWithQwen } from "./QwenCleanup"
 import { MODELS, modelSpec } from "./Config"
 import {
-  loadPrompt, savePrompt, resetPrompt, saveSelection, type ModelSelection,
+  loadPrompt, resolveCleanupPrompt, savePrompt, resetPrompt, saveSelection, type ModelSelection,
 } from "./ServerState"
 import type { WritingStyle } from "./Personalization"
 import { InferenceQueue } from "./InferenceQueue"
@@ -211,6 +212,8 @@ export const makeRouter = (ctx: ApiContext) =>
       if (!authed(ctx, req)) return unauthorized
       const search = new URL(req.url, "http://x").searchParams
       const language = search.get("language") ?? "en"
+      const sensitivity = parseAudioSensitivity(search.get("sensitivity"))
+      if (!sensitivity) return yield* json({ error: "unknown speech sensitivity" }, 400)
       const requestedModel = search.get("model") ?? ctx.selection.whisper
       const model = modelSpec(requestedModel)
       if (!model || model.kind !== "whisper") {
@@ -228,7 +231,7 @@ export const makeRouter = (ctx: ApiContext) =>
         const outcome = yield* Effect.either(Effect.tryPromise({
           try: () => transcriptionQueue.enqueue(
             requestId,
-            () => Effect.runPromise(transcribeFile(ctx.cfg, audioPath, language, model.id)),
+            () => Effect.runPromise(transcribeFile(ctx.cfg, audioPath, language, model.id, sensitivity)),
           ),
           catch: (error) => error instanceof ModelError ? error : new ModelError(String(error)),
         }))
@@ -265,9 +268,17 @@ export const makeRouter = (ctx: ApiContext) =>
         snippets?: Record<string, string>
         style?: WritingStyle
         model?: string
+        systemPrompt?: string
       }
       if (!body.text || typeof body.text !== "string") return yield* json({ error: "missing text" }, 400)
       if (body.text.length > 200_000) return yield* json({ error: "text too long" }, 413)
+      if (body.systemPrompt !== undefined &&
+          (typeof body.systemPrompt !== "string" || body.systemPrompt.trim().length < 50)) {
+        return yield* json({ error: "system prompt too short (min 50 chars)" }, 400)
+      }
+      if (body.systemPrompt && body.systemPrompt.length > 50_000) {
+        return yield* json({ error: "system prompt too long" }, 413)
+      }
       const mode = body.mode === "verbatim" ? "verbatim" : "clean"
       const requestedModel = body.model ?? ctx.selection.llm
       const model = modelSpec(requestedModel)
@@ -275,7 +286,7 @@ export const makeRouter = (ctx: ApiContext) =>
         return yield* json({ error: `unknown cleanup model '${requestedModel}'` }, 400)
       }
       const requestId = requestIdentity(req)
-      const prompt = yield* Effect.promise(() => loadPrompt(ctx.cfg.dataDir))
+      const prompt = yield* Effect.promise(() => resolveCleanupPrompt(ctx.cfg.dataDir, body.systemPrompt))
       const preferences = {
         text: body.text,
         mode,

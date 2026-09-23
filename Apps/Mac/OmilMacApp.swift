@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 import OmilCore
 
 // MARK: - Omil Mac app (menu bar client)
@@ -107,8 +108,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 @MainActor
 enum AppContext {
     static weak var appDelegate: AppDelegate?
+    static let menuBarIcon: NSImage = {
+        // A small vector mark for the menu bar, independent of the Dock artwork.
+        let icon = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { _ in
+            NSColor.black.setFill()
+            for rect in [
+                NSRect(x: 0, y: 7, width: 2, height: 4),
+                NSRect(x: 3, y: 5, width: 2, height: 8),
+                NSRect(x: 13, y: 5, width: 2, height: 8),
+                NSRect(x: 16, y: 7, width: 2, height: 4)
+            ] {
+                NSBezierPath(roundedRect: rect, xRadius: 1, yRadius: 1).fill()
+            }
+            let center = NSBezierPath(roundedRect: NSRect(x: 6, y: 2, width: 6, height: 14), xRadius: 3, yRadius: 3)
+            center.append(NSBezierPath(roundedRect: NSRect(x: 8, y: 4, width: 2, height: 10), xRadius: 1, yRadius: 1))
+            center.windingRule = .evenOdd
+            center.fill()
+            return true
+        }
+        icon.isTemplate = true
+        icon.accessibilityDescription = "Omil"
+        return icon
+    }()
+    static let recordingMenuBarIcon: NSImage = {
+        let icon = NSImage(
+            systemSymbolName: "record.circle.fill",
+            accessibilityDescription: "Omil, recording"
+        ) ?? menuBarIcon
+        icon.isTemplate = true
+        return icon
+    }()
     static let localServer = LocalServerManager()
     static let controller = DictationController(localServer: localServer)
+    static let menuBarRecordingState = MenuBarRecordingState(controller: controller)
     static let updater = UpdateController()
 }
 
@@ -120,16 +152,44 @@ struct OmilMacApp: App {
         MenuBarExtra {
             MenuBarView(controller: AppContext.controller)
         } label: {
-            Image(nsImage: NSApplication.shared.applicationIconImage)
-                .resizable()
-                .frame(width: 20, height: 20)
-                .accessibilityLabel("Omil")
+            RecordingMenuBarLabel(state: AppContext.menuBarRecordingState)
         }
         .menuBarExtraStyle(.window)
 
         Settings {
             SettingsView(controller: AppContext.controller)
                 .frame(minWidth: 700, minHeight: 520)
+        }
+    }
+}
+
+/// Keep the status item subscribed only to phase changes. Microphone level
+/// updates should redraw the open menu, not recreate the status bar image.
+@MainActor
+final class MenuBarRecordingState: ObservableObject {
+    @Published private(set) var isRecording = false
+    private var cancellable: AnyCancellable?
+
+    init(controller: DictationController) {
+        cancellable = controller.$phase
+            .map { $0 == .recording }
+            .removeDuplicates()
+            .sink { [weak self] in self?.isRecording = $0 }
+    }
+}
+
+/// Template images follow macOS menu-bar contrast.
+private struct RecordingMenuBarLabel: View {
+    @ObservedObject var state: MenuBarRecordingState
+
+    var body: some View {
+        if state.isRecording {
+            Image(nsImage: AppContext.recordingMenuBarIcon)
+                .accessibilityLabel("Omil, recording")
+                .help("Omil is recording")
+        } else {
+            Image(nsImage: AppContext.menuBarIcon)
+                .accessibilityLabel("Omil")
         }
     }
 }
@@ -157,7 +217,7 @@ struct MenuBarView: View {
                     Image(systemName: "gearshape")
                         .frame(width: 28, height: 28)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(HoverButtonStyle(cornerRadius: 7))
                 .help("Settings")
                 .accessibilityLabel("Settings")
             }
@@ -180,6 +240,17 @@ struct MenuBarView: View {
                         Text(controller.statusMessage)
                             .font(.system(size: 12))
                             .foregroundStyle(OmilTheme.muted)
+                    }
+                } else if controller.phase == .failed {
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "exclamationmark.circle")
+                            .foregroundStyle(OmilTheme.warning)
+                        Text(controller.statusMessage)
+                            .font(.system(size: 12))
+                            .foregroundStyle(OmilTheme.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .lineLimit(3)
+                            .help(controller.statusMessage)
                     }
                 } else {
                     Text("Hold \(HotkeyManager.shared.pushToTalkName) in any text field. Release when you're done speaking.")
@@ -238,6 +309,9 @@ struct MenuBarView: View {
                 menuRow("Open Omil", icon: "macwindow", shortcut: "") {
                     AppContext.appDelegate?.showMainWindow()
                 }
+                menuRow("Show floating pill", icon: controller.pillEnabled ? "checkmark.circle.fill" : "circle", shortcut: "") {
+                    controller.setPillEnabled(!controller.pillEnabled)
+                }
                 menuRow("Check for updates", icon: "arrow.down.circle", shortcut: "") {
                     AppContext.updater.checkForUpdates()
                 }
@@ -265,7 +339,7 @@ struct MenuBarView: View {
             .frame(height: 34)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(HoverButtonStyle())
     }
 
     private var statusTitle: String {
@@ -286,14 +360,22 @@ private enum SettingsPane: String, CaseIterable {
     case general = "General"
     case permissions = "Permissions"
     case shortcuts = "Shortcuts"
+    case advanced = "Advanced"
 
     var icon: String {
         switch self {
         case .general: return "slider.horizontal.3"
         case .permissions: return "lock.shield"
         case .shortcuts: return "command"
+        case .advanced: return "gearshape.2"
         }
     }
+}
+
+private enum SettingsPillMode: String, CaseIterable {
+    case off = "Off"
+    case duringDictation = "While dictating"
+    case always = "Always"
 }
 
 struct SettingsView: View {
@@ -386,7 +468,8 @@ struct SettingsView: View {
                                     in: RoundedRectangle(cornerRadius: 8)
                                 )
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(HoverButtonStyle())
+                        .accessibilityAddTraits(pane == item ? .isSelected : [])
                     }
                 }
                 .padding(.horizontal, 10)
@@ -407,10 +490,12 @@ struct SettingsView: View {
                     case .general: generalPane
                     case .permissions: permissionsPane
                     case .shortcuts: shortcutsPane
+                    case .advanced: advancedPane
                     }
                 }
                 .padding(28)
             }
+            .id(pane)
             .background(OmilTheme.canvas)
         }
         .frame(minWidth: 700, minHeight: 520)
@@ -442,7 +527,7 @@ struct SettingsView: View {
 
             SettingsGroup(title: "Dictation") {
                 SettingsRow(title: "Cleanup", detail: "Clean removes fillers. Verbatim keeps every spoken word.") {
-                    Picker("", selection: $controller.cleanupMode) {
+                    Picker("Cleanup", selection: $controller.cleanupMode) {
                         Text("Clean").tag(CleanupMode.clean)
                         Text("Verbatim").tag(CleanupMode.verbatim)
                     }
@@ -451,13 +536,44 @@ struct SettingsView: View {
                     .frame(width: 180)
                 }
                 SettingsDivider()
-                SettingsRow(title: "Recording indicator", detail: "Show a floating control for shortcut and menu-bar dictation.") {
-                    Toggle("", isOn: Binding(
-                        get: { controller.pillEnabled },
-                        set: { controller.setPillEnabled($0) }
-                    ))
+                SettingsRow(title: "Speech sensitivity", detail: controller.speechSensitivity.detail) {
+                    Picker("Speech sensitivity", selection: $controller.speechSensitivity) {
+                        ForEach(SpeechSensitivity.allCases) { option in
+                            Text(option.title).tag(option)
+                        }
+                    }
                     .labelsHidden()
-                    .toggleStyle(.switch)
+                    .frame(width: 180)
+                }
+                SettingsDivider()
+                SettingsRow(title: "Automatically copy transcripts", detail: "Copy each finished transcript to the clipboard.") {
+                    Toggle("Automatically copy transcripts", isOn: $controller.automaticallyCopyTranscripts)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                }
+                SettingsDivider()
+                SettingsRow(title: "Floating pill", detail: "Always keeps a Start control on your desktop. Drag the handle to move it.") {
+                    Picker("Floating pill", selection: Binding(
+                        get: {
+                            if !controller.pillEnabled { return SettingsPillMode.off }
+                            return controller.pillAlwaysVisible ? .always : .duringDictation
+                        },
+                        set: { mode in
+                            switch mode {
+                            case .off: controller.setPillEnabled(false)
+                            case .duringDictation:
+                                controller.setPillAlwaysVisible(false)
+                                controller.setPillEnabled(true)
+                            case .always: controller.setPillAlwaysVisible(true)
+                            }
+                        }
+                    )) {
+                        ForEach(SettingsPillMode.allCases, id: \.self) { mode in
+                            Text(mode.rawValue).tag(mode)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 150)
                 }
                 SettingsDivider()
                 SettingsRow(
@@ -484,7 +600,7 @@ struct SettingsView: View {
 
             SettingsGroup(title: "This Mac") {
                 SettingsRow(title: "Launch at login", detail: "Start Omil after you sign in.") {
-                    Toggle("", isOn: Binding(
+                    Toggle("Launch at login", isOn: Binding(
                         get: { controller.launchAtLogin },
                         set: { controller.launchAtLogin = $0 }
                     ))
@@ -539,9 +655,9 @@ struct SettingsView: View {
                         ? "Omil can hear you during dictation. Manage saved recordings in General."
                         : "Allow access before starting a recording.",
                     granted: controller.micPermission == .granted,
-                    actionTitle: controller.micPermission == .denied ? "Open Settings" : "Allow"
+                    actionTitle: controller.micPermission == .granted ? "Check again" : controller.micPermission == .denied ? "Open Settings" : "Allow"
                 ) {
-                    controller.requestMic()
+                    controller.micPermission == .granted ? controller.refreshMicPermission() : controller.requestMic()
                 }
             }
 
@@ -589,7 +705,7 @@ struct SettingsView: View {
 
             SettingsGroup(title: "Hands-free") {
                 SettingsRow(title: "Control + Option + O", detail: "Press once to start and once to stop.") {
-                    Toggle("", isOn: Binding(
+                    Toggle("Hands-free shortcut", isOn: Binding(
                         get: { HotkeyManager.shared.toggleEnabled },
                         set: { HotkeyManager.shared.toggleEnabled = $0 }
                     ))
@@ -599,6 +715,45 @@ struct SettingsView: View {
 
             }
         }
+    }
+
+    private var advancedPane: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            SettingsPageHeader(title: "Advanced", detail: "Control how the server cleans your transcripts.")
+            SettingsGroup(title: "Cleanup system prompt") {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Sent with each cleanup request from this Mac. Leave the override off to use the server's current prompt.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(OmilTheme.muted)
+                    TextEditor(text: $controller.promptText)
+                        .font(.system(size: 12, design: .monospaced))
+                        .scrollContentBackground(.hidden)
+                        .frame(minHeight: 220)
+                        .padding(10)
+                        .background(OmilTheme.canvas, in: RoundedRectangle(cornerRadius: 9))
+                        .overlay(RoundedRectangle(cornerRadius: 9).stroke(OmilTheme.lineStrong))
+                        .accessibilityLabel("Cleanup system prompt")
+                    HStack {
+                        Text(controller.promptCustom ? "Using your prompt" : "Using server prompt")
+                            .font(OmilType.utility(10))
+                            .foregroundStyle(OmilTheme.muted)
+                        Spacer()
+                        Button("Use server prompt") { controller.resetPrompt() }
+                            .disabled(!controller.promptCustom)
+                        Button("Save prompt") { controller.savePrompt() }
+                            .disabled(controller.promptText.trimmingCharacters(in: .whitespacesAndNewlines).count < 50 || controller.promptText.count > 50_000)
+                            .buttonStyle(SignalButtonStyle())
+                    }
+                    if !controller.serverOpNote.isEmpty {
+                        Text(controller.serverOpNote)
+                            .font(.system(size: 10))
+                            .foregroundStyle(OmilTheme.muted)
+                    }
+                }
+                .padding(16)
+            }
+        }
+        .onAppear { controller.loadPrompt() }
     }
 }
 
@@ -650,12 +805,13 @@ private struct SettingsRow<Accessory: View>: View {
                 Text(detail)
                     .font(.system(size: 10))
                     .foregroundStyle(OmilTheme.muted)
-                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 16)
             accessory()
         }
         .padding(.horizontal, 16)
+        .padding(.vertical, 12)
         .frame(minHeight: 64)
     }
 }
@@ -684,7 +840,7 @@ private struct PermissionSettingsRow: View {
                 Text(detail)
                     .font(.system(size: 10))
                     .foregroundStyle(OmilTheme.muted)
-                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 14)
             if granted {

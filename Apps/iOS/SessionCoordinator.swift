@@ -24,6 +24,9 @@ final class SessionCoordinator: ObservableObject {
     @Published var backendDescription = "Probing…"
     @Published var assetState = "Unknown"
     @Published var cleanupMode: CleanupMode = .clean
+    @Published var speechSensitivity: SpeechSensitivity = .balanced {
+        didSet { UserDefaults.standard.set(speechSensitivity.rawValue, forKey: "omil.speechSensitivity") }
+    }
     @Published var keyboardHint = ""
     // Server core (user's Mac). Thin client: capture + display + handoff.
     // Full mobile pass comes after Mac validation.
@@ -32,11 +35,15 @@ final class SessionCoordinator: ObservableObject {
     @Published var serverCleanupEnabled = true
     @Published var serverHealth = "Unknown"
     @Published var serverNote = ""
+    @Published var cleanupPromptText = ""
+    @Published private(set) var cleanupPromptCustom = false
+    private var activeCleanupPrompt: String?
 
     let store: ResultStore
     private var session: DictationSession?
     private var backend: (any TranscriptionBackend)?
     private var capture = AudioCapture()
+    private var audioForwarder: AudioChunkForwarder?
     private var probe = SpeechSupportProbe()
     private var selector = BackendSelector()
     private var status = AppleSpeechStatus(speechTranscriberAvailable: false, dictationAvailable: false, sfOnDeviceAvailable: false, installedLocales: [], detail: "probing")
@@ -46,8 +53,17 @@ final class SessionCoordinator: ObservableObject {
 
     init() {
         self.store = ResultStore(appGroupId: Self.appGroupId)
+        activeCleanupPrompt = UserDefaults.standard.string(forKey: "omil.cleanupSystemPrompt")
+        if let activeCleanupPrompt {
+            cleanupPromptText = activeCleanupPrompt
+            cleanupPromptCustom = true
+        }
         if let raw = UserDefaults.standard.string(forKey: "omil.mode"), let m = CleanupMode(rawValue: raw) {
             cleanupMode = m
+        }
+        if let raw = UserDefaults.standard.string(forKey: "omil.speechSensitivity"),
+           let saved = SpeechSensitivity(rawValue: raw) {
+            speechSensitivity = saved
         }
         dictionary = Self.loadDictionary()
         if let data = UserDefaults.standard.data(forKey: "omil.serverConfig"),
@@ -70,7 +86,40 @@ final class SessionCoordinator: ObservableObject {
             UserDefaults.standard.set(data, forKey: "omil.backend")
         }
         UserDefaults.standard.set(serverCleanupEnabled, forKey: "omil.serverCleanup")
-        Task { await refreshServerHealth() }
+        Task {
+            await refreshServerHealth()
+            await loadCleanupPrompt()
+        }
+    }
+
+    func loadCleanupPrompt() async {
+        guard !cleanupPromptCustom, let url = serverConfig.endpoint(path: "/v1/prompt") else { return }
+        let textBeforeRequest = cleanupPromptText
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(serverConfig.token)", forHTTPHeaderField: "Authorization")
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let text = json["text"] as? String,
+              !cleanupPromptCustom,
+              cleanupPromptText == textBeforeRequest else { return }
+        cleanupPromptText = text
+    }
+
+    func saveCleanupPrompt() {
+        guard cleanupPromptText.trimmingCharacters(in: .whitespacesAndNewlines).count >= 50,
+              cleanupPromptText.count <= 50_000 else { return }
+        activeCleanupPrompt = cleanupPromptText
+        UserDefaults.standard.set(cleanupPromptText, forKey: "omil.cleanupSystemPrompt")
+        cleanupPromptCustom = true
+    }
+
+    func resetCleanupPrompt() {
+        activeCleanupPrompt = nil
+        UserDefaults.standard.removeObject(forKey: "omil.cleanupSystemPrompt")
+        cleanupPromptCustom = false
+        cleanupPromptText = ""
+        Task { await loadCleanupPrompt() }
     }
 
     func refreshServerHealth() async {
@@ -89,7 +138,8 @@ final class SessionCoordinator: ObservableObject {
         let client = ServerCleanupClient(
             config: serverConfig,
             dictionary: dictionary,
-            modelId: ServerCatalog.llmIdForFile[ServerCatalog.defaultLlmFile]
+            modelId: ServerCatalog.llmIdForFile[ServerCatalog.defaultLlmFile],
+            systemPrompt: activeCleanupPrompt
         )
         do {
             let r = try await client.clean(
@@ -132,7 +182,8 @@ final class SessionCoordinator: ObservableObject {
         case .omilServer:
             return ServerTranscriptionBackend(
                 config: serverConfig,
-                modelId: ServerCatalog.whisperIdForFile[ServerCatalog.defaultWhisperFile]
+                modelId: ServerCatalog.whisperIdForFile[ServerCatalog.defaultWhisperFile],
+                sensitivity: speechSensitivity
             )
         case .appleSpeech:
             if #available(iOS 26, *) { return AppleSpeechBackend() }
@@ -230,12 +281,17 @@ final class SessionCoordinator: ObservableObject {
     }
 
     private func startCapture(backend: any TranscriptionBackend) {
+        let forwarder = AudioChunkForwarder { chunk in
+            await backend.appendAudio(chunk.pcm16, timestamp: chunk.timestamp)
+        }
+        audioForwarder = forwarder
         do {
-            let captureBackend = backend
             try capture.start(targetSampleRate: 16_000, targetChannels: 1) { chunk in
-                Task { await captureBackend.appendAudio(chunk.pcm16, timestamp: chunk.timestamp) }
+                forwarder.append(chunk)
             }
         } catch {
+            forwarder.cancel()
+            audioForwarder = nil
             Task { @MainActor in
                 self.phase = .failed
                 self.statusMessage = "Microphone unavailable: \(error)"
@@ -249,10 +305,13 @@ final class SessionCoordinator: ObservableObject {
         phase = .processing
         statusMessage = "Finalizing…"
         capture.stop()
+        let forwarder = audioForwarder
+        audioForwarder = nil
         #if os(iOS)
         try? AVAudioSession.sharedInstance().setActive(false)
         #endif
         Task {
+            await forwarder?.finish()
             if let result = await session.stop() {
                 await self.publish(result: result)
             } else {
@@ -266,6 +325,8 @@ final class SessionCoordinator: ObservableObject {
 
     func cancel() {
         capture.cancel()
+        audioForwarder?.cancel()
+        audioForwarder = nil
         if let s = shared { store.cancelSession(s.sessionId) }
         Task {
             await session?.cancel()

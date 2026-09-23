@@ -2,7 +2,7 @@ import { Effect } from "effect"
 import { mkdir, rm } from "node:fs/promises"
 import path from "node:path"
 import { createHash } from "node:crypto"
-import { modelSpec, type ServerConfig } from "./Config"
+import { modelSpec, VAD_MODEL, type ServerConfig } from "./Config"
 
 /**
  * Model asset management: explicit, versioned, integrity-recorded downloads.
@@ -29,6 +29,7 @@ export interface ModelFileLifecycle {
 const operations = new Map<string, ModelFileLifecycle>()
 const inFlight = new Map<string, Promise<string>>()
 const operationKey = (cfg: ServerConfig, id: string) => `${cfg.dataDir}\u0000${id}`
+const managedModelSpec = (id: string) => id === VAD_MODEL.id ? VAD_MODEL : modelSpec(id)
 
 const updateOperation = (
   cfg: ServerConfig,
@@ -43,7 +44,7 @@ export const modelFileLifecycle = (
 
 export const modelsDir = (cfg: ServerConfig) => path.join(cfg.dataDir, "models")
 export const modelPath = (cfg: ServerConfig, id: string) => {
-  const spec = modelSpec(id)
+  const spec = managedModelSpec(id)
   if (!spec) throw new ModelError(`unknown model ${id}`)
   return path.join(modelsDir(cfg), spec.filename)
 }
@@ -92,7 +93,7 @@ export const checkModelReady = (
   id: string,
 ): Effect.Effect<boolean, never, never> =>
   Effect.promise(async () => {
-    const spec = modelSpec(id)
+    const spec = managedModelSpec(id)
     if (!spec) return false
     try {
       const f = Bun.file(modelPath(cfg, id))
@@ -117,7 +118,7 @@ const ensureModelOnce = (
   id: string,
 ): Effect.Effect<string, ModelError, never> =>
   Effect.gen(function* () {
-    const spec = modelSpec(id)
+    const spec = managedModelSpec(id)
     if (!spec) return yield* Effect.fail(new ModelError(`unknown model ${id}`))
     yield* Effect.promise(() => mkdir(modelsDir(cfg), { recursive: true }))
     const dest = modelPath(cfg, id)
@@ -142,6 +143,9 @@ const ensureModelOnce = (
             new ModelError(`${spec.filename}: checksum mismatch (expected ${pinned.sha256.slice(0, 12)}…, got ${actual.slice(0, 12)}…). Delete it to re-download.`),
           )
         }
+        if (spec.expectedSha256 && actual !== spec.expectedSha256) {
+          return yield* Effect.fail(new ModelError(`${spec.filename}: checksum mismatch. Delete it to re-download.`))
+        }
         return dest
       }
       // No pin yet: a size mismatch means a stale partial (e.g. killed
@@ -158,6 +162,9 @@ const ensureModelOnce = (
           totalBytes: spec.expectedBytes ?? size, error: null,
         })
         const sha = yield* Effect.promise(() => sha256File(dest))
+        if (spec.expectedSha256 && sha !== spec.expectedSha256) {
+          return yield* Effect.fail(new ModelError(`${spec.filename}: checksum mismatch. Delete it to re-download.`))
+        }
         manifest[spec.filename] = { sha256: sha, bytes: size, url: spec.url }
         yield* Effect.promise(() => writeManifest(cfg, manifest))
         console.log(`pinned ${spec.filename} sha256=${sha.slice(0, 16)}… (trust-on-first-use)`)
@@ -207,6 +214,9 @@ const ensureModelOnce = (
       totalBytes: total > 0 ? total : received, error: null,
     })
     const sha = yield* Effect.promise(() => sha256File(dest))
+    if (spec.expectedSha256 && sha !== spec.expectedSha256) {
+      return yield* Effect.fail(new ModelError(`${spec.filename}: download checksum mismatch`))
+    }
     manifest[spec.filename] = { sha256: sha, bytes: received, url: spec.url }
     yield* Effect.promise(() => writeManifest(cfg, manifest))
     console.log(`downloaded + pinned ${spec.filename} sha256=${sha.slice(0, 16)}…`)
@@ -227,7 +237,7 @@ export const ensureModel = (
       const pending = Effect.runPromise(Effect.either(ensureModelOnce(cfg, id)))
         .then((outcome) => {
           if (outcome._tag === "Left") throw outcome.left
-          const spec = modelSpec(id)
+          const spec = managedModelSpec(id)
           const bytes = spec ? Bun.file(outcome.right).size : 0
           updateOperation(cfg, id, {
             state: "ready", receivedBytes: bytes,
@@ -239,7 +249,7 @@ export const ensureModel = (
           const reason = error instanceof ModelError ? error.reason : String(error)
           updateOperation(cfg, id, {
             state: "failed", receivedBytes: 0,
-            totalBytes: modelSpec(id)?.expectedBytes ?? null, error: reason,
+            totalBytes: managedModelSpec(id)?.expectedBytes ?? null, error: reason,
           })
           throw error instanceof ModelError ? error : new ModelError(reason)
         })

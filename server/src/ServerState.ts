@@ -41,6 +41,15 @@ export async function loadPrompt(dataDir: string): Promise<{ text: string; isCus
   return { text: DEFAULT_SYSTEM_PROMPT, isCustom: false }
 }
 
+export async function resolveCleanupPrompt(
+  dataDir: string,
+  requestPrompt?: string,
+): Promise<{ text: string; isCustom: boolean }> {
+  return requestPrompt === undefined
+    ? loadPrompt(dataDir)
+    : { text: requestPrompt, isCustom: true }
+}
+
 export async function savePrompt(dataDir: string, text: string): Promise<void> {
   await Bun.write(path.join(dataDir, PROMPT_FILE), text)
 }
