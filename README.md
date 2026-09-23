@@ -1,117 +1,59 @@
 # Omil
 
-**Local dictation for Mac. A Wispr Flow alternative without cloud transcription.**
+Omil is a free, local alternative to [Wispr Flow](https://wisprflow.ai) for Apple silicon Macs. The feature set is similar.
 
-Talk naturally, and Omil puts your words into the app you were using. Whisper
-transcribes; Qwen cleans up filler words and spoken corrections. Both run on
-your Mac, with no account required.
+Hold Right Option, speak, and release. The text goes into the field you were using. Clean mode strips fillers, applies spoken corrections, and tidies repeated words and numbers. Verbatim mode leaves the wording alone and only fixes spacing, capitalization, and punctuation. There is a personal dictionary, snippets, an editable cleanup prompt, and a history that stores the raw transcript, the edits, and the clean text. You can also start from a toggle shortcut, the menu bar, or a floating Start control. History can replay a saved recording or transcribe it again. The Engine screen is where you pick models.
 
-## What you get
+Wispr Flow needs an account, and the paid plan is what you use after the trial. Omil does not charge, and there is no account. Dictation stays on your Mac.
 
-- Hold Right Option to dictate into the selected text field. You can also use
-  the toggle shortcut, menu bar, or an always-visible floating Start control.
-- Choose Clean or Verbatim. Add preferred spellings and snippets, or edit the
-  cleanup prompt in Advanced settings.
-- Compare Raw, Changes, and Clean versions in History. Replay saved recordings
-  or transcribe them again.
-- Adjust speech sensitivity for a distant voice or background noise.
-- Keep the server private to your Mac, or enable local network sharing for an
-  iPhone or iPad.
-
-The Mac app is the primary client. The iOS app and keyboard extension are
-still being tested on physical devices.
-
-## How it works
-
-The Mac app records audio and runs a local server. `whisper.cpp` transcribes
-speech; `llama.cpp` runs the selected Qwen cleanup model. Omil checks proposed
-edits before applying them. The Engine screen manages models and local network
-access.
-
-You can optionally connect an iPhone or iPad to the Mac server over your local
-network. Each device sends its own speech sensitivity and cleanup prompt. The
-server keeps those requests separate.
-
-On Mac, Settings → General → Floating pill offers Off, While dictating, and
-Always. Always keeps a draggable Start control on screen between recordings.
+An iPhone or iPad can send recordings to the Mac over the local network. Each device has its own speech sensitivity and cleanup prompt. Omil has no Windows or Android app, and the iOS app and keyboard extension have not been tested on a physical device yet.
 
 ## Requirements
 
-- An Apple silicon Mac running macOS 14 or later
-- Xcode 26 or later
-- [Bun](https://bun.sh/) and [XcodeGen](https://github.com/yonaskolb/XcodeGen)
-- `whisper.cpp` and `llama.cpp` command-line tools
-- About 4.1 GB for the default Whisper and Qwen models
+- An Apple silicon Mac on macOS 14 or later. Tested on macOS 26 with Xcode 26. Deployment target is macOS 14.
+- Xcode 26 or later, [Bun](https://bun.sh/), and [XcodeGen](https://github.com/yonaskolb/XcodeGen).
+- The speech-to-text and cleanup command-line tools named in [How Omil works](docs/SYSTEM.md).
 
-The current toolchain is tested on macOS 26 with Xcode 26. The deployment
-target remains macOS 14.
-
-## Build the Mac app
-
-Install the build tools and native inference sidecars:
+## Build
 
 ```sh
-brew install bun xcodegen whisper-cpp llama.cpp
-```
-
-Clone and build Omil:
-
-```sh
+brew install bun xcodegen
 git clone https://github.com/arpan404/omil.git
 cd omil
 ./scripts/bootstrap-mac.sh
 ```
 
-The script installs server dependencies, type-checks and tests the server,
-compiles the bundled server, regenerates the Xcode project, and builds the Mac
-app. It prints the path to `Omil.app` when it finishes.
+The script compiles the bundled server, type-checks and tests it, regenerates the Xcode project, and builds a Debug app. It prints the path to `Omil.app`.
 
-To build a local Mac app in Release configuration with Apple Development signing, run:
+A Release build, signed with your Apple Development certificate and installed over `/Applications/Omil.app`:
 
 ```sh
 ./scripts/build-local-mac.sh --install
 ```
 
-To give that build a different app version without editing project files, pass
-the version and build number:
+Pass a version and build number when you want that install to carry them without editing project files:
 
 ```sh
 ./scripts/build-local-mac.sh --install 0.2.0 2
 ```
 
-The script builds the bundled server, regenerates the Xcode project, and puts
-`Omil.app` in `.build/local-derived-data/Build/Products/Release/`. With `--install`,
-it replaces `/Applications/Omil.app` and opens it. It requires
-the Apple Development certificate for team `BVT55BT25R`; it does not notarize
-or publish the app. Install each build at the same path (`/Applications/Omil.app`)
-to keep macOS privacy permissions tied to the same app identity. Switching from
-an earlier ad hoc build may require one final permission grant. The app and its
-bundled Sparkle framework use the same signing identity with hardened runtime.
+The build writes `Omil.app` to `.build/local-derived-data/Build/Products/Release/`. `--install` replaces `/Applications/Omil.app` and opens it. Signing uses team `BVT55BT25R` and the hardened runtime, for both the app and the bundled Sparkle framework. This script installs locally. The release commands further down publish a notarized build. Install each build at `/Applications/Omil.app` so microphone, Accessibility, and Input Monitoring stay tied to the same app. Switching from an earlier ad hoc build may ask for those permissions once more.
 
-On first launch, Omil asks for microphone access and downloads the selected
-models. Accessibility permission enables direct text insertion. Input
-Monitoring permission enables global shortcuts when Omil is not focused.
-Right-click the floating pill to hide it without stopping the recording.
-The menu bar can show or hide the pill, and Settings offers all three display
-modes.
-The Omil window and menu bar can return to the last focused field in another
-app when that field is still available. If focus changed, the transcript stays
-in Omil.
-Mac Settings and iPhone Settings each have a Speech sensitivity choice. Balanced
-is the default. Distant voice can catch quieter or shorter speech, while Filter
-more noise is less likely to treat background sound as speech. Each app sends
-its own choice with the recording; these settings apply when using the Omil
-server.
+On first launch, Omil asks for the microphone and downloads the selected models. Accessibility permission is what types into other apps. Input Monitoring is what makes the global shortcut work while Omil is in the background. Right-click the floating pill to hide it without stopping the recording. Settings → General → Floating pill offers Off, While dictating, and Always. Always leaves a draggable Start control on screen between recordings.
+
+Dictation started from the Omil window or menu bar returns to the last field in another app when that field is still there. If focus moved, the transcript stays in Omil.
+
+Speech sensitivity is separate on Mac and iPhone. Balanced is the default. Distant voice keeps quieter or shorter speech. Filter more noise is less likely to treat background sound as speech.
 
 ## Development
 
-Run the Swift package tests:
+Swift package tests:
 
 ```sh
 swift test
 ```
 
-Run the server tests:
+Server tests:
 
 ```sh
 cd server
@@ -119,23 +61,20 @@ bun install
 bun test
 ```
 
-After changing `project.yml`, regenerate and review the Xcode project:
+After editing `project.yml`:
 
 ```sh
 xcodegen generate
 git diff -- Omil.xcodeproj
 ```
 
-Set a release version and increment its internal build number with:
+Set a release version and bump its build number:
 
 ```sh
 ./scripts/release.sh prepare 0.2.0
 ```
 
-Commit and push that version change. Copy
-[`.env.release.example`](.env.release.example) to `.env`, fill in the
-credentials, and publish the signed, notarized release. The CLI loads `.env`
-automatically, while credentials exported in your shell take precedence.
+Commit and push that change. Copy [`.env.release.example`](.env.release.example) to `.env` and fill in the credentials. Shell credentials override `.env`.
 
 ```sh
 cp .env.release.example .env
@@ -143,22 +82,14 @@ cp .env.release.example .env
 ./scripts/release.sh publish --notes-file RELEASE_NOTES.md
 ```
 
-The command creates `Omil-<version>.zip` and `appcast.xml`, signs the update
-with Sparkle's EdDSA key, and uploads both files to a GitHub Release. The app
-checks the `appcast.xml` attached to the latest release.
+`publish` writes `Omil-<version>.zip` and `appcast.xml`, signs the update with Sparkle's EdDSA key, and uploads both to a GitHub Release. The app reads `appcast.xml` from the latest release.
 
-## Current limitations
+## Limits
 
-- Dictation is English-only.
-- The native `whisper-cli` and `llama-server` sidecars must be installed on the
-  Mac.
+- Dictation is English only.
+- The command-line tools listed under Requirements must already be installed on the Mac.
 - The first run downloads the selected model weights.
-- Mobile recording, keyboard handoff, background behavior, latency, and power
-  use have not been validated on physical devices.
-- Human-speech evaluation is still pending. Current repeatable speech tests use
-  synthetic audio fixtures.
+- Mobile recording, keyboard handoff, background behavior, latency, and power use have not been checked on a device.
+- Repeatable speech tests use synthetic audio. Human-speech evaluation has not been run.
 
-## Documentation
-
-[How Omil works](docs/SYSTEM.md) explains the runtime, dictation pipeline,
-model lifecycle, local storage, insertion safeguards, and mobile handoff.
+[How Omil works](docs/SYSTEM.md) is the architecture writeup.

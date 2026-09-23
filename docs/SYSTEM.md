@@ -11,9 +11,9 @@ flowchart LR
     Controller --> Capture[AudioCapture]
     Capture --> Client[OmilCore server client]
     Client --> API[Bundled Effect and Bun server]
-    API --> Whisper[whisper-cli with selected Whisper model]
+    API --> Speech[transcription CLI with the selected speech model]
     API --> Cleanup[Cleanup pipeline]
-    Cleanup --> Qwen[llama-server with selected Qwen model]
+    Cleanup --> LLM[cleanup process with the selected model]
     Cleanup --> Validator[Deterministic resolver and validator]
     Controller --> Insert[Accessibility insertion]
     Insert --> Clipboard[Guarded clipboard fallback]
@@ -21,8 +21,11 @@ flowchart LR
 
 The macOS app is the user-facing process. It owns recording, UI state,
 shortcuts, insertion, and local history. A bundled server owns model downloads,
-transcription, and cleanup. The server calls the Homebrew-installed
-`whisper-cli` and `llama-server` binaries.
+transcription, and cleanup. The server calls Homebrew-installed
+transcription and cleanup binaries. Today those are `whisper-cli` and
+`llama-server`, from the `whisper-cpp` and `llama.cpp` packages. The speech
+and cleanup models are catalog entries, so another model can be added without
+changing this layout.
 
 There is no Swift inference fallback in the Mac app. If the server cannot
 transcribe or clean a recording, the app reports the failure and preserves any
@@ -34,12 +37,12 @@ raw transcript that was already produced.
    hotkey monitor.
 2. `LocalServerManager` creates `~/Library/Application Support/Omil/Server`.
 3. It creates a bearer token with `0600` permissions and selects free API and
-   `llama-server` ports.
+   cleanup-process ports.
 4. It launches the bundled `omil-server` executable on `127.0.0.1` and passes
    the app process ID to it. If the user explicitly enables local-network
    sharing, it binds to `0.0.0.0` instead.
 5. The app polls `/v1/health`, reads the model catalog, and prepares the selected
-   Whisper and Qwen weights when needed.
+   speech and cleanup weights when needed.
 6. Closing the app terminates the managed server. The server also watches the
    parent process and exits if the app disappears unexpectedly.
 
@@ -51,13 +54,7 @@ as an advanced development override.
 
 ## Supported models
 
-The Engine screen can select any model in the server catalog:
-
-| Task | Available models | Default |
-| --- | --- | --- |
-| Transcription | Whisper tiny, base, small, medium, large-v3, large-v3 Q5, large-v3-turbo, large-v3-turbo Q5, large-v3-turbo Q8 | Whisper large-v3-turbo |
-| Cleanup | Qwen3 0.6B, Qwen3 4B Instruct, Qwen3 8B, Qwen3.5 0.8B, Qwen3.5 4B, Qwen3.5 9B | Qwen3 4B Instruct |
-
+The Engine screen can select any speech or cleanup model in the server catalog.
 The defaults are initial selections, not fixed dependencies. Changing a model
 saves the selection on the server. The selected weights download separately,
 and the next transcription or cleanup uses that model.
@@ -88,8 +85,8 @@ Stopping performs the following work:
    adjusts quiet speech levels when the frame levels vary like speech. It
    returns an empty transcript for near-digital silence. This is a high-pass
    filter and level adjustment, not general noise removal.
-4. For other audio, `whisper-cli` uses Silero voice activity detection to keep
-   speech segments before the selected Whisper model transcribes them. Mac and
+4. For other audio, the transcription command uses Silero voice activity detection to keep
+   speech segments before the selected speech model transcribes them. Mac and
    iOS send their own `sensitivity` value on every `/v1/transcribe` request.
    The server defaults to balanced for older clients.
 5. The server returns the transcript and timestamped segments, then deletes the
@@ -112,7 +109,7 @@ Amplification cannot restore speech already buried beneath noise.
 
 The client sends one request identifier through both stages. Each request also
 contains its chosen model and a snapshot of its cleanup preferences. The server
-has separate FIFO, single-worker queues for Whisper and Qwen work. Requests from
+has separate FIFO, single-worker queues for transcription and cleanup work. Requests from
 multiple devices therefore run in arrival order for each inference resource,
 while transcription and cleanup can progress independently. A queued request
 keeps the model and preferences it arrived with even if another client changes
@@ -127,7 +124,7 @@ twice.
 ## Cleanup pipeline
 
 Verbatim mode normalizes whitespace, capitalization, and final punctuation. It
-can also expand an explicit snippet. It does not start Qwen.
+can also expand an explicit snippet. It does not start the cleanup model.
 
 Clean mode uses a hybrid pipeline:
 
@@ -136,7 +133,7 @@ Clean mode uses a hybrid pipeline:
 2. Deterministic rules propose filler removal, repeated-word removal,
    corrections, reversals such as "keep the original," and number
    normalization.
-3. Qwen proposes only token-referenced repair operations. It does not return a
+3. The cleanup model proposes only token-referenced repair operations. It does not return a
    free-form rewritten paragraph.
 4. The validator rejects stale references, conflicting targets, ungrounded
    replacements, type mismatches, negation changes, and subject-scope changes.
@@ -152,7 +149,7 @@ data for its raw, cleaned, and diff views.
 
 ## Model lifecycle
 
-The server has a catalog of Whisper and Qwen models. A selection is saved before
+The server has a catalog of speech and cleanup models. A selection is saved before
 its weights are downloaded. Model preparation downloads the selected file,
 checks its size, calculates a SHA-256 hash, and records that hash in a local
 manifest. Later starts verify the stored file against the manifest.
@@ -160,14 +157,14 @@ The server also downloads a small internal Silero VAD model on the first
 non-silent transcription and checks its fixed SHA-256 hash. It does not appear
 in the selectable model catalog.
 
-Whisper runs once per completed recording. `llama-server` starts when clean mode
-needs Qwen and stays loaded for later requests. The runtime tracks loading,
-active uses, deferred unload requests, and failures. Switching Qwen models lets
+Transcription runs once per completed recording. The cleanup process starts when clean mode
+needs a model and stays loaded for later requests. The runtime tracks loading,
+active uses, deferred unload requests, and failures. Switching cleanup models lets
 an active cleanup finish before the old process is released.
 
 Downloaded models can be removed from the Engine screen after confirmation.
 The server refuses to delete a model while its inference queue is busy or while
-that model is in use. It unloads an idle Qwen process before deleting its
+that model is in use. It unloads an idle cleanup process before deleting its
 weight, then removes the corresponding manifest entry and lifecycle state.
 
 ## Text insertion and recovery
