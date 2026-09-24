@@ -20,6 +20,60 @@ enum AppearancePreference: String, CaseIterable, Identifiable {
     }
 }
 
+enum ThemePreset: String, CaseIterable, Identifiable {
+    case studio
+    case fog
+    case slate
+    case linen
+    case tide
+    case clay
+    case lilac
+    case moss
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .studio: return "Studio"
+        case .fog: return "Fog"
+        case .slate: return "Graphite"
+        case .linen: return "Sand"
+        case .tide: return "Current"
+        case .clay: return "Rose"
+        case .lilac: return "Violet"
+        case .moss: return "Fern"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .studio: return "Quiet neutrals"
+        case .fog: return "Gray and white, soft charcoal"
+        case .slate: return "Deep graphite and blue"
+        case .linen: return "Warm white and amber"
+        case .tide: return "Dark teal and clear cyan"
+        case .clay: return "Cool charcoal and rose"
+        case .lilac: return "Midnight violet"
+        case .moss: return "Forest green accents"
+        }
+    }
+
+    static func restored(from rawValue: String) -> ThemePreset? {
+        if let preset = ThemePreset(rawValue: rawValue) { return preset }
+        // Preserve the nearest palette when upgrading from the first gallery.
+        switch rawValue {
+        case "copperplate": return .linen
+        case "nocturne": return .slate
+        case "canary": return .fog
+        case "seaglass": return .tide
+        case "cardinal": return .clay
+        case "wisteria": return .lilac
+        case "evergreen": return .moss
+        default: return nil
+        }
+    }
+}
+
 // MARK: - DictationController (Mac)
 //
 // Owns the full Mac workflow: destination capture -> recording -> server
@@ -34,12 +88,14 @@ final class DictationController: ObservableObject {
 
     enum ProcessingStage: Int, CaseIterable {
         case transcribing
+        case queued
         case cleaning
         case inserting
 
         var title: String {
             switch self {
             case .transcribing: return "Transcribing"
+            case .queued: return "Waiting"
             case .cleaning: return "Cleaning up"
             case .inserting: return "Inserting"
             }
@@ -48,6 +104,7 @@ final class DictationController: ObservableObject {
         var icon: String {
             switch self {
             case .transcribing: return "waveform"
+            case .queued: return "clock"
             case .cleaning: return "wand.and.stars"
             case .inserting: return "text.cursor"
             }
@@ -55,7 +112,23 @@ final class DictationController: ObservableObject {
     }
 
     enum RecordingSource { case app, shortcut, menuBar, pill }
+    struct ProcessingJob: Identifiable {
+        let id: SessionID
+        let number: Int
+        var stage: ProcessingStage
+    }
+
+    private struct DeliveryContext {
+        let ax: AXInserter
+        let precondition: SelectionPrecondition
+        let insertionSerialAtCapture: Int
+        let source: RecordingSource
+        let mode: CleanupMode
+        let cleanupClient: ServerCleanupClient
+    }
+
     @Published private(set) var recordingSource: RecordingSource = .app
+    @Published private(set) var processingJobs: [ProcessingJob] = []
     @Published var phase: Phase = .idle
     @Published var draftText = ""
     @Published var lastRaw = ""
@@ -118,6 +191,12 @@ final class DictationController: ObservableObject {
             AppAppearance.shared.apply(appearance)
         }
     }
+    @Published var themePreset: ThemePreset = .fog {
+        didSet {
+            UserDefaults.standard.set(themePreset.rawValue, forKey: "omil.themePreset")
+            AppAppearance.shared.themePreset = themePreset
+        }
+    }
     @Published private(set) var snippets: [Snippet] = []
     @Published var personalStyle: WritingStyle = .casual {
         didSet { UserDefaults.standard.set(personalStyle.rawValue, forKey: "omil.style.personal") }
@@ -178,10 +257,27 @@ final class DictationController: ObservableObject {
     private var audioForwarder: AudioChunkForwarder?
     private var backend: (any TranscriptionBackend)?
     private var ax = AXInserter()
+    private var lastReceiptAX: AXInserter?
+    private struct PriorInsertion {
+        let serial: Int
+        let receipt: InsertionReceipt
+        let ax: AXInserter
+    }
+    private struct PriorPaste {
+        let serial: Int
+        let text: String
+        let ax: AXInserter
+    }
+    private var insertionSerial = 0
+    private var insertionSerialAtCapture = 0
+    private var priorInsertions: [PriorInsertion] = []
+    private var priorPastes: [PriorPaste] = []
     private var clipboard = ClipboardInserter()
     private let recentTargetApp = RecentTargetApp.shared
     private var precondition: SelectionPrecondition?
     private var sessionSeq = 0
+    private var deliveryTail: Task<Void, Never>?
+    private var pasteRestoreTask: Task<Void, Never>?
     private var eventTask: Task<Void, Never>?
     private var dictionary = PersonalDictionary()
     private var lastMeterTimestamp: Double = -.infinity
@@ -230,6 +326,10 @@ final class DictationController: ObservableObject {
            let savedAppearance = AppearancePreference(rawValue: raw) {
             appearance = savedAppearance
         }
+        if let raw = UserDefaults.standard.string(forKey: "omil.themePreset"),
+           let savedTheme = ThemePreset.restored(from: raw) {
+            themePreset = savedTheme
+        }
         personalStyle = Self.savedStyle(forKey: "omil.style.personal", fallback: .casual)
         workStyle = Self.savedStyle(forKey: "omil.style.work", fallback: .automatic)
         emailStyle = Self.savedStyle(forKey: "omil.style.email", fallback: .formal)
@@ -251,8 +351,19 @@ final class DictationController: ObservableObject {
     /// the user's explicit custom-server override.
     func startup() {
         AppAppearance.shared.apply(appearance)
+        AppAppearance.shared.themePreset = themePreset
         NSLog("Omil: startup")
         refreshMicPermission()
+        // TCC can report an unsettled status immediately after a signed app
+        // update. Recheck without prompting so the setup UI reflects access
+        // already granted to this app identity.
+        Task { @MainActor in
+            for delay in [250, 750, 1_500] {
+                guard micPermission == .unknown else { break }
+                try? await Task.sleep(for: .milliseconds(delay))
+                refreshMicPermission()
+            }
+        }
         HotkeyManager.shared.onPushStart = { [weak self] in self?.start(source: .shortcut) }
         HotkeyManager.shared.onPushStop = { [weak self] in self?.stop() }
         HotkeyManager.shared.onToggle = { [weak self] in self?.toggle(source: .shortcut) }
@@ -333,7 +444,7 @@ final class DictationController: ObservableObject {
     // MARK: Server core
 
     func saveServerConfig() {
-        guard phase != .recording, phase != .preparing, phase != .processing else {
+        guard phase != .recording, phase != .preparing, phase != .processing, processingJobs.isEmpty else {
             serverOpNote = "Finish the current dictation before changing servers."
             return
         }
@@ -353,7 +464,7 @@ final class DictationController: ObservableObject {
     }
 
     func useManagedServer() {
-        guard phase != .recording, phase != .preparing, phase != .processing else {
+        guard phase != .recording, phase != .preparing, phase != .processing, processingJobs.isEmpty else {
             serverOpNote = "Finish the current dictation before changing servers."
             return
         }
@@ -365,7 +476,7 @@ final class DictationController: ObservableObject {
 
     func restartManagedServer() {
         guard !usesCustomServer else { return }
-        guard phase != .recording, phase != .preparing, phase != .processing else {
+        guard phase != .recording, phase != .preparing, phase != .processing, processingJobs.isEmpty else {
             serverOpNote = "Finish the current dictation before restarting the engine."
             return
         }
@@ -377,7 +488,7 @@ final class DictationController: ObservableObject {
             serverOpNote = "Switch back to this Mac before changing network access."
             return
         }
-        guard phase != .recording, phase != .preparing, phase != .processing else {
+        guard phase != .recording, phase != .preparing, phase != .processing, processingJobs.isEmpty else {
             serverOpNote = "Finish the current dictation before changing network access."
             return
         }
@@ -389,7 +500,7 @@ final class DictationController: ObservableObject {
 
     func regenerateLANToken() {
         guard !usesCustomServer else { return }
-        guard phase != .recording, phase != .preparing, phase != .processing else {
+        guard phase != .recording, phase != .preparing, phase != .processing, processingJobs.isEmpty else {
             serverOpNote = "Finish the current dictation before replacing the connection token."
             return
         }
@@ -491,6 +602,10 @@ final class DictationController: ObservableObject {
     }
 
     private func chooseModel(file: String, kind: String) {
+        guard processingJobs.isEmpty, phase != .recording, phase != .preparing else {
+            serverOpNote = "Finish pending recordings before switching models."
+            return
+        }
         let known = kind == "whisper"
             ? ServerCatalog.whisperIdForFile[file] != nil
             : ServerCatalog.llmIdForFile[file] != nil
@@ -620,6 +735,10 @@ final class DictationController: ObservableObject {
     }
 
     func deleteModel(file: String) {
+        guard processingJobs.isEmpty else {
+            serverOpNote = "Finish pending recordings before deleting a model."
+            return
+        }
         guard downloadingModelIDs.isEmpty,
               let model = serverModels.first(where: { $0.filename == file }),
               model.downloaded,
@@ -720,7 +839,7 @@ final class DictationController: ObservableObject {
         activePromptOverride = promptText
         UserDefaults.standard.set(promptText, forKey: "omil.cleanupSystemPrompt")
         promptCustom = true
-        serverOpNote = "Prompt saved for cleanup requests from this Mac."
+        serverOpNote = "Cleanup prompt saved for this Mac."
     }
 
     func resetPrompt() {
@@ -802,26 +921,35 @@ final class DictationController: ObservableObject {
 
     /// Qwen cleanup runs in the Effect/Bun service. A server failure retains
     /// the transcript in Omil instead of silently switching to Swift cleanup.
-    func serverClean(rawText: String, requestId: String) async throws -> (text: String, note: String) {
-        let client = ServerCleanupClient(
-            config: serverConfig,
-            dictionary: dictionary,
-            snippets: Dictionary(uniqueKeysWithValues: snippets.map { ($0.trigger, $0.expansion) }),
-            style: styleForCapturedTarget(),
-            modelId: ServerCatalog.llmIdForFile[llmFile],
-            systemPrompt: activePromptOverride
-        )
+    func serverClean(
+        rawText: String, requestId: String,
+        mode: CleanupMode? = nil, client: ServerCleanupClient? = nil
+    ) async throws -> (text: String, note: String) {
+        let client = client ?? makeCleanupClient(style: styleForCapturedTarget())
         let result = try await client.clean(
             text: rawText,
-            mode: cleanupMode,
+            mode: mode ?? cleanupMode,
             requestId: requestId
         )
         guard !result.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw ServerCleanupError.failed(reason: "server returned an empty cleanup result")
         }
         let snippetNote = result.appliedSnippetTriggers?.isEmpty == false ? " · snippet expanded" : ""
-        let note = "Qwen cleanup via server: \(result.acceptedEdits.count) edits, \(result.abstentions.count) abstentions · \((result.writingStyle ?? .automatic).displayName)\(snippetNote) (\(result.rulesVersion))"
+        let editCount = result.acceptedEdits.count + (result.proseChanges?.count ?? 0)
+        let note = "Qwen cleanup via server: \(editCount) edits, \(result.abstentions.count) abstentions · \((result.writingStyle ?? .automatic).displayName)\(snippetNote) (\(result.rulesVersion))"
         return (result.text, note)
+    }
+
+    private func makeCleanupClient(style: WritingStyle, context: ServerCleanupContext? = nil) -> ServerCleanupClient {
+        ServerCleanupClient(
+            config: serverConfig,
+            dictionary: dictionary,
+            snippets: Dictionary(uniqueKeysWithValues: snippets.map { ($0.trigger, $0.expansion) }),
+            style: style,
+            modelId: ServerCatalog.llmIdForFile[llmFile],
+            systemPrompt: activePromptOverride,
+            context: context
+        )
     }
 
     func makeBackend() -> (any TranscriptionBackend)? {
@@ -891,6 +1019,7 @@ final class DictationController: ObservableObject {
         // Capture the intended destination + selection first.
         let axOk = ax.captureTarget(application: recentTargetApp.target(for: source))
         precondition = ax.capturePrecondition()
+        insertionSerialAtCapture = insertionSerial
         sessionSeq += 1
         let session = DictationSession(
             mode: cleanupMode,
@@ -1007,35 +1136,41 @@ final class DictationController: ObservableObject {
         }
         guard phase == .recording, let activeSession = session else { return }
         let sessionID = activeSession.sessionId
-        processingStage = .transcribing
-        phase = .processing
-        statusMessage = "Transcribing your recording"
+        let jobNumber = sessionSeq
+        let context = DeliveryContext(
+            ax: ax, precondition: precondition ?? SelectionPrecondition(),
+            insertionSerialAtCapture: insertionSerialAtCapture,
+            source: recordingSource, mode: cleanupMode,
+            cleanupClient: makeCleanupClient(style: styleForCapturedTarget(), context: ax.capturedContext)
+        )
         capture.stop()
         let forwarder = audioForwarder
         audioForwarder = nil
         saveRecoveryAudio(for: sessionID)
-        Task {
+        session = nil
+        backend = nil
+        ax = AXInserter()
+        precondition = nil
+        eventTask?.cancel()
+        eventTask = nil
+        resetAudioMeter()
+        processingJobs.append(ProcessingJob(id: sessionID, number: jobNumber, stage: .transcribing))
+        phase = .ready
+        statusMessage = "Transcribing in the background. Ready for another recording."
+        let previousDelivery = deliveryTail
+        deliveryTail = Task {
             await forwarder?.finish()
             if let result = await activeSession.stop() {
-                guard self.session?.sessionId == sessionID else { return }
-                await deliver(result: result, session: activeSession)
+                self.setProcessingStage(.queued, for: sessionID)
+                await deliver(result: result, session: activeSession, context: context, after: previousDelivery)
             } else {
                 let stoppedPhase = await activeSession.currentPhase
-                await MainActor.run {
-                    guard self.session?.sessionId == sessionID else { return }
-                    if stoppedPhase == .failed {
-                        self.phase = .failed
-                        if !self.statusMessage.hasPrefix("Could not transcribe") {
-                            self.statusMessage = "Could not transcribe this recording. Check Engine and try again."
-                        }
-                        self.updateRecovery(
-                            for: sessionID,
-                            state: .failed,
-                            failureReason: self.statusMessage
-                        )
-                    } else {
-                        self.phase = .idle
-                        self.statusMessage = "Cancelled"
+                self.processingJobs.removeAll { $0.id == sessionID }
+                if stoppedPhase == .failed {
+                    let message = "Could not transcribe recording \(jobNumber). Check Engine and try again."
+                    self.updateRecovery(for: sessionID, state: .failed, failureReason: message)
+                    if self.phase != .recording && self.phase != .preparing {
+                        self.statusMessage = message
                     }
                 }
             }
@@ -1082,90 +1217,111 @@ final class DictationController: ObservableObject {
 
     // MARK: Delivery
 
-    private func deliver(result: SessionResult, session activeSession: DictationSession) async {
-        guard self.session?.sessionId == activeSession.sessionId,
-              let committed = await activeSession.commitForDelivery() else {
-            await MainActor.run {
-                self.phase = .idle
-                self.statusMessage = "Nothing to deliver (duplicate or cancelled)"
-            }
+    private func deliver(
+        result: SessionResult, session activeSession: DictationSession,
+        context: DeliveryContext, after previousDelivery: Task<Void, Never>?
+    ) async {
+        guard let committed = await activeSession.commitForDelivery() else {
+            processingJobs.removeAll { $0.id == activeSession.sessionId }
             return
         }
         let text: String
         let note: String
         if committed.cleaned.text.isEmpty && committed.rawSnapshot.rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             // A10: never insert an empty result (would wipe the selection).
-            await MainActor.run {
-                self.phase = .ready
-                self.lastCleaned = ""
-                self.statusMessage = "No speech was detected"
-                self.updateRecovery(for: committed.sessionId, state: .ready, transcript: "", rawTranscript: "")
-            }
+            processingJobs.removeAll { $0.id == committed.sessionId }
+            if phase != .recording && phase != .preparing { statusMessage = "No speech was detected" }
+            updateRecovery(for: committed.sessionId, state: .ready, transcript: "", rawTranscript: "")
             return
         } else {
-            processingStage = .cleaning
-            statusMessage = "Cleaning up your text"
+            setProcessingStage(.cleaning, for: committed.sessionId)
             do {
                 let cleaned = try await serverClean(
                     rawText: committed.rawSnapshot.rawText,
-                    requestId: committed.sessionId.rawValue
+                    requestId: committed.sessionId.rawValue,
+                    mode: context.mode, client: context.cleanupClient
                 )
                 text = cleaned.text
                 note = cleaned.note
             } catch {
-                await MainActor.run {
-                    self.phase = .failed
-                    self.lastRaw = committed.rawSnapshot.rawText
-                    self.lastCleaned = committed.rawSnapshot.rawText
-                    self.lastDiff = ""
-                    self.serverNote = "Server cleanup failed: \(error)"
-                    self.statusMessage = "Cleanup failed. The raw transcript is saved in History."
-                    self.recordHistory(
-                        raw: committed.rawSnapshot.rawText,
-                        cleaned: committed.rawSnapshot.rawText,
-                        backend: committed.backend.displayName,
-                        duration: committed.duration
-                    )
-                    self.updateRecovery(
-                        for: committed.sessionId,
-                        state: .ready,
-                        transcript: committed.rawSnapshot.rawText,
-                        rawTranscript: committed.rawSnapshot.rawText,
-                        failureReason: "Cleanup failed; raw transcript preserved."
-                    )
+                processingJobs.removeAll { $0.id == committed.sessionId }
+                lastRaw = committed.rawSnapshot.rawText
+                lastCleaned = committed.rawSnapshot.rawText
+                lastDiff = "(no changes)"
+                lastReceipt = nil
+                lastReceiptAX = nil
+                lastDeliveryMethod = "Cleanup failed. Raw transcript saved."
+                serverNote = "Server cleanup failed: \(error)"
+                if phase != .recording && phase != .preparing {
+                    statusMessage = "Cleanup failed. The raw transcript is saved in History."
                 }
+                recordHistory(raw: committed.rawSnapshot.rawText, cleaned: committed.rawSnapshot.rawText,
+                              backend: committed.backend.displayName, duration: committed.duration)
+                updateRecovery(for: committed.sessionId, state: .ready,
+                               transcript: committed.rawSnapshot.rawText, rawTranscript: committed.rawSnapshot.rawText,
+                               failureReason: "Cleanup failed; raw transcript preserved.")
                 return
             }
         }
+        // Transcription and cleanup can overlap across sessions. Only insertion
+        // waits for the earlier delivery, so text reaches the field in order.
+        setProcessingStage(.queued, for: committed.sessionId)
+        await previousDelivery?.value
         serverNote = note
-        if recordingSource == .app && ax.capturedPID == nil {
+        if context.source == .app && context.ax.capturedPID == nil {
             finishDelivery(text: text, method: "Transcript ready", receipt: nil, result: committed)
             return
         }
-        processingStage = .inserting
-        statusMessage = "Inserting your text"
-        await restoreCapturedAppFocusIfNeeded()
-        guard self.session?.sessionId == committed.sessionId else { return }
-        let pre = self.precondition ?? SelectionPrecondition()
+        setProcessingStage(.inserting, for: committed.sessionId)
+        await restoreCapturedAppFocusIfNeeded(target: context.ax)
+        var deliveryPrecondition = context.precondition
+        let intervening = priorInsertions
+            .filter { $0.serial > context.insertionSerialAtCapture }
+            .map { (receipt: $0.receipt, by: $0.ax) }
+        if let rebased = context.ax.rebaseAfterOmilInsertions(intervening) {
+            deliveryPrecondition = rebased
+        } else {
+            let appendPastes = priorPastes
+                .filter { $0.serial > context.insertionSerialAtCapture }
+                .map { (text: $0.text, by: $0.ax) }
+            if let rebased = context.ax.rebaseAfterOmilAppendPastes(appendPastes) {
+                deliveryPrecondition = rebased
+            }
+        }
         let outcome = TextDelivery.attempt(
-            text: text, precondition: pre,
+            text: text, precondition: deliveryPrecondition,
             sessionId: committed.sessionId, sequence: committed.commitSequence,
-            destination: ax, trusted: axTrusted,
+            destination: context.ax, trusted: context.ax.isTrusted,
             paste: { text in
                 guard let prepared = clipboard.prepare(text: text) else { return .unavailable }
                 guard clipboard.paste() else { return .copied }
                 let inserter = clipboard
-                DispatchQueue.global().async {
+                pasteRestoreTask = Task.detached {
                     _ = inserter.restoreIfOwned(prepared: prepared)
                 }
                 return .sent
             }
         )
+        await pasteRestoreTask?.value
+        pasteRestoreTask = nil
         switch outcome {
         case .inserted(let receipt):
-            finishDelivery(text: text, method: "Inserted into focused field", receipt: receipt, result: committed)
+            insertionSerial += 1
+            priorInsertions.append(PriorInsertion(serial: insertionSerial, receipt: receipt, ax: context.ax))
+            finishDelivery(text: text, method: "Inserted into focused field", receipt: receipt, result: committed, inserter: context.ax)
         case .pasteSent:
-            finishDelivery(text: text, method: "Sent paste to focused field", receipt: nil, result: committed)
+            if let receipt = context.ax.receiptAfterPaste(
+                text: text, precondition: deliveryPrecondition,
+                sessionId: committed.sessionId, sequence: committed.commitSequence
+            ) {
+                insertionSerial += 1
+                priorInsertions.append(PriorInsertion(serial: insertionSerial, receipt: receipt, ax: context.ax))
+                finishDelivery(text: text, method: "Pasted into focused field", receipt: receipt, result: committed, inserter: context.ax)
+            } else {
+                insertionSerial += 1
+                priorPastes.append(PriorPaste(serial: insertionSerial, text: text, ax: context.ax))
+                finishDelivery(text: text, method: "Paste sent; field could not be verified", receipt: nil, result: committed)
+            }
         case .copiedForManualPaste:
             finishDelivery(text: text, method: "Copied. Press ⌘V to paste.", receipt: nil, result: committed)
         case .retained(let reason):
@@ -1173,8 +1329,13 @@ final class DictationController: ObservableObject {
         }
     }
 
-    private func restoreCapturedAppFocusIfNeeded() async {
-        guard let targetPID = ax.capturedPID,
+    private func setProcessingStage(_ stage: ProcessingStage, for id: SessionID) {
+        guard let index = processingJobs.firstIndex(where: { $0.id == id }) else { return }
+        processingJobs[index].stage = stage
+    }
+
+    private func restoreCapturedAppFocusIfNeeded(target: AXInserter) async {
+        guard let targetPID = target.capturedPID,
               targetPID != NSRunningApplication.current.processIdentifier,
               NSWorkspace.shared.frontmostApplication?.processIdentifier == NSRunningApplication.current.processIdentifier,
               let app = NSRunningApplication(processIdentifier: targetPID),
@@ -1185,13 +1346,26 @@ final class DictationController: ObservableObject {
         }
     }
 
-    private func finishDelivery(text: String, method: String, receipt: InsertionReceipt?, result: SessionResult) {
+    private func finishDelivery(
+        text: String, method: String, receipt: InsertionReceipt?, result: SessionResult,
+        inserter: AXInserter? = nil
+    ) {
+        processingJobs.removeAll { $0.id == result.sessionId }
+        if processingJobs.isEmpty && phase != .recording && phase != .preparing {
+            priorInsertions.removeAll()
+            priorPastes.removeAll()
+        }
         lastReceipt = receipt
+        lastReceiptAX = inserter
         let copied = TranscriptClipboard.copyIfEnabled(text, enabled: automaticallyCopyTranscripts)
         lastDeliveryMethod = copied ? "\(method). Copied to clipboard." : method
         lastCleaned = text
-        phase = .ready
-        statusMessage = lastDeliveryMethod
+        lastRaw = result.rawSnapshot.rawText
+        lastDiff = DiffUtil.diff(raw: lastRaw, cleaned: text)
+        if phase != .recording && phase != .preparing {
+            phase = .ready
+            statusMessage = lastDeliveryMethod
+        }
         recordHistory(
             raw: result.rawSnapshot.rawText,
             cleaned: text,
@@ -1237,6 +1411,7 @@ final class DictationController: ObservableObject {
             do {
                 let receipt = try ax.insert(text: lastCleaned, precondition: precondition ?? SelectionPrecondition(), sessionId: sessionId, sequence: sessionSeq)
                 lastReceipt = receipt
+                lastReceiptAX = ax
                 lastDeliveryMethod = "Inserted into focused field"
                 statusMessage = lastDeliveryMethod
             } catch {
@@ -1249,7 +1424,7 @@ final class DictationController: ObservableObject {
 
     func undoLast() {
         guard let receipt = lastReceipt else { return }
-        if ax.undo(receipt: receipt) {
+        if lastReceiptAX?.undo(receipt: receipt) == true {
             statusMessage = "Undone (only Omil's insertion was reversed)"
         } else {
             statusMessage = "Undo stopped because the field changed after insertion."

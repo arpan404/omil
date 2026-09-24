@@ -39,6 +39,8 @@ enum TextDelivery {
                     sessionId: sessionId, sequence: sequence
                 )
                 return .inserted(receipt)
+            } catch DeliveryError.destinationChanged(let reason) {
+                return .retained(reason)
             } catch {
                 return fallback(text: text, paste: paste)
             }

@@ -8,11 +8,12 @@ final class TextDeliveryTests: XCTestCase {
     private final class RejectingDestination: TextDestination, @unchecked Sendable {
         let identity = DestinationIdentity(appBundleId: "test.host")
         var check: DestinationCheck = .ok
+        var insertionError: DeliveryError = .insertionFailed(underlying: "AXSelectedText unsupported")
 
         func capturePrecondition() -> SelectionPrecondition { SelectionPrecondition(rangeLocation: 0, rangeLength: 0) }
         func revalidate(precondition: SelectionPrecondition) -> DestinationCheck { check }
         func insert(text: String, precondition: SelectionPrecondition, sessionId: SessionID, sequence: Int) throws -> InsertionReceipt {
-            throw DeliveryError.insertionFailed(underlying: "AXSelectedText unsupported")
+            throw insertionError
         }
     }
 
@@ -43,6 +44,19 @@ final class TextDeliveryTests: XCTestCase {
         XCTAssertFalse(pasteAttempted)
     }
 
+    func testDoesNotPasteAgainAfterFieldChangesDuringInsertion() {
+        let destination = RejectingDestination()
+        destination.insertionError = .destinationChanged(reason: "field changed during insertion")
+        var pasteAttempted = false
+        let outcome = TextDelivery.attempt(
+            text: "hello", precondition: destination.capturePrecondition(),
+            sessionId: SessionID(), sequence: 1, destination: destination,
+            trusted: true, paste: { _ in pasteAttempted = true; return .sent }
+        )
+        guard case .retained = outcome else { return XCTFail("Expected a retained result") }
+        XCTAssertFalse(pasteAttempted)
+    }
+
     func testPastesWhenFocusedFieldDoesNotExposeSelection() {
         let destination = RejectingDestination()
         destination.check = .pasteOnly
@@ -69,6 +83,40 @@ final class TextDeliveryTests: XCTestCase {
             return XCTFail("Expected the transcript to stay in Omil")
         }
         XCTAssertTrue(reason.contains("clipboard"))
+    }
+}
+
+final class InsertionRebaseTests: XCTestCase {
+    func testThreeRecordingsCapturedAtOneCursorReplayEarlierInsertions() {
+        let session = SessionID()
+        let first = InsertionReceipt(
+            sessionId: session, destination: DestinationIdentity(),
+            precondition: SelectionPrecondition(rangeLocation: 6, rangeLength: 0),
+            insertedText: "one ", commitSequence: 1, undoSupported: true
+        )
+        let second = InsertionReceipt(
+            sessionId: session, destination: DestinationIdentity(),
+            precondition: SelectionPrecondition(rangeLocation: 10, rangeLength: 0),
+            insertedText: "two ", commitSequence: 2, undoSupported: true
+        )
+        let result = InsertionRebase.replay(
+            original: "Start ", range: CFRange(location: 6, length: 0),
+            receipts: [first, second]
+        )
+        XCTAssertEqual(result?.text, "Start one two ")
+        XCTAssertEqual(result?.range.location, 14)
+        XCTAssertEqual(result?.range.length, 0)
+    }
+
+    func testReplayRejectsAnUnexpectedCursorChange() {
+        let receipt = InsertionReceipt(
+            sessionId: SessionID(), destination: DestinationIdentity(),
+            precondition: SelectionPrecondition(rangeLocation: 9, rangeLength: 0),
+            insertedText: "text", commitSequence: 1, undoSupported: true
+        )
+        XCTAssertNil(InsertionRebase.replay(
+            original: "Start ", range: CFRange(location: 6, length: 0), receipts: [receipt]
+        ))
     }
 }
 

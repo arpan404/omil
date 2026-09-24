@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build a Release-configured Mac app for local use with a stable development signature.
+# Build a Release-configured Mac app for local use with a stable distribution signature.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -15,18 +15,15 @@ if [[ $# -ne 0 && $# -ne 2 ]]; then
   exit 1
 fi
 
-team_id=BVT55BT25R
-# The certificate's subject OU is the signing Team ID; its display name uses
-# the development account ID above.
-signing_team_id=5J88TLUP2J
+team_id=5J88TLUP2J
 signing_identities=()
 while IFS= read -r identity; do
   signing_identities+=("$identity")
 done < <(security find-identity -v -p codesigning | awk -v team="$team_id" '
-  index($0, "\"Apple Development:") && index($0, "(" team ")\"") { print $2 }
+  index($0, "\"Developer ID Application:") && index($0, "(" team ")\"") { print $2 }
 ')
 if [[ ${#signing_identities[@]} -ne 1 ]]; then
-  echo "error: expected one valid Apple Development signing identity for team $team_id; found ${#signing_identities[@]}" >&2
+  echo "error: expected one valid Developer ID Application signing identity for team $team_id; found ${#signing_identities[@]}" >&2
   echo "Run 'security find-identity -v -p codesigning' to inspect your keychain." >&2
   exit 1
 fi
@@ -60,7 +57,7 @@ echo "==> generating the Xcode project"
 xcodegen generate
 
 derived_data="$PWD/.build/local-derived-data"
-echo "==> building OmilMac (Release configuration, Apple Development signing)"
+echo "==> building OmilMac (Release configuration, Developer ID signing)"
 xcodebuild -project Omil.xcodeproj -scheme OmilMac -configuration Release \
   -destination 'platform=macOS,arch=arm64' -derivedDataPath "$derived_data" \
   "${build_settings[@]}" build
@@ -68,8 +65,8 @@ xcodebuild -project Omil.xcodeproj -scheme OmilMac -configuration Release \
 app="$derived_data/Build/Products/Release/Omil.app"
 codesign --verify --deep --strict "$app"
 signed_team=$(codesign -dv --verbose=4 "$app" 2>&1 | sed -n 's/^TeamIdentifier=//p')
-if [[ "$signed_team" != "$signing_team_id" ]]; then
-  echo "error: built app has TeamIdentifier=$signed_team; expected $signing_team_id" >&2
+if [[ "$signed_team" != "$team_id" ]]; then
+  echo "error: built app has TeamIdentifier=$signed_team; expected $team_id" >&2
   exit 1
 fi
 sparkle_team=$(codesign -dv --verbose=4 "$app/Contents/Frameworks/Sparkle.framework" 2>&1 | sed -n 's/^TeamIdentifier=//p')
@@ -85,6 +82,21 @@ fi
 
 if [[ "$install_after_build" == true ]]; then
   echo "==> installing at /Applications/Omil.app"
+  if [[ -d /Applications/Omil.app ]]; then
+    installed_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' /Applications/Omil.app/Contents/Info.plist)
+    built_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")
+    installed_requirement=$(codesign -dr - /Applications/Omil.app 2>&1 | sed -n 's/^designated => //p')
+    built_requirement=$(codesign -dr - "$app" 2>&1 | sed -n 's/^designated => //p')
+    if [[ "$installed_id" != "$built_id" ]]; then
+      echo "error: update changes the installed bundle ID" >&2
+      exit 1
+    fi
+    if [[ "$installed_requirement" != "$built_requirement" && ${OMIL_MIGRATE_SIGNING_IDENTITY:-} != 1 ]]; then
+      echo "error: update changes the installed signing requirement; Accessibility permission may be lost" >&2
+      echo "Set OMIL_MIGRATE_SIGNING_IDENTITY=1 for the one-time Developer ID migration." >&2
+      exit 1
+    fi
+  fi
   staging_dir=$(mktemp -d /Applications/.Omil-staging-XXXXXX)
   trap 'rm -rf "$staging_dir"' EXIT
   ditto "$app" "$staging_dir/Omil.app"

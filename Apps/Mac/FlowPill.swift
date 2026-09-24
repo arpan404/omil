@@ -8,12 +8,12 @@ import OmilCore
 private enum PillLayout {
     static func size(for phase: DictationController.Phase) -> NSSize {
         switch phase {
-        case .idle: return NSSize(width: 116, height: 36)
-        case .preparing: return NSSize(width: 150, height: 40)
-        case .recording: return NSSize(width: 160, height: 44)
-        case .processing: return NSSize(width: 150, height: 40)
-        case .ready: return NSSize(width: 150, height: 38)
-        case .failed: return NSSize(width: 168, height: 42)
+        case .idle: return NSSize(width: 78, height: 32)
+        case .preparing: return NSSize(width: 126, height: 38)
+        case .recording: return NSSize(width: 138, height: 40)
+        case .processing: return NSSize(width: 130, height: 38)
+        case .ready: return NSSize(width: 142, height: 36)
+        case .failed: return NSSize(width: 130, height: 38)
         }
     }
 }
@@ -137,12 +137,17 @@ final class PillManager: NSObject, ObservableObject, NSWindowDelegate {
             guard let self, let c = self.controller else { return }
             self.reflect(phase: c.phase, alwaysVisible: alwaysVisible, pillEnabled: c.pillEnabled)
         }.store(in: &cancellables)
+        controller.$processingJobs.sink { [weak self] jobs in
+            guard let self, let c = self.controller else { return }
+            self.reflect(phase: c.phase, pendingCount: jobs.count)
+        }.store(in: &cancellables)
     }
 
     private func reflect(
         phase: DictationController.Phase,
         alwaysVisible: Bool? = nil,
-        pillEnabled: Bool? = nil
+        pillEnabled: Bool? = nil,
+        pendingCount: Int? = nil
     ) {
         guard let p = panel else { return }
         let always = alwaysVisible ?? controller?.pillAlwaysVisible ?? false
@@ -175,7 +180,7 @@ final class PillManager: NSObject, ObservableObject, NSWindowDelegate {
                 keepOnScreen(p)
                 p.orderFrontRegardless()
             }
-            if !always {
+            if !always && (pendingCount ?? controller?.processingJobs.count ?? 0) == 0 {
                 dismissTask = Task { @MainActor [weak self, weak p] in
                     try? await Task.sleep(for: .seconds(1.4))
                     guard !Task.isCancelled,
@@ -253,9 +258,13 @@ final class PillPresentation: ObservableObject {
     @Published private(set) var statusMessage: String
     @Published private(set) var audioLevels: [Double]
     @Published private(set) var pillAlwaysVisible: Bool
+    @Published private(set) var pendingCount: Int
+    @Published private(set) var pendingStage: DictationController.ProcessingStage?
+    @Published private(set) var showCompletion = false
 
     private weak var controller: DictationController?
     private var cancellables = Set<AnyCancellable>()
+    private var completionTask: Task<Void, Never>?
 
     init(controller: DictationController) {
         self.controller = controller
@@ -265,13 +274,36 @@ final class PillPresentation: ObservableObject {
         statusMessage = controller.statusMessage
         audioLevels = controller.audioLevels
         pillAlwaysVisible = controller.pillAlwaysVisible
+        pendingCount = controller.processingJobs.count
+        pendingStage = controller.processingJobs.first?.stage
 
-        controller.$phase.sink { [weak self] in self?.phase = $0 }.store(in: &cancellables)
+        controller.$phase.sink { [weak self] phase in
+            self?.phase = phase
+            if phase == .recording || phase == .preparing {
+                self?.completionTask?.cancel()
+                self?.showCompletion = false
+            }
+        }.store(in: &cancellables)
         controller.$processingStage.sink { [weak self] in self?.processingStage = $0 }.store(in: &cancellables)
         controller.$lastCleaned.sink { [weak self] in self?.lastCleaned = $0 }.store(in: &cancellables)
         controller.$statusMessage.sink { [weak self] in self?.statusMessage = $0 }.store(in: &cancellables)
         controller.$audioLevels.sink { [weak self] in self?.audioLevels = $0 }.store(in: &cancellables)
         controller.$pillAlwaysVisible.sink { [weak self] in self?.pillAlwaysVisible = $0 }.store(in: &cancellables)
+        controller.$processingJobs.sink { [weak self] jobs in
+            guard let self else { return }
+            let hadPending = self.pendingCount > 0
+            self.pendingCount = jobs.count
+            self.pendingStage = jobs.first?.stage
+            if hadPending && jobs.isEmpty && self.phase == .ready {
+                self.showCompletion = true
+                self.completionTask?.cancel()
+                self.completionTask = Task { @MainActor [weak self] in
+                    try? await Task.sleep(for: .seconds(1.4))
+                    guard !Task.isCancelled else { return }
+                    self?.showCompletion = false
+                }
+            }
+        }.store(in: &cancellables)
     }
 
     func cancel() { controller?.cancel() }
@@ -298,17 +330,19 @@ struct PillView: View {
                     canCancel: false
                 )
             case .ready:
-                statusContent(
-                    icon: presentation.lastCleaned.isEmpty ? "waveform.slash" : "checkmark",
-                    title: presentation.lastCleaned.isEmpty ? "Nothing heard" : "Done",
-                    showsProgress: false,
+                if presentation.pendingCount == 0 && !presentation.showCompletion {
+                    idleContent
+                } else { statusContent(
+                    icon: presentation.pendingCount > 0 ? "waveform" : presentation.lastCleaned.isEmpty ? "waveform.slash" : "checkmark",
+                    title: presentation.pendingCount == 1 ? (presentation.pendingStage?.title ?? "Working") : presentation.pendingCount > 1 ? "\(presentation.pendingCount) active" : presentation.lastCleaned.isEmpty ? "No speech" : "Done",
+                    showsProgress: presentation.pendingCount > 0,
                     canCancel: false,
-                    canStart: presentation.pillAlwaysVisible
-                )
+                    canStart: presentation.pillAlwaysVisible || presentation.pendingCount > 0
+                ) }
             case .failed:
                 statusContent(
                     icon: "exclamationmark",
-                    title: presentation.pillAlwaysVisible ? "Try again" : "Could not finish",
+                    title: presentation.pillAlwaysVisible ? "Try again" : "Failed",
                     showsProgress: false,
                     canCancel: false,
                     canStart: presentation.pillAlwaysVisible
@@ -322,6 +356,7 @@ struct PillView: View {
             height: PillLayout.size(for: presentation.phase).height - 6
         )
         .background(Color(hex: 0x080808), in: Capsule())
+        .background(PillDragArea())
         .overlay(Capsule().stroke(Color.white.opacity(0.14), lineWidth: 0.75))
         .contentShape(Capsule())
         .contextMenu {
@@ -338,24 +373,15 @@ struct PillView: View {
     }
 
     private var idleContent: some View {
-        HStack(spacing: 5) {
-            Image(systemName: "line.3.horizontal")
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(Color.white.opacity(0.48))
-                .frame(width: 17, height: 24)
-                .overlay(PillDragArea())
-                .help("Drag to move")
-            Button { presentation.start() } label: {
-                Label("Start", systemImage: "mic.fill")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(height: 26)
-            }
-            .buttonStyle(.plain)
-            .help("Start dictation")
-            .accessibilityLabel("Start dictation")
+        Button { presentation.start() } label: {
+            Label("Start", systemImage: "mic.fill")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.white)
+        .frame(height: 24)
         }
-        .padding(.horizontal, 8)
+        .buttonStyle(.plain)
+        .help("Start dictation")
+        .accessibilityLabel("Start dictation")
     }
 
     @ViewBuilder
@@ -366,24 +392,22 @@ struct PillView: View {
             }
 
             CompactWaveform(levels: presentation.audioLevels)
-                .frame(width: 60, height: 24)
+                .frame(width: 52, height: 24)
                 .overlay(PillDragArea())
                 .help("Drag to move")
 
             Button {
                 presentation.stop()
             } label: {
-                ZStack {
-                    Circle().fill(Color.white)
-                    RoundedRectangle(cornerRadius: 2.5)
-                        .fill(Color.black)
-                        .frame(width: 9, height: 9)
-                }
-                .frame(width: 28, height: 28)
+                Image(systemName: "checkmark")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(.black)
+                    .frame(width: 28, height: 28)
+                    .background(.white, in: Circle())
             }
             .buttonStyle(.plain)
-            .help("Stop and transcribe")
-            .accessibilityLabel("Stop and transcribe")
+            .help("Finish recording and transcribe")
+            .accessibilityLabel("Finish recording and transcribe")
 
         }
         .padding(.horizontal, 8)
@@ -411,9 +435,10 @@ struct PillView: View {
             }
 
             Text(title)
-                .font(.system(size: 11, weight: .semibold))
+                .font(.system(size: 10.5, weight: .semibold))
                 .foregroundStyle(.white)
                 .lineLimit(1)
+                .minimumScaleFactor(0.85)
                 .overlay(PillDragArea())
                 .help("Drag to move")
 

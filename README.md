@@ -2,7 +2,7 @@
 
 Omil is a free, local alternative to [Wispr Flow](https://wisprflow.ai) for Apple silicon Macs. The feature set is similar.
 
-Hold Right Option, speak, and release. The text goes into the field you were using. Clean mode strips fillers, applies spoken corrections, and tidies repeated words and numbers. Verbatim mode leaves the wording alone and only fixes spacing, capitalization, and punctuation. There is a personal dictionary, snippets, an editable cleanup prompt, and a history that stores the raw transcript, the edits, and the clean text. You can also start from a toggle shortcut, the menu bar, or a floating Start control. History can replay a saved recording or transcribe it again. The Engine screen is where you pick models.
+Hold Right Option, speak, and release. The text goes into the field you were using. You can start another recording while the previous one transcribes and cleans up. Clean mode removes fillers, applies spoken corrections, and copyedits grammar and spelling. Verbatim mode leaves the wording alone and only fixes spacing, capitalization, and punctuation. There is a personal dictionary, snippets, an editable cleanup prompt, and a history that stores the raw transcript, the edits, and the clean text. You can also start from a toggle shortcut, the menu bar, or a floating Start control. History can replay a saved recording or transcribe it again. The Engine screen is where you pick models.
 
 Wispr Flow needs an account, and the paid plan is what you use after the trial. Omil does not charge, and there is no account. Dictation stays on your Mac.
 

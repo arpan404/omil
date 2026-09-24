@@ -222,12 +222,12 @@ const readStderr = async (child: Bun.Subprocess): Promise<string> => {
 
 export interface ChatMessage { role: "system" | "user"; content: string }
 
-/** OpenAI-compatible chat completion, JSON-object constrained. */
-export const chatJson = (
+/** OpenAI-compatible chat completion returning the assistant's plain text. */
+export const chatText = (
   handle: LlamaHandle,
   messages: ReadonlyArray<ChatMessage>,
   maxTokens = 1024,
-): Effect.Effect<unknown, ModelError, never> =>
+): Effect.Effect<string, ModelError, never> =>
   Effect.gen(function* () {
     const response = yield* Effect.promise(() =>
       fetch(`${handle.baseUrl}/v1/chat/completions`, {
@@ -238,7 +238,6 @@ export const chatJson = (
           temperature: 0,
           top_p: 1,
           max_tokens: maxTokens,
-          response_format: { type: "json_object" },
         }),
         signal: AbortSignal.timeout(180_000),
       }).catch((error) => ({ ok: false as const, error })),
@@ -252,14 +251,7 @@ export const chatJson = (
     const json = (yield* Effect.promise(() => (response as Response).json())) as {
       choices?: Array<{ message?: { content?: string } }>
     }
-    const content = json.choices?.[0]?.message?.content ?? ""
-    try {
-      return JSON.parse(content) as unknown
-    } catch {
-      const match = content.match(/\{[\s\S]*\}/)
-      if (match) {
-        try { return JSON.parse(match[0]) as unknown } catch { /* fall through */ }
-      }
-      return yield* Effect.fail(new ModelError(`llama returned non-JSON: ${content.slice(0, 300)}`))
-    }
+    const content = json.choices?.[0]?.message?.content?.trim()
+    if (!content) return yield* Effect.fail(new ModelError("llama returned empty text"))
+    return content
   })

@@ -290,6 +290,12 @@ public struct ServerCleanedResult: Codable, Sendable {
     public var rulesVersion: String
     public var appliedSnippetTriggers: [String]?
     public var writingStyle: WritingStyle?
+    public var proseChanges: [ServerWordChange]?
+}
+
+public struct ServerWordChange: Codable, Sendable {
+    public var before: [String]
+    public var after: [String]
 }
 
 public struct ServerRejectedEdit: Codable, Sendable {
@@ -311,6 +317,7 @@ public struct ServerCleanupClient: Sendable {
     public var style: WritingStyle
     public var modelId: String?
     public var systemPrompt: String?
+    public var context: ServerCleanupContext?
 
     public init(
         config: ServerConfig,
@@ -318,7 +325,8 @@ public struct ServerCleanupClient: Sendable {
         snippets: [String: String] = [:],
         style: WritingStyle = .automatic,
         modelId: String? = nil,
-        systemPrompt: String? = nil
+        systemPrompt: String? = nil,
+        context: ServerCleanupContext? = nil
     ) {
         self.config = config
         self.dictionary = dictionary
@@ -326,6 +334,7 @@ public struct ServerCleanupClient: Sendable {
         self.style = style
         self.modelId = modelId
         self.systemPrompt = systemPrompt
+        self.context = context
     }
 
     public func clean(
@@ -354,6 +363,9 @@ public struct ServerCleanupClient: Sendable {
         ]
         if let modelId { body["model"] = modelId }
         if let systemPrompt { body["systemPrompt"] = systemPrompt }
+        if let context {
+            body["context"] = ["before": context.before, "after": context.after]
+        }
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (data, response) = try await URLSession.shared.data(for: req)
         let code = (response as? HTTPURLResponse)?.statusCode ?? 0
@@ -367,5 +379,15 @@ public struct ServerCleanupClient: Sendable {
         default:
             throw ServerCleanupError.failed(reason: String(data: data, encoding: .utf8) ?? "HTTP \(code)")
         }
+    }
+}
+
+public struct ServerCleanupContext: Codable, Sendable {
+    public var before: String
+    public var after: String
+
+    public init(before: String, after: String) {
+        self.before = before
+        self.after = after
     }
 }

@@ -44,7 +44,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 width: min(760, visible.width - 16),
                 height: min(540, visible.height - 16)
             )
-            window.backgroundColor = .windowBackgroundColor
+            let palette = AppAppearance.shared.themePreset.palette(for: AppAppearance.shared.colorScheme)
+            window.backgroundColor = NSColor(hex: palette.canvas)
             window.contentView = hosting
             position(window, in: visible)
             window.isReleasedWhenClosed = false
@@ -60,6 +61,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSLog("Omil: main window shown (visible=%d)",
               mainWindowController?.window?.isVisible == true ? 1 : 0)
     }
+
+    func showSettings() {
+        showMainWindow()
+        AppContext.settingsCoordinator.isPresented = true
+    }
+
 
     private func preferredScreen() -> NSScreen? {
         let pointer = NSEvent.mouseLocation
@@ -140,8 +147,15 @@ enum AppContext {
     }()
     static let localServer = LocalServerManager()
     static let controller = DictationController(localServer: localServer)
+    static let settingsCoordinator = SettingsCoordinator()
     static let menuBarRecordingState = MenuBarRecordingState(controller: controller)
     static let updater = UpdateController()
+}
+
+
+@MainActor
+final class SettingsCoordinator: ObservableObject {
+    @Published var isPresented = false
 }
 
 @main
@@ -155,10 +169,13 @@ struct OmilMacApp: App {
             RecordingMenuBarLabel(state: AppContext.menuBarRecordingState)
         }
         .menuBarExtraStyle(.window)
-
-        Settings {
-            SettingsView(controller: AppContext.controller)
-                .frame(minWidth: 700, minHeight: 520)
+        .commands {
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings…") {
+                    AppContext.appDelegate?.showSettings()
+                }
+                .keyboardShortcut(",", modifiers: .command)
+            }
         }
     }
 }
@@ -198,7 +215,6 @@ private struct RecordingMenuBarLabel: View {
 
 struct MenuBarView: View {
     @ObservedObject var controller: DictationController
-    @Environment(\.openSettings) private var openSettings
 
     private var recording: Bool { controller.phase == .recording }
     private var busy: Bool { controller.phase == .preparing || controller.phase == .processing }
@@ -211,8 +227,7 @@ struct MenuBarView: View {
                     .font(.system(size: 16, weight: .semibold))
                 Spacer()
                 Button {
-                    NSApp.activate(ignoringOtherApps: true)
-                    openSettings()
+                    AppContext.appDelegate?.showSettings()
                 } label: {
                     Image(systemName: "gearshape")
                         .frame(width: 28, height: 28)
@@ -358,6 +373,7 @@ struct MenuBarView: View {
 
 private enum SettingsPane: String, CaseIterable {
     case general = "General"
+    case appearance = "Appearance"
     case permissions = "Permissions"
     case shortcuts = "Shortcuts"
     case advanced = "Advanced"
@@ -365,6 +381,7 @@ private enum SettingsPane: String, CaseIterable {
     var icon: String {
         switch self {
         case .general: return "slider.horizontal.3"
+        case .appearance: return "paintpalette"
         case .permissions: return "lock.shield"
         case .shortcuts: return "command"
         case .advanced: return "gearshape.2"
@@ -380,12 +397,23 @@ private enum SettingsPillMode: String, CaseIterable {
 
 struct SettingsView: View {
     @ObservedObject var controller: DictationController
+    @Environment(\.dismiss) private var dismiss
     @State private var pane: SettingsPane = .general
     @ObservedObject private var hotkeys = HotkeyManager.shared
     @State private var pendingModifier: Int?
     @State private var shortcutError = ""
     @State private var recordingShortcut = false
     @State private var shortcutMonitor: Any?
+
+    private var pillMode: SettingsPillMode {
+        if !controller.pillEnabled { return .off }
+        return controller.pillAlwaysVisible ? .always : .duringDictation
+    }
+
+    private func retentionTitle(_ days: Int) -> String {
+        if days == 0 { return "Off" }
+        return days == 1 ? "1 day" : "\(days) days"
+    }
 
     var micStatusText: String {
         switch controller.micPermission {
@@ -488,6 +516,7 @@ struct SettingsView: View {
                 Group {
                     switch pane {
                     case .general: generalPane
+                    case .appearance: appearancePane
                     case .permissions: permissionsPane
                     case .shortcuts: shortcutsPane
                     case .advanced: advancedPane
@@ -495,10 +524,18 @@ struct SettingsView: View {
                 }
                 .padding(28)
             }
+            .scrollIndicators(.never)
             .id(pane)
             .background(OmilTheme.canvas)
         }
-        .frame(minWidth: 700, minHeight: 520)
+        .frame(width: 900, height: 620)
+        .overlay(alignment: .topTrailing) {
+            Button("Done") { dismiss() }
+                .buttonStyle(QuietButtonStyle())
+                .keyboardShortcut(.cancelAction)
+                .padding(16)
+        }
+        .background(OmilTheme.canvas)
         .omilAppearance()
         .onAppear {
             controller.refreshMicPermission()
@@ -510,20 +547,7 @@ struct SettingsView: View {
 
     private var generalPane: some View {
         VStack(alignment: .leading, spacing: 20) {
-            SettingsPageHeader(title: "General", detail: "Choose how Omil looks and handles your dictation.")
-
-            SettingsGroup(title: "Appearance") {
-                SettingsRow(title: "Theme", detail: "Follow this Mac or keep Omil light or dark.") {
-                    Picker("Theme", selection: $controller.appearance) {
-                        ForEach(AppearancePreference.allCases) { appearance in
-                            Text(appearance.title).tag(appearance)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .frame(width: 190)
-                }
-            }
+            SettingsPageHeader(title: "General", detail: "Choose how Omil handles your dictation.")
 
             SettingsGroup(title: "Dictation") {
                 SettingsRow(title: "Cleanup", detail: "Clean removes fillers. Verbatim keeps every spoken word.") {
@@ -537,12 +561,12 @@ struct SettingsView: View {
                 }
                 SettingsDivider()
                 SettingsRow(title: "Speech sensitivity", detail: controller.speechSensitivity.detail) {
-                    Picker("Speech sensitivity", selection: $controller.speechSensitivity) {
-                        ForEach(SpeechSensitivity.allCases) { option in
-                            Text(option.title).tag(option)
-                        }
-                    }
-                    .labelsHidden()
+                    OmilPickerField(
+                        title: "Speech sensitivity",
+                        selection: $controller.speechSensitivity,
+                        options: SpeechSensitivity.allCases,
+                        label: { $0.title }
+                    )
                     .frame(width: 180)
                 }
                 SettingsDivider()
@@ -552,27 +576,24 @@ struct SettingsView: View {
                         .toggleStyle(.switch)
                 }
                 SettingsDivider()
-                SettingsRow(title: "Floating pill", detail: "Always keeps a Start control on your desktop. Drag the handle to move it.") {
-                    Picker("Floating pill", selection: Binding(
-                        get: {
-                            if !controller.pillEnabled { return SettingsPillMode.off }
-                            return controller.pillAlwaysVisible ? .always : .duringDictation
-                        },
-                        set: { mode in
-                            switch mode {
-                            case .off: controller.setPillEnabled(false)
-                            case .duringDictation:
-                                controller.setPillAlwaysVisible(false)
-                                controller.setPillEnabled(true)
-                            case .always: controller.setPillAlwaysVisible(true)
+                SettingsRow(title: "Floating pill", detail: "Always keeps a Start control on your desktop. Drag the pill background to move it.") {
+                    OmilPickerField(
+                        title: "Floating pill",
+                        selection: Binding(
+                            get: { pillMode },
+                            set: { mode in
+                                switch mode {
+                                case .off: controller.setPillEnabled(false)
+                                case .duringDictation:
+                                    controller.setPillAlwaysVisible(false)
+                                    controller.setPillEnabled(true)
+                                case .always: controller.setPillAlwaysVisible(true)
+                                }
                             }
-                        }
-                    )) {
-                        ForEach(SettingsPillMode.allCases, id: \.self) { mode in
-                            Text(mode.rawValue).tag(mode)
-                        }
-                    }
-                    .labelsHidden()
+                        ),
+                        options: SettingsPillMode.allCases,
+                        label: { $0.rawValue }
+                    )
                     .frame(width: 150)
                 }
                 SettingsDivider()
@@ -582,18 +603,15 @@ struct SettingsView: View {
                         ? "Off. Existing saved recordings are removed."
                         : "Keep recordings on this Mac to listen back or transcribe again."
                 ) {
-                    Picker("Retention", selection: Binding(
-                        get: { controller.audioRetentionDays },
-                        set: { controller.setAudioRetentionDays($0) }
-                    )) {
-                        Text("Off").tag(0)
-                        Text("1 day").tag(1)
-                        Text("3 days").tag(3)
-                        Text("7 days").tag(7)
-                        Text("14 days").tag(14)
-                        Text("30 days").tag(30)
-                    }
-                    .labelsHidden()
+                    OmilPickerField(
+                        title: "Retention",
+                        selection: Binding(
+                            get: { controller.audioRetentionDays },
+                            set: { controller.setAudioRetentionDays($0) }
+                        ),
+                        options: [0, 1, 3, 7, 14, 30],
+                        label: { retentionTitle($0) }
+                    )
                     .frame(width: 120)
                 }
             }
@@ -641,6 +659,53 @@ struct SettingsView: View {
                 }
             }
         }
+    }
+
+    private var appearancePane: some View {
+        VStack(alignment: .leading, spacing: 26) {
+            SettingsPageHeader(title: "Appearance", detail: "Choose a color scheme and a palette for Omil.")
+
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Color scheme")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(OmilTheme.ink)
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 3), spacing: 12) {
+                    ForEach(AppearancePreference.allCases) { scheme in
+                        ColorSchemeCard(
+                            preference: scheme,
+                            preset: controller.themePreset,
+                            selected: controller.appearance == scheme
+                        ) {
+                            controller.appearance = scheme
+                        }
+                    }
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Themes")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(OmilTheme.ink)
+                    Spacer()
+                    Text("\(ThemePreset.allCases.count) palettes")
+                        .font(.system(size: 11))
+                        .foregroundStyle(OmilTheme.muted)
+                }
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 12)], spacing: 12) {
+                    ForEach(ThemePreset.allCases) { preset in
+                        ThemePresetCard(
+                            preset: preset,
+                            activeScheme: AppAppearance.shared.colorScheme,
+                            selected: controller.themePreset == preset
+                        ) {
+                            controller.themePreset = preset
+                        }
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var permissionsPane: some View {
@@ -720,9 +785,9 @@ struct SettingsView: View {
     private var advancedPane: some View {
         VStack(alignment: .leading, spacing: 20) {
             SettingsPageHeader(title: "Advanced", detail: "Control how the server cleans your transcripts.")
-            SettingsGroup(title: "Cleanup system prompt") {
+            SettingsGroup(title: "Cleanup prompt") {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("Sent with each cleanup request from this Mac. Leave the override off to use the server's current prompt.")
+                    Text("Guides full-text cleanup of grammar, spelling, and spoken corrections. Protected values and word-diff checks still apply.")
                         .font(.system(size: 11))
                         .foregroundStyle(OmilTheme.muted)
                     TextEditor(text: $controller.promptText)
@@ -732,7 +797,7 @@ struct SettingsView: View {
                         .padding(10)
                         .background(OmilTheme.canvas, in: RoundedRectangle(cornerRadius: 9))
                         .overlay(RoundedRectangle(cornerRadius: 9).stroke(OmilTheme.lineStrong))
-                        .accessibilityLabel("Cleanup system prompt")
+                        .accessibilityLabel("Cleanup prompt")
                     HStack {
                         Text(controller.promptCustom ? "Using your prompt" : "Using server prompt")
                             .font(OmilType.utility(10))
@@ -770,6 +835,170 @@ private struct SettingsPageHeader: View {
                 .foregroundStyle(OmilTheme.muted)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct ColorSchemeCard: View {
+    let preference: AppearancePreference
+    let preset: ThemePreset
+    let selected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 10) {
+                preview
+                    .frame(height: 100)
+                    .clipShape(RoundedRectangle(cornerRadius: 9))
+                    .overlay(RoundedRectangle(cornerRadius: 9).stroke(OmilTheme.lineStrong))
+                    .accessibilityHidden(true)
+                HStack(spacing: 7) {
+                    Image(systemName: icon)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(OmilTheme.muted)
+                    Text(preference.title)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(OmilTheme.ink)
+                    Spacer(minLength: 0)
+                    if selected {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(OmilTheme.signal)
+                            .accessibilityHidden(true)
+                    }
+                }
+            }
+            .padding(10)
+            .background(OmilTheme.panel, in: RoundedRectangle(cornerRadius: 13))
+            .overlay(RoundedRectangle(cornerRadius: 13)
+                .stroke(selected ? OmilTheme.signal : OmilTheme.line, lineWidth: selected ? 2 : 1))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(preference.title) color scheme")
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
+    private var icon: String {
+        switch preference {
+        case .system: return "circle.lefthalf.filled"
+        case .light: return "sun.max"
+        case .dark: return "moon.stars"
+        }
+    }
+
+    @ViewBuilder
+    private var preview: some View {
+        switch preference {
+        case .system:
+            HStack(spacing: 0) {
+                MiniAppPreview(colors: preset.palette(for: .light), compact: true)
+                MiniAppPreview(colors: preset.palette(for: .dark), compact: true)
+            }
+        case .light:
+            MiniAppPreview(colors: preset.palette(for: .light), compact: false)
+        case .dark:
+            MiniAppPreview(colors: preset.palette(for: .dark), compact: false)
+        }
+    }
+}
+
+private struct MiniAppPreview: View {
+    let colors: ThemePalette
+    let compact: Bool
+
+    var body: some View {
+        HStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 8) {
+                Circle().fill(Color(hex: colors.signal)).frame(width: 11, height: 11)
+                Capsule().fill(Color(hex: colors.lineStrong)).frame(width: compact ? 15 : 26, height: 4)
+                Capsule().fill(Color(hex: colors.lineStrong)).frame(width: compact ? 12 : 21, height: 4)
+            }
+            .padding(.leading, compact ? 7 : 11)
+            .frame(width: compact ? 30 : 48, height: 100, alignment: .leading)
+            .background(Color(hex: colors.sidebar))
+
+            VStack(alignment: .leading, spacing: 9) {
+                Capsule().fill(Color(hex: colors.ink)).frame(width: compact ? 27 : 55, height: 5)
+                Capsule().fill(Color(hex: colors.lineStrong)).frame(width: compact ? 36 : 80, height: 4)
+                Capsule().fill(Color(hex: colors.lineStrong)).frame(width: compact ? 26 : 59, height: 4)
+                Spacer(minLength: 0)
+                HStack {
+                    Capsule().fill(Color(hex: colors.lineStrong)).frame(width: compact ? 23 : 48, height: 4)
+                    Spacer(minLength: 0)
+                    Circle().fill(Color(hex: colors.signal)).frame(width: 10, height: 10)
+                }
+                .padding(5)
+                .background(Color(hex: colors.panelDeep), in: RoundedRectangle(cornerRadius: 5))
+            }
+            .padding(compact ? 8 : 12)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(hex: colors.panel))
+        }
+    }
+}
+
+private struct ThemePresetCard: View {
+    let preset: ThemePreset
+    let activeScheme: ColorScheme
+    let selected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 19) {
+                    ThemeOrb(colors: preset.palette(for: .light), active: activeScheme == .light)
+                    ThemeOrb(colors: preset.palette(for: .dark), active: activeScheme == .dark)
+                    Spacer(minLength: 0)
+                }
+                .padding(.top, 8)
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(preset.title)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(OmilTheme.ink)
+                    Spacer(minLength: 0)
+                    if selected {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(OmilTheme.signal)
+                            .accessibilityHidden(true)
+                    }
+                }
+                Text(preset.detail)
+                    .font(.system(size: 11))
+                    .foregroundStyle(OmilTheme.muted)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(15)
+            .background(OmilTheme.panel, in: RoundedRectangle(cornerRadius: 15))
+            .overlay(RoundedRectangle(cornerRadius: 15)
+                .stroke(selected ? OmilTheme.signal : OmilTheme.line, lineWidth: selected ? 2 : 1))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(preset.title) theme, \(preset.detail)")
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+
+private struct ThemeOrb: View {
+    let colors: ThemePalette
+    let active: Bool
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(Color(hex: colors.panel))
+                .overlay(Circle().stroke(Color(hex: colors.lineStrong), lineWidth: 1))
+            Circle()
+                .fill(Color(hex: colors.sidebar))
+                .frame(width: 48, height: 48)
+            Image(systemName: "waveform")
+                .font(.system(size: 18, weight: .medium))
+                .foregroundStyle(Color(hex: colors.signal))
+        }
+        .frame(width: 62, height: 62)
+        .overlay(Circle().stroke(active ? Color(hex: colors.signal) : .clear, lineWidth: 2)
+            .frame(width: 70, height: 70))
+        .accessibilityHidden(true)
     }
 }
 

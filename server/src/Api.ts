@@ -267,6 +267,7 @@ export const makeRouter = (ctx: ApiContext) =>
         dictionary?: Record<string, string>
         snippets?: Record<string, string>
         style?: WritingStyle
+        context?: { before?: string; after?: string }
         model?: string
         systemPrompt?: string
       }
@@ -293,6 +294,10 @@ export const makeRouter = (ctx: ApiContext) =>
         dictionary: body.dictionary,
         snippets: body.snippets,
         style: body.style,
+        context: body.context && typeof body.context === "object" ? {
+          before: typeof body.context.before === "string" ? body.context.before.slice(-400) : "",
+          after: typeof body.context.after === "string" ? body.context.after.slice(0, 200) : "",
+        } : undefined,
       } as const
       const outcome = yield* Effect.either(Effect.tryPromise({
         try: () => cleanupQueue.enqueue(requestId, () => Effect.runPromise(Effect.gen(function* () {
