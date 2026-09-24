@@ -40,6 +40,40 @@ public struct ServerConfig: Codable, Sendable, Equatable {
     public var isConfigured: Bool {
         !(host.trimmingCharacters(in: .whitespaces).isEmpty || token.isEmpty)
     }
+
+    /// Connection details carried by the QR code shown on the Mac.
+    public var pairingURL: URL? {
+        guard isConfigured, (1...65535).contains(port) else { return nil }
+        var components = URLComponents()
+        components.scheme = "omil"
+        components.host = "connect"
+        components.queryItems = [
+            URLQueryItem(name: "host", value: host),
+            URLQueryItem(name: "port", value: String(port)),
+            URLQueryItem(name: "token", value: token)
+        ]
+        return components.url
+    }
+
+    public init?(pairingURL: URL) {
+        guard let components = URLComponents(url: pairingURL, resolvingAgainstBaseURL: false),
+              components.scheme == "omil", components.host == "connect",
+              components.path.isEmpty,
+              let items = components.queryItems,
+              items.count == 3,
+              Set(items.map(\.name)) == Set(["host", "port", "token"]),
+              let host = items.first(where: { $0.name == "host" })?.value,
+              let portText = items.first(where: { $0.name == "port" })?.value,
+              let port = Int(portText), (1...65535).contains(port),
+              let token = items.first(where: { $0.name == "token" })?.value,
+              !token.isEmpty,
+              !host.isEmpty,
+              !host.contains("://"), !host.contains("/"), !host.contains("@"),
+              host != "localhost", host != "127.0.0.1", host != "0.0.0.0" else {
+            return nil
+        }
+        self.init(host: host, port: port, token: token)
+    }
 }
 
 // MARK: - WAV encoding (PCM16 mono -> WAV bytes for upload)

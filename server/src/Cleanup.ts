@@ -336,6 +336,42 @@ export function fillerEdits(snapshotId: string, tokens: Token[]): { edits: Propo
   return { edits, abstentions }
 }
 
+/** Longest exact spoken-form match from the user's confirmed dictionary. */
+export function dictionaryEdits(
+  snap: Snapshot,
+  dictionary: Readonly<Record<string, string>>,
+  claimed: ReadonlySet<string>,
+): ProposedEdit[] {
+  const entries = Object.entries(dictionary)
+    .map(([spoken, written]) => ({ spoken: wordsOf(spoken), written }))
+    .filter(({ spoken, written }) => spoken.length > 0 && written.trim().length > 0)
+    .sort((a, b) => b.spoken.length - a.spoken.length)
+  const edits: ProposedEdit[] = []
+  for (let i = 0; i < snap.tokens.length;) {
+    const match = entries.find(({ spoken }) => {
+      const span = snap.tokens.slice(i, i + spoken.length)
+      return span.length === spoken.length && span.every((token, index) =>
+        token.kind === "word" && token.normalized === spoken[index] && !claimed.has(token.id))
+    })
+    if (!match) { i++; continue }
+    const span = snap.tokens.slice(i, i + match.spoken.length)
+    if (span.map((token) => token.text).join(" ") !== match.written) {
+      edits.push({
+        editId: crypto.randomUUID(), snapshotId: snap.id, op: "dictionarySubstitution",
+        targetTokenIds: span.map((token) => token.id), evidenceTokenIds: [],
+        replacementText: match.written, reason: "confirmed personal dictionary",
+        ruleVersion: RULES_VERSION,
+      })
+    }
+    i += match.spoken.length
+  }
+  return edits
+}
+
+function wordsOf(text: string): string[] {
+  return text.trim().toLocaleLowerCase("en").split(/\s+/u).filter(Boolean)
+}
+
 // ---------------------------------------------------------------- validator
 
 export interface Snapshot { id: string; revision: number; tokens: Token[] }
@@ -632,7 +668,9 @@ export function numberEdits(snap: Snapshot, skipped: Set<string>): ProposedEdit[
       if (["the", "a", "an", "second", "first", "number", "version", "one"].includes(prev)) { k = j; continue }
     }
     const derived = deriveNumber(run.map((i) => snap.tokens[i].text.toLowerCase()))
-    if (derived) {
+    // Small number words often act as pronouns or labels ("the one", "part two").
+    // Keep their spoken form; larger quantities retain existing formatting.
+    if (derived && Number(derived) >= 10) {
       out.push({
         editId: crypto.randomUUID(), snapshotId: snap.id, op: "normalizeNumber",
         targetTokenIds: run.map((i) => snap.tokens[i].id), evidenceTokenIds: [],

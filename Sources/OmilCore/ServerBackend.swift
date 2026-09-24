@@ -84,7 +84,7 @@ public actor ServerTranscriptionBackend: TranscriptionBackend {
         }
         if let h = try? JSONDecoder().decode(Health.self, from: data) {
             if h.whisperBin == false {
-                throw BackendError.notAvailable(reason: "whisper.cpp binary missing on server (brew install whisper-cpp)")
+                throw BackendError.notAvailable(reason: "whisper.cpp binary missing on server (brew install whisper.cpp)")
             }
             if modelId == nil, h.whisperModelReady == false {
                 throw BackendError.assetMissing(locale: "whisper weights downloading on first use — retry shortly")
@@ -127,6 +127,14 @@ public actor ServerTranscriptionBackend: TranscriptionBackend {
             return "Server connection not configured"
         }
         do {
+            var authRequest = try request(path: "/v1/prompt")
+            authRequest.timeoutInterval = 10
+            let (_, authResponse) = try await URLSession.shared.data(for: authRequest)
+            switch (authResponse as? HTTPURLResponse)?.statusCode {
+            case 200: break
+            case 401: return "Token rejected — pair again with your Mac"
+            default: return "Server connection failed"
+            }
             guard let endpoint = config.endpoint(path: "/v1/health") else {
                 return "Server connection not configured"
             }
@@ -136,13 +144,14 @@ public actor ServerTranscriptionBackend: TranscriptionBackend {
             guard (response as? HTTPURLResponse)?.statusCode == 200 else { return "Unreachable" }
             struct Health: Codable {
                 var whisperBin: Bool?
+                var llamaBin: Bool?
                 var whisperModelReady: Bool?
                 var llmModelReady: Bool?
                 var llamaLive: Bool?
             }
             let h = try JSONDecoder().decode(Health.self, from: data)
             var parts: [String] = []
-            parts.append((h.whisperBin ?? false) ? "binaries ok" : "sidecars missing")
+            parts.append((h.whisperBin == true && h.llamaBin == true) ? "binaries ok" : "sidecars missing")
             parts.append((h.whisperModelReady ?? false) ? "whisper ready" : "whisper downloading")
             parts.append((h.llmModelReady ?? false) ? "qwen ready" : "qwen downloading")
             return parts.joined(separator: " · ")
@@ -290,6 +299,12 @@ public struct ServerCleanedResult: Codable, Sendable {
     public var rulesVersion: String
     public var appliedSnippetTriggers: [String]?
     public var writingStyle: WritingStyle?
+    public var proseChanges: [ServerWordChange]?
+}
+
+public struct ServerWordChange: Codable, Sendable {
+    public var before: [String]
+    public var after: [String]
 }
 
 public struct ServerRejectedEdit: Codable, Sendable {
@@ -311,6 +326,7 @@ public struct ServerCleanupClient: Sendable {
     public var style: WritingStyle
     public var modelId: String?
     public var systemPrompt: String?
+    public var context: ServerCleanupContext?
 
     public init(
         config: ServerConfig,
@@ -318,7 +334,8 @@ public struct ServerCleanupClient: Sendable {
         snippets: [String: String] = [:],
         style: WritingStyle = .automatic,
         modelId: String? = nil,
-        systemPrompt: String? = nil
+        systemPrompt: String? = nil,
+        context: ServerCleanupContext? = nil
     ) {
         self.config = config
         self.dictionary = dictionary
@@ -326,6 +343,7 @@ public struct ServerCleanupClient: Sendable {
         self.style = style
         self.modelId = modelId
         self.systemPrompt = systemPrompt
+        self.context = context
     }
 
     public func clean(
@@ -354,6 +372,9 @@ public struct ServerCleanupClient: Sendable {
         ]
         if let modelId { body["model"] = modelId }
         if let systemPrompt { body["systemPrompt"] = systemPrompt }
+        if let context {
+            body["context"] = ["before": context.before, "after": context.after]
+        }
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (data, response) = try await URLSession.shared.data(for: req)
         let code = (response as? HTTPURLResponse)?.statusCode ?? 0
@@ -367,5 +388,15 @@ public struct ServerCleanupClient: Sendable {
         default:
             throw ServerCleanupError.failed(reason: String(data: data, encoding: .utf8) ?? "HTTP \(code)")
         }
+    }
+}
+
+public struct ServerCleanupContext: Codable, Sendable {
+    public var before: String
+    public var after: String
+
+    public init(before: String, after: String) {
+        self.before = before
+        self.after = after
     }
 }

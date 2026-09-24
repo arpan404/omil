@@ -63,16 +63,17 @@ export const transcribeFile = (
           "--vad-min-silence-duration-ms", String(profile.minSilenceMs),
           "--vad-speech-pad-ms", String(profile.speechPadMs),
           "-oj", "-of", base, "-np"],
-        { stdout: "pipe", stderr: "pipe" },
+        { stdout: "ignore", stderr: "pipe" },
       )
       proc = child
       activeProcesses.add(child)
       activeModels.set(selected, (activeModels.get(selected) ?? 0) + 1)
+      const stderrPromise = child.stderr && typeof child.stderr !== "number"
+        ? new Response(child.stderr as ReadableStream).text().catch(() => "")
+        : Promise.resolve("")
       const [code, stderr] = yield* Effect.promise(async () => {
         const c = await child.exited
-        const err = child.stderr && typeof child.stderr !== "number"
-          ? await new Response(child.stderr as ReadableStream).text().catch(() => "")
-          : ""
+        const err = await stderrPromise
         return [c, err] as const
       })
       if (code !== 0) {

@@ -23,7 +23,7 @@ The macOS app is the user-facing process. It owns recording, UI state,
 shortcuts, insertion, and local history. A bundled server owns model downloads,
 transcription, and cleanup. The server calls Homebrew-installed
 transcription and cleanup binaries. Today those are `whisper-cli` and
-`llama-server`, from the `whisper-cpp` and `llama.cpp` packages. The speech
+`llama-server`, from the `whisper.cpp` and `llama.cpp` packages. The speech
 and cleanup models are catalog entries, so another model can be added without
 changing this layout.
 
@@ -41,9 +41,12 @@ raw transcript that was already produced.
 4. It launches the bundled `omil-server` executable on `127.0.0.1` and passes
    the app process ID to it. If the user explicitly enables local-network
    sharing, it binds to `0.0.0.0` instead.
-5. The app polls `/v1/health`, reads the model catalog, and prepares the selected
-   speech and cleanup weights when needed.
-6. Closing the app terminates the managed server. The server also watches the
+5. If `whisper-cli` or `llama-server` is missing, the app runs Homebrew to install
+   `whisper.cpp` or `llama.cpp`. If Homebrew is missing or fails, Engine shows
+   the official install page and a command to run in Terminal.
+6. The app polls `/v1/health`, reads the model catalog, prepares selected
+   weights when needed, and warms the cleanup model in the background.
+7. Closing the app terminates the managed server. The server also watches the
    parent process and exits if the app disappears unexpectedly.
 
 The Engine screen can expose the managed server to trusted devices on the same
@@ -54,22 +57,30 @@ as an advanced development override.
 
 ## Supported models
 
-The Engine screen can select any speech or cleanup model in the server catalog.
-The defaults are initial selections, not fixed dependencies. Changing a model
-saves the selection on the server. The selected weights download separately,
-and the next transcription or cleanup uses that model.
+The Engine screen offers Whisper small Q8 and large-v3 turbo Q8 for speech,
+and Qwen3.5 0.8B, 2B, and 4B at Q4 for cleanup. The defaults are large-v3
+turbo Q8 and Qwen3.5 2B. Each client sends its model choice with a request.
+Selected weights download separately. Changing the cleanup model warms it in
+the background before the next recording.
 
 ## Dictation lifecycle
 
-The controller uses a small set of phases:
+The controller tracks the microphone phase separately from completed recordings:
 
 ```text
-idle -> preparing -> recording -> processing -> ready
-             |             |            |
-             +-------------+------------+-> failed
+idle -> preparing -> recording -> ready
+             |             |
+             +-------------+-> failed
 
 preparing or recording -> idle (cancel)
 ```
+
+Stopping releases the microphone immediately. Each stopped session keeps its
+own transcription task, destination, selection, cleanup mode, and writing style.
+The user can start another recording while older ones are transcribing or
+cleaning. The Dictate view lists pending recordings. Delivery waits for earlier
+sessions, even while a new recording is active, then revalidates the captured
+field before insertion.
 
 When recording starts, the app captures the focused accessibility element and
 its current selection. `AudioCapture` converts microphone input to 16 kHz,
@@ -93,8 +104,8 @@ Stopping performs the following work:
    temporary upload.
 6. The app sends the final transcript, cleanup mode, dictionary, snippets, and
    app-category writing style to `POST /v1/cleanup`. An optional `systemPrompt`
-   from that device's Advanced settings overrides the server prompt for this
-   request only; the server prompt remains the default for other requests.
+   from that device's Advanced settings guides full-text cleanup
+   for this request only; the server prompt remains the default for other requests.
 7. The app inserts the returned text once and records the result in history if
    history is enabled.
 
@@ -132,16 +143,21 @@ Clean mode uses a hybrid pipeline:
    fillers, and possible correction cues.
 2. Deterministic rules propose filler removal, repeated-word removal,
    corrections, reversals such as "keep the original," and number
-   normalization.
-3. The cleanup model proposes only token-referenced repair operations. It does not return a
-   free-form rewritten paragraph.
-4. The validator rejects stale references, conflicting targets, ungrounded
+   normalization for quantities of ten or more.
+3. The validator rejects stale references, conflicting targets, ungrounded
    replacements, type mismatches, negation changes, and subject-scope changes.
-5. A preservation check runs after accepted edits are rendered. If it fails,
+4. A preservation check runs after accepted edits are rendered. If it fails,
    the server drops risky repairs. It falls back to verbatim text if the reduced
    edit set still fails.
-6. The server applies the selected writing style and snippet expansions after
-   semantic cleanup.
+5. Confirmed personal dictionary forms are substituted over the remaining
+   tokens. One model call copyedits the full result for grammar, spelling,
+   capitalization, and punctuation. It receives at most 400 characters before
+   and 200 after the captured cursor as context when the field exposes them.
+   That text is never included in the result. A word diff rejects changed
+   numbers, negation, and quoted text. It also rejects unsupported content
+   changes; a larger term correction must match nearby field text. If the
+   copyedit fails validation, the structurally cleaned text is kept.
+6. The server applies the selected writing style and snippet expansions.
 
 The response includes accepted edits, rejected edits, abstentions, the rule
 version, applied snippet triggers, and the final text. The Mac app uses this

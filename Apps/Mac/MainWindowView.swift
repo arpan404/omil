@@ -1,4 +1,6 @@
 import AppKit
+import Combine
+import CoreImage
 import SwiftUI
 import OmilCore
 
@@ -8,6 +10,7 @@ import OmilCore
 final class AppAppearance: ObservableObject {
     static let shared = AppAppearance()
     @Published private(set) var colorScheme: ColorScheme
+    @Published var themePreset: ThemePreset = .fog
     private var observation: NSKeyValueObservation?
 
     private init() {
@@ -29,16 +32,185 @@ final class AppAppearance: ObservableObject {
 }
 
 private struct AppAppearanceModifier: ViewModifier {
+    let fullSizeTitlebar: Bool
+    let hidesFullScreenToolbar: Bool
     @ObservedObject private var appearance = AppAppearance.shared
 
     func body(content: Content) -> some View {
+        let palette = appearance.themePreset.palette(for: appearance.colorScheme)
         content.environment(\.colorScheme, appearance.colorScheme)
+            .tint(Color(hex: palette.signal))
+            .background(Color(hex: palette.canvas).ignoresSafeArea())
             .modifier(PointerAwareFocus())
+            .background(WindowChrome(color: NSColor(hex: palette.canvas),
+                                     appearance: appearance.colorScheme == .dark ? .darkAqua : .aqua,
+                                     fullSizeTitlebar: fullSizeTitlebar,
+                                     hidesFullScreenToolbar: hidesFullScreenToolbar))
     }
 }
 
 extension View {
-    func omilAppearance() -> some View { modifier(AppAppearanceModifier()) }
+    func omilAppearance(fullSizeTitlebar: Bool = false, hidesFullScreenToolbar: Bool = false) -> some View {
+        modifier(AppAppearanceModifier(fullSizeTitlebar: fullSizeTitlebar,
+                                       hidesFullScreenToolbar: hidesFullScreenToolbar))
+    }
+
+    @ViewBuilder
+    func omilFullScreenToolbar() -> some View {
+        if #available(macOS 15.0, *) {
+            windowToolbarFullScreenVisibility(.onHover)
+        } else {
+            self
+        }
+    }
+}
+
+private struct WindowChrome: NSViewRepresentable {
+    let color: NSColor
+    let appearance: NSAppearance.Name
+    let fullSizeTitlebar: Bool
+    let hidesFullScreenToolbar: Bool
+
+    func makeNSView(context: Context) -> WindowChromeView {
+        let view = WindowChromeView()
+        view.chromeColor = color
+        view.chromeAppearance = appearance
+        view.fullSizeTitlebar = fullSizeTitlebar
+        view.hidesFullScreenToolbar = hidesFullScreenToolbar
+        return view
+    }
+
+    func updateNSView(_ view: WindowChromeView, context: Context) {
+        view.chromeColor = color
+        view.chromeAppearance = appearance
+        view.fullSizeTitlebar = fullSizeTitlebar
+        view.hidesFullScreenToolbar = hidesFullScreenToolbar
+    }
+}
+
+private final class WindowChromeView: NSView {
+    private var fullScreenObservers: [NSObjectProtocol] = []
+    var chromeColor: NSColor = .windowBackgroundColor {
+        didSet { if !chromeColor.isEqual(oldValue) { updateWindow() } }
+    }
+    var chromeAppearance: NSAppearance.Name = .aqua {
+        didSet { if chromeAppearance != oldValue { updateWindow() } }
+    }
+    var fullSizeTitlebar = false {
+        didSet { if fullSizeTitlebar != oldValue { updateWindow() } }
+    }
+    var hidesFullScreenToolbar = false {
+        didSet { if hidesFullScreenToolbar != oldValue { updateWindow() } }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        fullScreenObservers.forEach(NotificationCenter.default.removeObserver)
+        fullScreenObservers.removeAll()
+        if let window {
+            for name in [NSWindow.willEnterFullScreenNotification, NSWindow.willExitFullScreenNotification,
+                         NSWindow.didEnterFullScreenNotification, NSWindow.didExitFullScreenNotification] {
+                let observer = NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
+                    Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        if name == NSWindow.willEnterFullScreenNotification {
+                            self.window?.toolbar?.isVisible = false
+                        } else if name == NSWindow.willExitFullScreenNotification {
+                            self.window?.toolbar?.isVisible = true
+                        } else {
+                            self.updateWindow()
+                        }
+                    }
+                }
+                fullScreenObservers.append(observer)
+            }
+        }
+        updateWindow()
+    }
+
+    deinit {
+        MainActor.assumeIsolated {
+            fullScreenObservers.forEach(NotificationCenter.default.removeObserver)
+        }
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    private func updateWindow() {
+        guard let window else { return }
+        if fullSizeTitlebar && !window.styleMask.contains(.fullSizeContentView) {
+            window.styleMask.insert(.fullSizeContentView)
+        }
+        if !window.backgroundColor.isEqual(chromeColor) {
+            window.backgroundColor = chromeColor
+        }
+        if window.appearance?.name != chromeAppearance {
+            window.appearance = NSAppearance(named: chromeAppearance)
+        }
+        if window.styleMask.contains(.fullSizeContentView) {
+            if !window.titlebarAppearsTransparent { window.titlebarAppearsTransparent = true }
+            if window.titlebarSeparatorStyle != .none { window.titlebarSeparatorStyle = .none }
+        }
+        if hidesFullScreenToolbar {
+            let visible = !window.styleMask.contains(.fullScreen)
+            if window.toolbar?.isVisible != visible { window.toolbar?.isVisible = visible }
+        }
+    }
+}
+
+private struct FullScreenReader: NSViewRepresentable {
+    @Binding var isFullScreen: Bool
+
+    func makeNSView(context: Context) -> FullScreenReaderView {
+        let view = FullScreenReaderView()
+        view.onChange = { isFullScreen = $0 }
+        return view
+    }
+
+    func updateNSView(_ view: FullScreenReaderView, context: Context) {
+        view.onChange = { isFullScreen = $0 }
+    }
+}
+
+private final class FullScreenReaderView: NSView {
+    var onChange: ((Bool) -> Void)?
+    private var observers: [NSObjectProtocol] = []
+    private var lastReported: Bool?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        observers.forEach(NotificationCenter.default.removeObserver)
+        observers.removeAll()
+        lastReported = nil
+        guard let window else { return }
+        for name in [NSWindow.willEnterFullScreenNotification, NSWindow.didEnterFullScreenNotification,
+                     NSWindow.willExitFullScreenNotification, NSWindow.didExitFullScreenNotification] {
+            observers.append(NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.reportState(name == NSWindow.willEnterFullScreenNotification ||
+                                      name == NSWindow.didEnterFullScreenNotification)
+                }
+            })
+        }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let window = self.window else { return }
+            self.reportState(window.styleMask.contains(.fullScreen))
+        }
+    }
+
+    deinit {
+        MainActor.assumeIsolated {
+            observers.forEach(NotificationCenter.default.removeObserver)
+        }
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    private func reportState(_ isFullScreen: Bool) {
+        guard lastReported != isFullScreen else { return }
+        lastReported = isFullScreen
+        onChange?(isFullScreen)
+    }
 }
 
 /// Keep automatic button focus unobtrusive until the user navigates by keyboard.
@@ -126,49 +298,101 @@ enum MainSection: String, Hashable, CaseIterable {
 }
 
 struct RootView: View {
-    @ObservedObject var controller: DictationController
+    let controller: DictationController
+    @ObservedObject private var settings = AppContext.settingsCoordinator
+    @State private var onboarded: Bool
+
+    init(controller: DictationController) {
+        self.controller = controller
+        _onboarded = State(initialValue: controller.onboarded)
+    }
 
     var body: some View {
         Group {
-            if controller.onboarded {
+            if onboarded {
                 MainWindowView(controller: controller)
             } else {
                 OnboardingView(controller: controller)
             }
         }
         .frame(minWidth: 760, minHeight: 540)
-        .omilAppearance()
+        .omilAppearance(fullSizeTitlebar: true, hidesFullScreenToolbar: true)
+        .sheet(isPresented: $settings.isPresented) {
+            SettingsView(controller: controller)
+        }
+        .onReceive(controller.$onboarded.removeDuplicates()) { onboarded = $0 }
     }
 }
 
 struct MainWindowView: View {
-    @ObservedObject var controller: DictationController
-    @Environment(\.openSettings) private var openSettings
+    let controller: DictationController
+    @ObservedObject private var appearance = AppAppearance.shared
     @State private var section: MainSection? = .record
-
+    @State private var isFullScreen = false
+    @State private var fullScreenSidebarVisible = true
     var body: some View {
-        NavigationSplitView {
-            sidebar
-        } detail: {
-            ZStack {
-                OmilTheme.canvas.ignoresSafeArea()
-                Group {
-                    switch section ?? .record {
-                    case .record: RecorderView(controller: controller)
-                    case .history: HistoryView(controller: controller)
-                    case .snippets: SnippetsView(controller: controller)
-                    case .dictionary: DictionaryView(controller: controller)
-                    case .styles: StylesView(controller: controller)
-                    case .engine: EngineView(controller: controller)
+        let toolbarCanvas = Color(hex: appearance.themePreset.palette(for: appearance.colorScheme).canvas)
+        Group {
+            if isFullScreen {
+                HStack(spacing: 0) {
+                    if fullScreenSidebarVisible {
+                        sidebar
+                            .frame(width: 228)
+                            .overlay(alignment: .trailing) { OmilTheme.line.frame(width: 1) }
                     }
+                    detail
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .overlay(alignment: .topLeading) {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            fullScreenSidebarVisible.toggle()
+                        }
+                    } label: {
+                        Image(systemName: "sidebar.left")
+                            .font(.system(size: 15, weight: .medium))
+                            .frame(width: 30, height: 30)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(OmilTheme.muted)
+                    .background(OmilTheme.panelLifted, in: RoundedRectangle(cornerRadius: 8))
+                    .padding(.leading, fullScreenSidebarVisible ? 182 : 12)
+                    .padding(.top, 12)
+                    .help(fullScreenSidebarVisible ? "Hide Sidebar" : "Show Sidebar")
+                }
+            } else {
+                NavigationSplitView {
+                    sidebar
+                } detail: {
+                    detail
+                }
+                .navigationSplitViewStyle(.balanced)
             }
         }
-        .navigationSplitViewStyle(.balanced)
+        .background(toolbarCanvas.ignoresSafeArea())
+        .toolbarBackground(toolbarCanvas, for: .windowToolbar)
+        .toolbarBackground(.visible, for: .windowToolbar)
         .tint(OmilTheme.signal)
+        .id("\(appearance.themePreset.id)-\(appearance.colorScheme)")
+        .background(FullScreenReader(isFullScreen: $isFullScreen))
     }
 
+    private var detail: some View {
+        ZStack {
+            OmilTheme.canvas.ignoresSafeArea()
+            Group {
+                switch section ?? .record {
+                case .record: RecorderView(controller: controller)
+                case .history: HistoryView(controller: controller)
+                case .snippets: SnippetsView(controller: controller)
+                case .dictionary: DictionaryView(controller: controller)
+                case .styles: StylesView(controller: controller)
+                case .engine: EngineView(controller: controller)
+                }
+            }
+            .frame(maxWidth: 1280)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
     private var sidebar: some View {
         VStack(spacing: 0) {
             HStack(spacing: 11) {
@@ -206,7 +430,7 @@ struct MainWindowView: View {
                 Divider().overlay(OmilTheme.line)
                 EngineStatusRow(controller: controller)
                 Button {
-                    openSettings()
+                    AppContext.appDelegate?.showSettings()
                 } label: {
                     Label("Settings", systemImage: "gearshape")
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -235,17 +459,22 @@ struct RecorderView: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                if showsHeader { RecorderHeader(controller: controller) }
+        GeometryReader { geometry in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 22) {
+                    if showsHeader { RecorderHeader(controller: controller) }
 
-                if controller.micPermission != .granted {
-                    PermissionStrip(controller: controller)
+                    if controller.micPermission != .granted {
+                        PermissionStrip(controller: controller)
+                    }
+
+                    if !hasContent { Spacer(minLength: 24) }
+                    recorderColumn
+                    if !hasContent { Spacer(minLength: 24) }
                 }
-
-                recorderColumn
+                .frame(minHeight: max(0, geometry.size.height - (showsHeader ? 60 : 0)))
+                .padding(showsHeader ? 30 : 0)
             }
-            .padding(showsHeader ? 30 : 0)
         }
         .onChange(of: controller.phase) { _, phase in
             if phase == .recording, startedAt == nil { startedAt = Date() }
@@ -254,15 +483,129 @@ struct RecorderView: View {
         }
     }
 
+    private var hasResult: Bool {
+        !controller.lastCleaned.isEmpty || !controller.lastRaw.isEmpty || !controller.lastDiff.isEmpty
+    }
+
+    private var hasContent: Bool {
+        hasResult || !controller.processingJobs.isEmpty || !controller.history.isEmpty
+    }
+
     private var recorderColumn: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 18) {
             RecorderStage(controller: controller, startedAt: startedAt)
-            if !controller.lastCleaned.isEmpty || !controller.lastRaw.isEmpty || !controller.lastDiff.isEmpty {
+            if !controller.processingJobs.isEmpty { PendingTranscriptionsCard(jobs: controller.processingJobs) }
+            if hasResult {
                 ResultCard(controller: controller, selectedTab: $resultTab)
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
+            if controller.historyEnabled && !controller.history.isEmpty {
+                RecentTranscriptionsCard(entries: Array(controller.history.prefix(12)))
+            }
         }
         .frame(maxWidth: .infinity)
+    }
+}
+
+private struct PendingTranscriptionsCard: View {
+    let jobs: [DictationController.ProcessingJob]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text(jobs.count == 1 ? "IN PROGRESS" : "\(jobs.count) IN PROGRESS")
+                    .font(OmilType.utility(10, weight: .bold))
+                    .tracking(1)
+                    .foregroundStyle(OmilTheme.muted)
+                Spacer()
+                Text("You can record again")
+                    .font(OmilType.utility(10))
+                    .foregroundStyle(OmilTheme.faint)
+            }
+            ForEach(Array(jobs.enumerated()), id: \.element.id) { index, job in
+                HStack(spacing: 10) {
+                    ProgressView().controlSize(.small)
+                    if jobs.count > 1 {
+                        Text("\(index + 1)")
+                            .font(OmilType.utility(11, weight: .bold))
+                            .foregroundStyle(OmilTheme.signal)
+                            .frame(width: 20, alignment: .leading)
+                    }
+                    Image(systemName: job.stage.icon)
+                        .font(.system(size: 11))
+                        .foregroundStyle(OmilTheme.muted)
+                    Text(job.stage.title)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(OmilTheme.ink)
+                    Spacer()
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(jobs.count == 1 ? job.stage.title : "Recording \(index + 1), \(job.stage.title)")
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(OmilTheme.panel, in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(OmilTheme.line))
+    }
+}
+
+private struct RecentTranscriptionsCard: View {
+    let entries: [DictationController.HistoryEntry]
+    @State private var expandedIDs: Set<UUID> = []
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("RECENT TRANSCRIPTIONS")
+                    .font(OmilType.utility(10, weight: .bold))
+                    .tracking(1)
+                    .foregroundStyle(OmilTheme.muted)
+                Spacer()
+                Text("Latest \(entries.count)")
+                    .font(OmilType.utility(10))
+                    .foregroundStyle(OmilTheme.faint)
+            }
+            ForEach(entries) { entry in
+                VStack(alignment: .leading, spacing: 6) {
+                    Button {
+                        if !expandedIDs.insert(entry.id).inserted { expandedIDs.remove(entry.id) }
+                    } label: {
+                        HStack(alignment: .top, spacing: 10) {
+                            Image(systemName: expandedIDs.contains(entry.id) ? "chevron.down" : "chevron.right")
+                                .font(.system(size: 10, weight: .semibold))
+                                .frame(width: 12)
+                            Text(entry.cleaned)
+                                .lineLimit(expandedIDs.contains(entry.id) ? nil : 2)
+                                .multilineTextAlignment(.leading)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            Text(entry.date.formatted(date: .omitted, time: .shortened))
+                                .font(OmilType.utility(10))
+                                .foregroundStyle(OmilTheme.faint)
+                                .fixedSize()
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 12))
+                    .foregroundStyle(OmilTheme.ink)
+                    if expandedIDs.contains(entry.id) {
+                        Button("Copy transcript") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(entry.cleaned, forType: .string)
+                        }
+                        .buttonStyle(.plain)
+                        .font(OmilType.utility(10, weight: .medium))
+                        .foregroundStyle(OmilTheme.signal)
+                        .padding(.leading, 22)
+                    }
+                }
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(OmilTheme.panel, in: RoundedRectangle(cornerRadius: 11))
+                .overlay(RoundedRectangle(cornerRadius: 11).stroke(OmilTheme.line))
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -272,7 +615,7 @@ private struct RecorderHeader: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline) {
             Text("Dictate")
-                .font(OmilType.display(31))
+                .font(OmilType.display(30))
                 .foregroundStyle(OmilTheme.ink)
             Spacer()
         }
@@ -329,22 +672,22 @@ private struct RecorderStage: View {
                 Spacer()
                 ModePicker(controller: controller)
             }
-            .padding(.horizontal, 20)
-            .padding(.top, 18)
+            .padding(.horizontal, 24)
+            .padding(.top, 22)
 
-            Spacer(minLength: 12)
+            Spacer(minLength: 34)
 
             Group {
                 if active {
-                    SignalRail(levels: controller.audioLevels, active: true)
+                    LiveSignalRail(meter: controller.audioMeter)
                 } else if controller.phase == .processing {
                     ProcessingTrack(stage: controller.processingStage)
                 } else {
-                    Color.clear
+                    EmptyView()
                 }
             }
-            .frame(height: 52)
-            .padding(.horizontal, 42)
+            .frame(height: active || controller.phase == .processing ? 52 : 0)
+            .padding(.horizontal, 56)
 
             if controller.phase == .preparing || controller.phase == .processing {
                 ZStack {
@@ -362,14 +705,17 @@ private struct RecorderStage: View {
                 Button(action: toggle) {
                     ZStack {
                         Circle()
-                            .stroke(active ? OmilTheme.coral.opacity(0.28) : OmilTheme.lineStrong, lineWidth: 1)
-                            .frame(width: 76, height: 76)
+                            .fill((active ? OmilTheme.coral : OmilTheme.signal).opacity(0.07))
+                            .frame(width: 128, height: 128)
+                        Circle()
+                            .stroke(active ? OmilTheme.coral.opacity(0.3) : OmilTheme.signal.opacity(0.3), lineWidth: 1)
+                            .frame(width: 88, height: 88)
                         Circle()
                             .fill(active ? OmilTheme.coral : OmilTheme.signal)
-                            .frame(width: 58, height: 58)
-                            .shadow(color: OmilTheme.ink.opacity(0.1), radius: 10, y: 4)
+                            .frame(width: 68, height: 68)
+                            .shadow(color: (active ? OmilTheme.coral : OmilTheme.signal).opacity(0.2), radius: 22, y: 8)
                         Image(systemName: active ? "stop.fill" : "mic.fill")
-                            .font(.system(size: 20, weight: .bold))
+                            .font(.system(size: 23, weight: .semibold))
                             .foregroundStyle(active ? Color.white : OmilTheme.signalInk)
                     }
                 }
@@ -378,23 +724,25 @@ private struct RecorderStage: View {
                 .accessibilityLabel(active ? "Stop recording" : "Start recording")
             }
 
-            VStack(spacing: 5) {
+            VStack(spacing: 8) {
                 TimelineView(.periodic(from: .now, by: 1)) { _ in
                     Text(primaryStatus)
-                        .font(OmilType.display(18))
+                        .font(OmilType.display(23))
+                        .foregroundStyle(OmilTheme.ink)
                         .contentTransition(.numericText())
                 }
                 if !secondaryStatus.isEmpty {
                     Text(secondaryStatus)
-                        .font(.system(size: 12))
+                        .font(.system(size: 13))
                         .foregroundStyle(OmilTheme.muted)
                         .multilineTextAlignment(.center)
                         .lineLimit(2)
+                        .frame(maxWidth: 470)
                 }
             }
-            .padding(.top, 8)
+            .padding(.top, 12)
 
-            Spacer(minLength: 14)
+            Spacer(minLength: 34)
 
             HStack(spacing: 12) {
                 HStack(spacing: 8) {
@@ -412,14 +760,24 @@ private struct RecorderStage: View {
                     .foregroundStyle(OmilTheme.faint)
             }
             .font(OmilType.utility(10, weight: .medium))
-            .tracking(0.5)
+            .tracking(0.2)
             .foregroundStyle(OmilTheme.muted)
-            .padding(.bottom, 20)
+            .padding(.horizontal, 24)
+            .frame(maxWidth: .infinity)
+            .frame(height: 54)
+            .background(OmilTheme.panelDeep.opacity(0.66))
         }
-        .frame(minHeight: 276)
-        .background(OmilTheme.panel, in: RoundedRectangle(cornerRadius: 16))
-        .overlay(RoundedRectangle(cornerRadius: 16).stroke(OmilTheme.lineStrong))
-        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .frame(height: 390)
+        .background {
+            RoundedRectangle(cornerRadius: 20)
+                .fill(OmilTheme.panel)
+                .overlay {
+                    RadialGradient(colors: [OmilTheme.signal.opacity(0.09), .clear], center: .center, startRadius: 12, endRadius: 330)
+                        .clipShape(RoundedRectangle(cornerRadius: 20))
+                }
+        }
+        .overlay(RoundedRectangle(cornerRadius: 20).stroke(OmilTheme.line, lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: 20))
     }
 
     private var shortcutKey: String {
@@ -440,7 +798,10 @@ private struct RecorderStage: View {
             let seconds = max(0, Int(Date().timeIntervalSince(startedAt)))
             return String(format: "%d:%02d", seconds / 60, seconds % 60)
         case .processing: return controller.processingStage.title
-        case .ready: return controller.lastCleaned.isEmpty ? "Nothing heard" : "Ready"
+        case .ready:
+            if controller.processingJobs.count == 1 { return controller.processingJobs[0].stage.title }
+            if controller.processingJobs.count > 1 { return "\(controller.processingJobs.count) processing" }
+            return controller.lastCleaned.isEmpty ? "Nothing heard" : "Ready"
         case .failed: return "Needs attention"
         }
     }
@@ -449,6 +810,8 @@ private struct RecorderStage: View {
         switch controller.phase {
         case .idle: return controller.micPermission != .granted ? "Allow microphone access to start transcribing." : controller.serverIsReady ? "Click the microphone to dictate into your last text field, or use the shortcut without switching apps." : "Open Engine to check your speech models."
         case .recording: return controller.draftText.isEmpty ? "Listening for your voice" : controller.draftText
+        case .ready where !controller.processingJobs.isEmpty:
+            return "Ready for another recording while these finish."
         default: return controller.statusMessage
         }
     }
@@ -496,8 +859,8 @@ private struct ResultCard: View {
 
             if !controller.lastDeliveryMethod.isEmpty {
                 HStack(spacing: 6) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(OmilTheme.mint)
+                    Image(systemName: deliverySucceeded ? "checkmark.circle.fill" : "info.circle.fill")
+                        .foregroundStyle(deliverySucceeded ? OmilTheme.mint : OmilTheme.warning)
                     Text(controller.lastDeliveryMethod)
                     Spacer()
                 }
@@ -519,6 +882,11 @@ private struct ResultCard: View {
         }
     }
 
+    private var deliverySucceeded: Bool {
+        controller.lastDeliveryMethod.hasPrefix("Inserted into") ||
+        controller.lastDeliveryMethod.hasPrefix("Pasted into")
+    }
+
     private var resultText: String {
         switch selectedTab {
         case .clean: return controller.lastCleaned.isEmpty ? "Your transcript will appear here." : controller.lastCleaned
@@ -530,31 +898,64 @@ private struct ResultCard: View {
 
 // MARK: - History
 
+enum HistoryListRow: Identifiable {
+    case savedHeader
+    case recording(RecoveryRecording)
+    case dayHeader(Date)
+    case transcript(DictationController.HistoryEntry)
+
+    var id: String {
+        switch self {
+        case .savedHeader: return "saved-header"
+        case .recording(let recording): return "recording-\(recording.id)"
+        case .dayHeader(let day): return "day-\(day.timeIntervalSinceReferenceDate)"
+        case .transcript(let entry): return "transcript-\(entry.id)"
+        }
+    }
+
+    static func make(
+        recordings: [RecoveryRecording],
+        history: [DictationController.HistoryEntry],
+        search: String
+    ) -> [HistoryListRow] {
+        let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
+        let matches: (String) -> Bool = { query.isEmpty || $0.localizedCaseInsensitiveContains(query) }
+        var rows: [HistoryListRow] = []
+        let matchingRecordings = recordings.filter {
+            matches($0.transcript ?? "") || matches($0.rawTranscript ?? "")
+        }
+        if !matchingRecordings.isEmpty {
+            rows.append(.savedHeader)
+            rows.append(contentsOf: matchingRecordings.map(HistoryListRow.recording))
+        }
+        var lastDay: Date?
+        for entry in history.sorted(by: { $0.date > $1.date }) where matches(entry.cleaned) || matches(entry.raw) {
+            let day = Calendar.current.startOfDay(for: entry.date)
+            if lastDay != day {
+                rows.append(.dayHeader(day))
+                lastDay = day
+            }
+            rows.append(.transcript(entry))
+        }
+        return rows
+    }
+}
+
 struct HistoryView: View {
     @ObservedObject var controller: DictationController
     @State private var search = ""
+    @State private var rows: [HistoryListRow]
     @State private var confirmDelete: DictationController.HistoryEntry?
     @State private var confirmRecoveryDelete: RecoveryRecording?
     @State private var selectedTranscript: HistoryTranscript?
 
-    private var query: String { search.trimmingCharacters(in: .whitespacesAndNewlines).localizedLowercase }
-
-    private var filteredRecordings: [RecoveryRecording] {
-        guard !query.isEmpty else { return controller.recoveryRecordings }
-        return controller.recoveryRecordings.filter {
-            ($0.transcript ?? "").localizedLowercase.contains(query) ||
-            ($0.rawTranscript ?? "").localizedLowercase.contains(query)
-        }
-    }
-
-    private var filtered: [(day: Date, entries: [DictationController.HistoryEntry])] {
-        guard !query.isEmpty else { return controller.historyByDay }
-        return controller.historyByDay.compactMap { day, entries in
-            let matches = entries.filter {
-                $0.cleaned.localizedLowercase.contains(query) || $0.raw.localizedLowercase.contains(query)
-            }
-            return matches.isEmpty ? nil : (day, matches)
-        }
+    init(controller: DictationController) {
+        self.controller = controller
+        _rows = State(initialValue: HistoryListRow.make(
+            recordings: controller.recoveryRecordings,
+            history: controller.history,
+            search: ""
+        ))
     }
 
     var body: some View {
@@ -598,56 +999,12 @@ struct HistoryView: View {
                 )
             } else {
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 22) {
-                        if !filteredRecordings.isEmpty {
-                            VStack(alignment: .leading, spacing: 10) {
-                                HStack(alignment: .firstTextBaseline) {
-                                    Text("Saved recordings")
-                                        .font(OmilType.utility(10, weight: .bold))
-                                        .tracking(1)
-                                        .foregroundStyle(OmilTheme.muted)
-                                    Spacer()
-                                    Text(controller.audioRetentionDays == 1 ? "Kept for 1 day" : "Kept for \(controller.audioRetentionDays) days")
-                                        .font(OmilType.utility(10))
-                                        .foregroundStyle(OmilTheme.faint)
-                                }
-                                ForEach(filteredRecordings) { recording in
-                                    RecoveryRecordingCard(
-                                        recording: recording,
-                                        playback: controller.recoveryPlayback,
-                                        isBusy: controller.phase == .recording || controller.phase == .preparing || controller.phase == .processing,
-                                        play: { controller.playRecovery(recording) },
-                                        seek: { controller.seekRecovery(recording, to: $0) },
-                                        retry: { controller.retryRecovery(recording) },
-                                        copy: { copy(recording.transcript ?? "") },
-                                        viewTranscript: { selectedTranscript = transcript(for: recording) },
-                                        delete: { confirmRecoveryDelete = recording }
-                                    )
-                                }
-                            }
+                    LazyVStack(alignment: .leading, spacing: 10) {
+                        if rows.isEmpty && !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            EmptyState(icon: "magnifyingglass", title: "Nothing matched", detail: "Try a shorter word or phrase.")
                         }
-
-                        if filtered.isEmpty {
-                            if filteredRecordings.isEmpty && !query.isEmpty {
-                                EmptyState(icon: "magnifyingglass", title: "Nothing matched", detail: "Try a shorter word or phrase.")
-                            }
-                        } else {
-                        ForEach(filtered, id: \.day) { group in
-                            VStack(alignment: .leading, spacing: 10) {
-                                Text(controller.dayLabel(for: group.day).uppercased())
-                                    .font(OmilType.utility(10, weight: .bold))
-                                    .tracking(1)
-                                    .foregroundStyle(OmilTheme.muted)
-                                ForEach(group.entries) { entry in
-                                    HistoryCard(
-                                        entry: entry,
-                                        copy: { copy(entry.cleaned) },
-                                        viewTranscript: { selectedTranscript = HistoryTranscript(entry: entry) },
-                                        delete: { confirmDelete = entry }
-                                    )
-                                }
-                            }
-                        }
+                        ForEach(rows) { row in
+                            historyRow(row)
                         }
                     }
                     .padding(.horizontal, 30)
@@ -655,6 +1012,9 @@ struct HistoryView: View {
                 }
             }
         }
+        .onChange(of: search) { _, _ in refreshRows() }
+        .onReceive(controller.$history) { history in refreshRows(history: history) }
+        .onReceive(controller.$recoveryRecordings) { recordings in refreshRows(recordings: recordings) }
         .onDisappear { controller.recoveryPlayback.stop() }
         .sheet(item: $selectedTranscript) { transcript in
             HistoryTranscriptSheet(transcript: transcript)
@@ -689,6 +1049,59 @@ struct HistoryView: View {
         } message: {
             Text("This permanently deletes the recording. Your transcript stays in History.")
         }
+    }
+
+    @ViewBuilder
+    private func historyRow(_ row: HistoryListRow) -> some View {
+        switch row {
+        case .savedHeader:
+            HStack(alignment: .firstTextBaseline) {
+                Text("Saved recordings")
+                    .font(OmilType.utility(10, weight: .bold))
+                    .tracking(1)
+                    .foregroundStyle(OmilTheme.muted)
+                Spacer()
+                Text(controller.audioRetentionDays == 1 ? "Kept for 1 day" : "Kept for \(controller.audioRetentionDays) days")
+                    .font(OmilType.utility(10))
+                    .foregroundStyle(OmilTheme.faint)
+            }
+        case .recording(let recording):
+            RecoveryRecordingCard(
+                recording: recording,
+                playback: controller.recoveryPlayback,
+                isBusy: controller.phase == .recording || controller.phase == .preparing || controller.phase == .processing,
+                play: { controller.playRecovery(recording) },
+                seek: { controller.seekRecovery(recording, to: $0) },
+                retry: { controller.retryRecovery(recording) },
+                copy: { copy(recording.transcript ?? "") },
+                viewTranscript: { selectedTranscript = transcript(for: recording) },
+                delete: { confirmRecoveryDelete = recording }
+            )
+        case .dayHeader(let day):
+            Text(controller.dayLabel(for: day).uppercased())
+                .font(OmilType.utility(10, weight: .bold))
+                .tracking(1)
+                .foregroundStyle(OmilTheme.muted)
+                .padding(.top, 12)
+        case .transcript(let entry):
+            HistoryCard(
+                entry: entry,
+                copy: { copy(entry.cleaned) },
+                viewTranscript: { selectedTranscript = HistoryTranscript(entry: entry) },
+                delete: { confirmDelete = entry }
+            )
+        }
+    }
+
+    private func refreshRows(
+        recordings: [RecoveryRecording]? = nil,
+        history: [DictationController.HistoryEntry]? = nil
+    ) {
+        rows = HistoryListRow.make(
+            recordings: recordings ?? controller.recoveryRecordings,
+            history: history ?? controller.history,
+            search: search
+        )
     }
 
     private func copy(_ text: String) {
@@ -790,6 +1203,7 @@ private struct RecoveryRecordingCard: View {
     let recording: RecoveryRecording
     @ObservedObject var playback: RecoveryPlayback
     @State private var showsControls = false
+    @State private var showsTranscript = false
 
     private var isSelected: Bool { playback.recordingID == recording.id }
     private var isPlaying: Bool { isSelected && playback.isPlaying }
@@ -908,14 +1322,12 @@ private struct RecoveryRecordingCard: View {
                             Button("Stop") { playback.stop() }
                                 .disabled(!isSelected)
                             Spacer(minLength: 8)
-                            Picker("Speed", selection: $playback.rate) {
-                                Text("0.75×").tag(Float(0.75))
-                                Text("1×").tag(Float(1))
-                                Text("1.25×").tag(Float(1.25))
-                                Text("1.5×").tag(Float(1.5))
-                                Text("2×").tag(Float(2))
-                            }
-                            .labelsHidden()
+                            OmilPickerField(
+                                title: "Playback speed",
+                                selection: $playback.rate,
+                                options: [Float(0.75), 1, 1.25, 1.5, 2],
+                                label: { "\($0.formatted())×" }
+                            )
                             .frame(width: 80)
                             Image(systemName: playback.volume == 0 ? "speaker.slash" : "speaker.wave.2")
                                 .accessibilityHidden(true)
@@ -932,11 +1344,28 @@ private struct RecoveryRecordingCard: View {
             }
 
             if let transcript = recording.transcript, !transcript.isEmpty {
-                Text(transcript)
-                    .font(.system(size: 12))
-                    .foregroundStyle(OmilTheme.muted)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
+                Button {
+                    showsTranscript.toggle()
+                } label: {
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: showsTranscript ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 10, weight: .semibold))
+                        Text(transcript)
+                            .lineLimit(showsTranscript ? nil : 2)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .multilineTextAlignment(.leading)
+                    }
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 12))
+                .foregroundStyle(OmilTheme.muted)
+                if showsTranscript {
+                    Button("Copy transcript", action: copy)
+                        .buttonStyle(.plain)
+                        .font(OmilType.utility(10, weight: .medium))
+                        .foregroundStyle(OmilTheme.signal)
+                        .padding(.leading, 18)
+                }
             } else if let failure = recording.failureReason, !failure.isEmpty {
                 Text(failure)
                     .font(.system(size: 11))
@@ -965,6 +1394,7 @@ private struct HistoryCard: View {
     let copy: () -> Void
     let viewTranscript: () -> Void
     let delete: () -> Void
+    @State private var expanded = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 13) {
@@ -991,11 +1421,31 @@ private struct HistoryCard: View {
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
             }
-            Text(entry.cleaned)
-                .font(.system(size: 15))
-                .foregroundStyle(OmilTheme.ink)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            Button { expanded.toggle() } label: {
+                HStack(alignment: .top, spacing: 9) {
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                        .frame(width: 12)
+                    Text(entry.cleaned)
+                        .font(.system(size: 15))
+                        .lineLimit(expanded ? nil : 2)
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(OmilTheme.ink)
+            .accessibilityLabel(expanded ? "Collapse transcript" : "Expand transcript")
+            if expanded {
+                HStack(spacing: 12) {
+                    Button("View original and changes", action: viewTranscript)
+                    Button("Copy transcript", action: copy)
+                }
+                .buttonStyle(.plain)
+                .font(OmilType.utility(10, weight: .medium))
+                .foregroundStyle(OmilTheme.signal)
+                .padding(.leading, 21)
+            }
 
         }
         .padding(16)
@@ -1020,7 +1470,7 @@ struct SnippetsView: View {
             ) { EmptyView() }
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
+                LazyVStack(alignment: .leading, spacing: 18) {
                     VStack(alignment: .leading, spacing: 14) {
                         LabeledField(label: "When I say", placeholder: "my intro", text: $trigger)
 
@@ -1071,31 +1521,29 @@ struct SnippetsView: View {
                         )
                         .frame(minHeight: 240)
                     } else {
-                        LazyVStack(spacing: 10) {
-                            ForEach(controller.snippets) { snippet in
-                                HStack(alignment: .top, spacing: 14) {
-                                    VStack(alignment: .leading, spacing: 6) {
-                                        Text("\"\(snippet.trigger)\"")
-                                            .font(.system(size: 13, weight: .semibold))
-                                            .foregroundStyle(OmilTheme.signal)
-                                        Text(snippet.expansion)
-                                            .font(.system(size: 12))
-                                            .foregroundStyle(OmilTheme.muted)
-                                            .lineLimit(4)
-                                            .textSelection(.enabled)
-                                    }
-                                    Spacer()
-                                    Button(role: .destructive) { controller.deleteSnippet(snippet) } label: {
-                                        Image(systemName: "trash")
-                                    }
-                                    .buttonStyle(.plain)
-                                    .foregroundStyle(OmilTheme.faint)
-                                    .help("Delete snippet")
+                        ForEach(controller.snippets) { snippet in
+                            HStack(alignment: .top, spacing: 14) {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text("\"\(snippet.trigger)\"")
+                                        .font(.system(size: 13, weight: .semibold))
+                                        .foregroundStyle(OmilTheme.signal)
+                                    Text(snippet.expansion)
+                                        .font(.system(size: 12))
+                                        .foregroundStyle(OmilTheme.muted)
+                                        .lineLimit(4)
+                                        .textSelection(.enabled)
                                 }
-                                .padding(16)
-                                .background(OmilTheme.panel, in: RoundedRectangle(cornerRadius: 14))
-                                .overlay(RoundedRectangle(cornerRadius: 14).stroke(OmilTheme.line))
+                                Spacer()
+                                Button(role: .destructive) { controller.deleteSnippet(snippet) } label: {
+                                    Image(systemName: "trash")
+                                }
+                                .buttonStyle(.plain)
+                                .foregroundStyle(OmilTheme.faint)
+                                .help("Delete snippet")
                             }
+                            .padding(16)
+                            .background(OmilTheme.panel, in: RoundedRectangle(cornerRadius: 14))
+                            .overlay(RoundedRectangle(cornerRadius: 14).stroke(OmilTheme.line))
                         }
                     }
                 }
@@ -1159,16 +1607,15 @@ struct StylesView: View {
                 Spacer()
             }
 
-            Picker("Writing style", selection: Binding(
-                get: { controller.style(for: category) },
-                set: { controller.setStyle($0, for: category) }
-            )) {
-                ForEach(styles(for: category), id: \.self) { style in
-                    Text(style.displayName).tag(style)
-                }
-            }
-            .labelsHidden()
-            .pickerStyle(.menu)
+            OmilPickerField(
+                title: "Writing style",
+                selection: Binding(
+                    get: { controller.style(for: category) },
+                    set: { controller.setStyle($0, for: category) }
+                ),
+                options: styles(for: category),
+                label: { $0.displayName }
+            )
 
             VStack(alignment: .leading, spacing: 6) {
                 Text("Example")
@@ -1223,6 +1670,7 @@ struct DictionaryView: View {
     @State private var written = ""
 
     var body: some View {
+        let keys = controller.dictionaryEntries.keys.sorted()
         VStack(spacing: 0) {
             PageHeader(
                 title: "Dictionary",
@@ -1230,7 +1678,7 @@ struct DictionaryView: View {
             ) { EmptyView() }
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
+                LazyVStack(alignment: .leading, spacing: 18) {
                     HStack(alignment: .bottom, spacing: 12) {
                         LabeledField(label: "When I say", placeholder: "oh mill", text: $spoken)
                         Image(systemName: "arrow.right")
@@ -1250,7 +1698,7 @@ struct DictionaryView: View {
                         .tracking(1)
                         .foregroundStyle(OmilTheme.muted)
 
-                    if controller.dictionaryEntries.isEmpty {
+                    if keys.isEmpty {
                         EmptyState(
                             icon: "character.book.closed",
                             title: "No corrections yet",
@@ -1258,36 +1706,31 @@ struct DictionaryView: View {
                         )
                         .frame(minHeight: 280)
                     } else {
-                        VStack(spacing: 0) {
-                            ForEach(Array(controller.dictionaryEntries.keys.sorted()), id: \.self) { key in
-                                HStack(spacing: 18) {
-                                    Text(key)
-                                        .foregroundStyle(OmilTheme.muted)
-                                    Image(systemName: "arrow.right")
-                                        .font(.system(size: 10, weight: .semibold))
-                                        .foregroundStyle(OmilTheme.faint)
-                                    Text(controller.dictionaryEntries[key] ?? "")
-                                        .fontWeight(.semibold)
-                                    Spacer()
-                                    Button(role: .destructive) {
-                                        controller.deleteDictionaryEntry(spoken: key)
-                                    } label: {
-                                        Image(systemName: "trash")
-                                    }
-                                    .buttonStyle(.plain)
+                        ForEach(keys, id: \.self) { key in
+                            HStack(spacing: 18) {
+                                Text(key)
+                                    .foregroundStyle(OmilTheme.muted)
+                                Image(systemName: "arrow.right")
+                                    .font(.system(size: 10, weight: .semibold))
                                     .foregroundStyle(OmilTheme.faint)
-                                    .help("Delete correction")
+                                Text(controller.dictionaryEntries[key] ?? "")
+                                    .fontWeight(.semibold)
+                                Spacer()
+                                Button(role: .destructive) {
+                                    controller.deleteDictionaryEntry(spoken: key)
+                                } label: {
+                                    Image(systemName: "trash")
                                 }
-                                .font(.system(size: 13))
-                                .padding(.horizontal, 16)
-                                .frame(height: 48)
-                                if key != controller.dictionaryEntries.keys.sorted().last {
-                                    Divider().overlay(OmilTheme.line).padding(.leading, 16)
-                                }
+                                .buttonStyle(.plain)
+                                .foregroundStyle(OmilTheme.faint)
+                                .help("Delete correction")
                             }
+                            .font(.system(size: 13))
+                            .padding(.horizontal, 16)
+                            .frame(height: 48)
+                            .background(OmilTheme.panel, in: RoundedRectangle(cornerRadius: 12))
+                            .overlay(RoundedRectangle(cornerRadius: 12).stroke(OmilTheme.line))
                         }
-                        .background(OmilTheme.panel, in: RoundedRectangle(cornerRadius: 14))
-                        .overlay(RoundedRectangle(cornerRadius: 14).stroke(OmilTheme.line))
                     }
                 }
                 .padding(.horizontal, 30)
@@ -1315,26 +1758,14 @@ private struct ModelOption {
 }
 
 private let whisperModelOptions = [
-    ModelOption(file: "ggml-tiny.bin", name: "Whisper tiny", size: "77 MB"),
-    ModelOption(file: "ggml-base.bin", name: "Whisper base", size: "148 MB"),
-    ModelOption(file: "ggml-small.bin", name: "Whisper small", size: "488 MB"),
-    ModelOption(file: "ggml-medium.bin", name: "Whisper medium", size: "1.5 GB"),
-    ModelOption(file: "ggml-medium-32-2.en.bin", name: "Distil-Whisper medium · English", size: "794 MB"),
-    ModelOption(file: "ggml-distil-large-v3.bin", name: "Distil-Whisper large-v3 · English", size: "1.5 GB"),
-    ModelOption(file: "ggml-large-v3-turbo-q5_0.bin", name: "Whisper large-v3 turbo Q5", size: "574 MB"),
+    ModelOption(file: "ggml-small-q8_0.bin", name: "Whisper small Q8 · faster", size: "264 MB"),
     ModelOption(file: "ggml-large-v3-turbo-q8_0.bin", name: "Whisper large-v3 turbo Q8", size: "874 MB"),
-    ModelOption(file: "ggml-large-v3-turbo.bin", name: "Whisper large-v3 turbo", size: "1.6 GB"),
-    ModelOption(file: "ggml-large-v3-q5_0.bin", name: "Whisper large-v3 Q5", size: "1.1 GB"),
-    ModelOption(file: "ggml-large-v3.bin", name: "Whisper large-v3", size: "3.1 GB")
 ]
 
 private let rewriteModelOptions = [
-    ModelOption(file: "Qwen3-0.6B-Q4_K_M.gguf", name: "Qwen3 0.6B", size: "397 MB"),
-    ModelOption(file: "Qwen3-4B-Instruct-2507-Q4_K_M.gguf", name: "Qwen3 4B", size: "2.5 GB"),
-    ModelOption(file: "Qwen3-8B-Q4_K_M.gguf", name: "Qwen3 8B", size: "5 GB"),
     ModelOption(file: "Qwen3.5-0.8B-Q4_K_M.gguf", name: "Qwen3.5 0.8B", size: "533 MB"),
+    ModelOption(file: "Qwen3.5-2B-Q4_K_M.gguf", name: "Qwen3.5 2B", size: "1.3 GB"),
     ModelOption(file: "Qwen3.5-4B-Q4_K_M.gguf", name: "Qwen3.5 4B", size: "2.7 GB"),
-    ModelOption(file: "Qwen3.5-9B-Q4_K_M.gguf", name: "Qwen3.5 9B", size: "5.7 GB")
 ]
 
 struct EngineView: View {
@@ -1355,6 +1786,48 @@ struct EngineView: View {
             ScrollView {
                 VStack(spacing: 16) {
                     EngineStatusBar(controller: controller)
+                    if !controller.usesCustomServer {
+                        switch controller.toolInstallState {
+                        case .idle, .ready:
+                            EmptyView()
+                        case .installing(let formulae):
+                            Label("Installing \(formulae.joined(separator: " and ")) with Homebrew. This may take a few minutes.", systemImage: "arrow.down.circle")
+                                .font(.system(size: 12))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(14)
+                                .background(OmilTheme.panel, in: RoundedRectangle(cornerRadius: 12))
+                        case .failed(let message, let homebrewMissing):
+                            VStack(alignment: .leading, spacing: 10) {
+                                Label(message, systemImage: "exclamationmark.triangle")
+                                    .font(.system(size: 12, weight: .medium))
+                                if homebrewMissing {
+                                    Link("Install Homebrew", destination: URL(string: "https://brew.sh/")!)
+                                        .font(.system(size: 12, weight: .semibold))
+                                    Text("After installing Homebrew, run this command in Terminal:")
+                                        .font(.system(size: 11))
+                                } else {
+                                    Text("You can run this command in Terminal:")
+                                        .font(.system(size: 11))
+                                }
+                                HStack {
+                                    Text(LocalServerManager.manualInstallCommand)
+                                        .font(.system(.caption, design: .monospaced))
+                                        .textSelection(.enabled)
+                                    Spacer()
+                                    Button("Copy") {
+                                        NSPasteboard.general.clearContents()
+                                        NSPasteboard.general.setString(LocalServerManager.manualInstallCommand, forType: .string)
+                                    }
+                                    .buttonStyle(QuietButtonStyle())
+                                    Button("Retry") { controller.retryInferenceToolInstall() }
+                                        .buttonStyle(QuietButtonStyle())
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(14)
+                            .background(OmilTheme.panel, in: RoundedRectangle(cornerRadius: 12))
+                        }
+                    }
 
                     VStack(spacing: 0) {
                         ModelPipelineRow(
@@ -1365,6 +1838,7 @@ struct EngineView: View {
                                 get: { controller.displayedWhisperFile },
                                 set: { controller.chooseWhisperModel(file: $0) }
                             ),
+                            activeFile: controller.whisperFile,
                             options: whisperModelOptions,
                             downloaded: controller.modelIsDownloaded(file: controller.displayedWhisperFile),
                             fileState: controller.modelInfo(file: controller.displayedWhisperFile)?.fileState,
@@ -1372,13 +1846,8 @@ struct EngineView: View {
                             totalBytes: controller.modelInfo(file: controller.displayedWhisperFile)?.totalBytes,
                             memoryState: controller.modelInfo(file: controller.displayedWhisperFile)?.memoryState,
                             downloading: controller.modelIsDownloading(file: controller.displayedWhisperFile),
-                            interactionDisabled: controller.modelsPreparing || !controller.downloadingModelIDs.isEmpty,
-                            download: { controller.downloadModel(file: controller.displayedWhisperFile) },
-                            delete: {
-                                modelPendingDeletion = whisperModelOptions.first {
-                                    $0.file == controller.displayedWhisperFile
-                                }
-                            }
+                            interactionDisabled: controller.modelsPreparing,
+                            download: { controller.downloadModel(file: controller.displayedWhisperFile) }
                         )
                         Divider()
                             .overlay(OmilTheme.line)
@@ -1391,6 +1860,7 @@ struct EngineView: View {
                                 get: { controller.displayedLLMFile },
                                 set: { controller.chooseLLMModel(file: $0) }
                             ),
+                            activeFile: controller.llmFile,
                             options: rewriteModelOptions,
                             downloaded: controller.modelIsDownloaded(file: controller.displayedLLMFile),
                             fileState: controller.modelInfo(file: controller.displayedLLMFile)?.fileState,
@@ -1398,17 +1868,14 @@ struct EngineView: View {
                             totalBytes: controller.modelInfo(file: controller.displayedLLMFile)?.totalBytes,
                             memoryState: controller.modelInfo(file: controller.displayedLLMFile)?.memoryState,
                             downloading: controller.modelIsDownloading(file: controller.displayedLLMFile),
-                            interactionDisabled: controller.modelsPreparing || !controller.downloadingModelIDs.isEmpty,
-                            download: { controller.downloadModel(file: controller.displayedLLMFile) },
-                            delete: {
-                                modelPendingDeletion = rewriteModelOptions.first {
-                                    $0.file == controller.displayedLLMFile
-                                }
-                            }
+                            interactionDisabled: controller.modelsPreparing,
+                            download: { controller.downloadModel(file: controller.displayedLLMFile) }
                         )
                     }
                     .background(OmilTheme.panel, in: RoundedRectangle(cornerRadius: 14))
                     .overlay(RoundedRectangle(cornerRadius: 14).stroke(OmilTheme.line))
+
+                    ModelLibraryCard(controller: controller) { modelPendingDeletion = $0 }
 
                     LANSharingCard(
                         controller: controller,
@@ -1519,7 +1986,9 @@ struct EngineView: View {
             }
             Button("Cancel", role: .cancel) { modelPendingDeletion = nil }
         } message: {
-            Text("This deletes the model from this Mac. You can download it again later.")
+            Text(controller.usesCustomServer
+                 ? "This deletes the model from the connected server. You can download it again later."
+                 : "This deletes the model from this Mac. You can download it again later.")
         }
         .confirmationDialog(
             "Replace the connection token?",
@@ -1536,10 +2005,196 @@ struct EngineView: View {
     }
 }
 
+private struct ModelLibraryCard: View {
+    @ObservedObject var controller: DictationController
+    let requestDelete: (ModelOption) -> Void
+    @State private var showsAll = false
+
+    private var actionsLocked: Bool {
+        controller.phase == .recording || controller.phase == .preparing ||
+        !controller.processingJobs.isEmpty || controller.modelsPreparing
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .center, spacing: 14) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Model library")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(OmilTheme.ink)
+                    Text(controller.usesCustomServer ? "Models on the connected server" : "Models stored on this Mac")
+                        .font(.system(size: 11))
+                        .foregroundStyle(OmilTheme.muted)
+                }
+                Spacer()
+                HStack(spacing: 3) {
+                    Button("Installed") { showsAll = false }
+                        .buttonStyle(SegmentButtonStyle(selected: !showsAll))
+                    Button("All models") { showsAll = true }
+                        .buttonStyle(SegmentButtonStyle(selected: showsAll))
+                }
+            }
+            .padding(18)
+
+            Divider().overlay(OmilTheme.line)
+
+            if controller.serverModels.isEmpty {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Checking available models")
+                        .font(.system(size: 12))
+                        .foregroundStyle(OmilTheme.muted)
+                }
+                .padding(18)
+            } else {
+                group(title: "Transcription", icon: "waveform", options: whisperModelOptions,
+                      activeFile: controller.whisperFile, isWhisper: true)
+                Divider().overlay(OmilTheme.line)
+                group(title: "Cleanup", icon: "wand.and.stars", options: rewriteModelOptions,
+                      activeFile: controller.llmFile, isWhisper: false)
+            }
+        }
+        .background(OmilTheme.panel, in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(OmilTheme.line))
+    }
+
+    private func group(title: String, icon: String, options: [ModelOption],
+                       activeFile: String, isWhisper: Bool) -> some View {
+        let installed = options.filter { controller.modelIsDownloaded(file: $0.file) == true }
+        let visible = showsAll ? options : options.filter {
+            controller.modelIsDownloaded(file: $0.file) == true ||
+            controller.modelInfo(file: $0.file)?.fileState == "failed" ||
+            controller.modelIsDownloading(file: $0.file) ||
+            controller.modelInfo(file: $0.file)?.fileState == "downloading" ||
+            controller.modelInfo(file: $0.file)?.fileState == "verifying"
+        }
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: icon)
+                    .foregroundStyle(OmilTheme.signal)
+                    .frame(width: 18)
+                Text(title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(OmilTheme.ink)
+                Spacer()
+                Text("\(installed.count) installed")
+                    .font(OmilType.utility(10))
+                    .foregroundStyle(OmilTheme.muted)
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 13)
+            .background(OmilTheme.panelDeep.opacity(0.5))
+
+            if visible.isEmpty {
+                Text("No \(title.lowercased()) models installed. Choose All models to download one.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(OmilTheme.muted)
+                    .padding(18)
+            } else {
+                ForEach(visible, id: \.file) { option in
+                    modelRow(option, activeFile: activeFile, isWhisper: isWhisper)
+                    if option.file != visible.last?.file {
+                        Divider().overlay(OmilTheme.line)
+                            .padding(.leading, 18)
+                    }
+                }
+            }
+        }
+    }
+
+    private func modelRow(_ option: ModelOption, activeFile: String, isWhisper: Bool) -> some View {
+        let info = controller.modelInfo(file: option.file)
+        let isActive = option.file == activeFile
+        let isDownloading = controller.modelIsDownloading(file: option.file) ||
+            info?.fileState == "downloading" || info?.fileState == "verifying"
+        let needsRepair = info?.fileState == "failed" && info?.downloaded != true
+        let isSelected = isActive && info?.downloaded == true
+        return HStack(spacing: 10) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(isSelected ? OmilTheme.mint : .clear)
+                .frame(width: 18)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(option.name)
+                    .font(.system(size: 12, weight: isActive ? .semibold : .medium))
+                    .foregroundStyle(OmilTheme.ink)
+                    .lineLimit(1)
+                Text(status(for: info, isActive: isActive, isDownloading: isDownloading))
+                    .font(.system(size: 10))
+                    .foregroundStyle(needsRepair ? OmilTheme.warning : OmilTheme.muted)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 8)
+            Text(option.size)
+                .font(OmilType.utility(10))
+                .foregroundStyle(OmilTheme.faint)
+                .fixedSize()
+            if isDownloading {
+                ProgressView().controlSize(.small)
+                    .frame(width: 78)
+            } else if isSelected {
+                Text("In use")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(OmilTheme.mint)
+                    .frame(width: 78, alignment: .trailing)
+            } else if info?.downloaded == true {
+                Button("Select") {
+                    if isWhisper { controller.chooseWhisperModel(file: option.file) }
+                    else { controller.chooseLLMModel(file: option.file) }
+                }
+                .buttonStyle(QuietButtonStyle())
+                .disabled(actionsLocked)
+                .frame(width: 78)
+            } else {
+                Button(needsRepair ? "Repair" : "Download") {
+                    controller.downloadModel(file: option.file)
+                }
+                .buttonStyle(QuietButtonStyle())
+                .disabled(actionsLocked || info == nil)
+                .frame(width: 78)
+            }
+            if info?.downloaded == true && !isActive {
+                Button { requestDelete(option) } label: {
+                    Image(systemName: "trash")
+                        .font(.system(size: 11))
+                        .frame(width: 25, height: 25)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(OmilTheme.faint)
+                .disabled(actionsLocked)
+                .help("Delete \(option.name)")
+                .accessibilityLabel("Delete \(option.name)")
+            } else {
+                Color.clear.frame(width: 25, height: 25)
+                    .accessibilityHidden(true)
+            }
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 10)
+        .background(isActive ? OmilTheme.mint.opacity(0.035) : .clear)
+    }
+
+    private func status(for info: DictationController.ServerModelInfo?, isActive: Bool,
+                        isDownloading: Bool) -> String {
+        guard let info else { return "Checking availability" }
+        if isDownloading {
+            if let received = info.receivedBytes, let total = info.totalBytes, total > 0 {
+                return "Downloading · \(min(100, Int(Double(received) / Double(total) * 100)))%"
+            }
+            return "Downloading"
+        }
+        if info.fileState == "failed" { return info.fileError ?? "Model needs repair" }
+        if info.downloaded { return isActive ? "Selected for dictation" : "Installed and ready to select" }
+        return "Available to download"
+    }
+}
+
 private struct LANSharingCard: View {
     @ObservedObject var controller: DictationController
     @Binding var confirmTokenRotation: Bool
     @State private var revealToken = false
+    @State private var showPairingCode = false
 
     private var connectionLocked: Bool {
         controller.phase == .recording
@@ -1607,6 +2262,8 @@ private struct LANSharingCard: View {
                         Button("New token") { confirmTokenRotation = true }
                             .buttonStyle(QuietButtonStyle())
                             .disabled(connectionLocked)
+                        Button("Pair iPhone") { showPairingCode = true }
+                            .buttonStyle(QuietButtonStyle())
                         Button("Copy setup") { controller.copyLANCredentials() }
                             .buttonStyle(SignalButtonStyle())
                     }
@@ -1626,6 +2283,59 @@ private struct LANSharingCard: View {
             RoundedRectangle(cornerRadius: 14)
                 .stroke(controller.lanSharingEnabled ? OmilTheme.mint.opacity(0.35) : OmilTheme.line)
         )
+        .sheet(isPresented: $showPairingCode) {
+            if let credentials = controller.lanCredentials {
+                LANPairingSheet(credentials: credentials)
+            }
+        }
+    }
+}
+
+private struct LANPairingSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let credentials: LANConnectionCredentials
+
+    private var code: NSImage? {
+        guard let url = ServerConfig(host: credentials.host, port: credentials.port, token: credentials.token).pairingURL,
+              let filter = CIFilter(name: "CIQRCodeGenerator") else { return nil }
+        filter.setValue(Data(url.absoluteString.utf8), forKey: "inputMessage")
+        filter.setValue("M", forKey: "inputCorrectionLevel")
+        let context = CIContext()
+        guard let output = filter.outputImage,
+              let cgImage = context.createCGImage(output, from: output.extent) else { return nil }
+        return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+    }
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Text("Connect your iPhone")
+                .font(OmilType.display(20))
+                .foregroundStyle(OmilTheme.ink)
+            Text("In Omil on iPhone, open Settings and tap Scan QR code.")
+                .font(.system(size: 12))
+                .foregroundStyle(OmilTheme.muted)
+            if let code {
+                Image(nsImage: code)
+                    .interpolation(.none)
+                    .resizable()
+                    .frame(width: 224, height: 224)
+                    .padding(16)
+                    .background(.white, in: RoundedRectangle(cornerRadius: 12))
+                    .accessibilityLabel("Omil server pairing QR code")
+            }
+            Text(verbatim: credentials.endpoint)
+                .font(OmilType.utility(11))
+                .foregroundStyle(OmilTheme.faint)
+            Text("This code contains your server token. Show it only to devices you trust.")
+                .font(.system(size: 11))
+                .foregroundStyle(OmilTheme.muted)
+            Button("Done") { dismiss() }
+                .buttonStyle(QuietButtonStyle())
+                .keyboardShortcut(.defaultAction)
+        }
+        .padding(28)
+        .frame(width: 340)
+        .omilAppearance()
     }
 }
 
@@ -1689,6 +2399,15 @@ private struct EngineStatusBar: View {
                 Button("Restart") { controller.restartManagedServer() }
                     .buttonStyle(QuietButtonStyle())
             }
+            if controller.modelIsDownloaded(file: controller.llmFile) == true {
+                Button(controller.reloadingLLM ? "Reloading…" : "Reload cleanup") {
+                    controller.reloadCleanupModel()
+                }
+                .buttonStyle(QuietButtonStyle())
+                .disabled(controller.reloadingLLM || !controller.processingJobs.isEmpty ||
+                          !controller.downloadingModelIDs.isEmpty)
+                .help("Restart the selected cleanup model on the server")
+            }
             Button("Check now") { Task { await controller.refreshServerHealth() } }
                 .buttonStyle(QuietButtonStyle())
         }
@@ -1702,6 +2421,7 @@ private struct ModelPipelineRow: View {
     let detail: String
     let icon: String
     @Binding var selection: String
+    let activeFile: String
     let options: [ModelOption]
     let downloaded: Bool?
     let fileState: String?
@@ -1711,7 +2431,6 @@ private struct ModelPipelineRow: View {
     let downloading: Bool
     let interactionDisabled: Bool
     let download: () -> Void
-    let delete: () -> Void
 
     private var selectedOption: ModelOption? {
         options.first(where: { $0.file == selection })
@@ -1740,12 +2459,13 @@ private struct ModelPipelineRow: View {
                     .foregroundStyle(OmilTheme.muted)
             }
             HStack(spacing: 14) {
-                Picker(stage + " model", selection: $selection) {
-                    ForEach(options, id: \.file) { option in
-                        Text(option.name).tag(option.file)
-                    }
-                }
-                .labelsHidden()
+                OmilPickerField(
+                    title: stage + " model",
+                    selection: $selection,
+                    options: options.map(\.file),
+                    label: { file in options.first(where: { $0.file == file })?.name ?? file },
+                    markedSelection: activeFile
+                )
                 .disabled(interactionDisabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -1768,7 +2488,7 @@ private struct ModelPipelineRow: View {
                     } else if downloaded == true {
                         memoryStatus
                     } else if fileState == "failed" {
-                        Button("Retry", action: download)
+                        Button("Repair", action: download)
                             .buttonStyle(SignalButtonStyle())
                             .disabled(interactionDisabled)
                     } else if downloaded == false {
@@ -1781,24 +2501,18 @@ private struct ModelPipelineRow: View {
                         Text("Checking")
                             .foregroundStyle(OmilTheme.muted)
                     }
-                    if downloaded == true {
-                        Button(action: delete) {
-                            Image(systemName: "trash")
-                                .font(.system(size: 11, weight: .semibold))
-                                .foregroundStyle(OmilTheme.faint)
-                                .frame(width: 24, height: 24)
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(interactionDisabled)
-                        .help("Delete downloaded model")
-                        .accessibilityLabel("Delete " + stage.lowercased() + " model")
-                    }
                 }
                 .font(.system(size: 11, weight: .medium))
                 .frame(width: 124, alignment: .trailing)
                 .frame(minHeight: 34)
             }
             .padding(.leading, 48)
+            if selection != activeFile {
+                Text("Current: \(options.first(where: { $0.file == activeFile })?.name ?? activeFile)")
+                    .font(.system(size: 10))
+                    .foregroundStyle(OmilTheme.muted)
+                    .padding(.leading, 48)
+            }
         }
         .padding(16)
     }
@@ -1968,7 +2682,7 @@ private struct ProcessingTrack: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            ForEach(DictationController.ProcessingStage.allCases, id: \.rawValue) { item in
+            ForEach(DictationController.ProcessingStage.allCases.filter { $0 != .queued }, id: \.rawValue) { item in
                 if item != .transcribing {
                     Image(systemName: "chevron.right")
                         .font(.system(size: 8, weight: .bold))
@@ -1990,22 +2704,32 @@ private struct ProcessingTrack: View {
     }
 }
 
+struct LiveSignalRail: View {
+    @ObservedObject var meter: AudioMeter
+
+    var body: some View {
+        SignalRail(levels: meter.levels, active: true)
+    }
+}
+
 struct SignalRail: View {
     let levels: [Double]
     let active: Bool
 
     var body: some View {
-        GeometryReader { proxy in
-            let visible = Array(levels.suffix(36))
-            HStack(alignment: .center, spacing: 4) {
-                ForEach(Array(visible.enumerated()), id: \.offset) { item in
-                    Capsule()
-                        .fill(barColor(level: item.element))
-                        .frame(maxWidth: .infinity)
-                        .frame(height: barHeight(level: item.element, available: proxy.size.height))
-                }
+        Canvas { context, size in
+            let visible = levels.suffix(36)
+            guard !visible.isEmpty else { return }
+            let spacing: CGFloat = 4
+            let width = max(1, (size.width - CGFloat(visible.count - 1) * spacing) / CGFloat(visible.count))
+            for (index, level) in visible.enumerated() {
+                let height = barHeight(level: level, available: size.height)
+                let rect = CGRect(x: CGFloat(index) * (width + spacing),
+                                  y: (size.height - height) / 2,
+                                  width: width, height: height)
+                context.fill(Path(roundedRect: rect, cornerRadius: min(width, height) / 2),
+                             with: .color(barColor(level: level)))
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .accessibilityHidden(true)
     }
@@ -2111,6 +2835,89 @@ struct QuietButtonStyle: ButtonStyle {
     }
 }
 
+struct OmilPickerField<Value: Hashable>: View {
+    let title: String
+    @Binding var selection: Value
+    let options: [Value]
+    let label: (Value) -> String
+    var markedSelection: Value? = nil
+    @State private var isPresented = false
+    @State private var attachmentPoint = UnitPoint(x: 0.5, y: 1)
+    @State private var pointerTapPending = false
+
+    var body: some View {
+        GeometryReader { geometry in
+        Button {
+            // A keyboard press has no pointer location. The mouse gesture below
+            // updates the anchor before the deferred presentation runs.
+            DispatchQueue.main.async {
+                if !pointerTapPending {
+                    attachmentPoint = UnitPoint(x: 0.5, y: 1)
+                }
+                pointerTapPending = false
+                isPresented = true
+            }
+        } label: {
+            HStack(spacing: 10) {
+                Text(label(selection))
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 10, weight: .semibold))
+            }
+            .font(.system(size: 12, weight: .medium))
+            .foregroundStyle(OmilTheme.ink)
+            .padding(.horizontal, 11)
+            .frame(maxWidth: .infinity)
+            .frame(height: 32)
+            .background(OmilTheme.panelDeep, in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(OmilTheme.lineStrong))
+        }
+        .buttonStyle(.plain)
+        .simultaneousGesture(SpatialTapGesture().onEnded { value in
+            let x = min(max(value.location.x / max(geometry.size.width, 1), 0), 1)
+            pointerTapPending = true
+            attachmentPoint = UnitPoint(x: x, y: 1)
+        })
+        .popover(isPresented: $isPresented, attachmentAnchor: .point(attachmentPoint), arrowEdge: .bottom) {
+            VStack(spacing: 2) {
+                ForEach(options, id: \.self) { option in
+                    Button {
+                        selection = option
+                        isPresented = false
+                    } label: {
+                        HStack(spacing: 12) {
+                            Text(label(option))
+                            Spacer(minLength: 12)
+                            if option == (markedSelection ?? selection) {
+                                Image(systemName: "checkmark")
+                                    .foregroundStyle(OmilTheme.signal)
+                            }
+                        }
+                        .font(.system(size: 12, weight: option == (markedSelection ?? selection) ? .semibold : .medium))
+                        .foregroundStyle(OmilTheme.ink)
+                        .padding(.horizontal, 11)
+                        .frame(height: 32)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(option == (markedSelection ?? selection) ? OmilTheme.panelLifted : .clear,
+                                    in: RoundedRectangle(cornerRadius: 7))
+                    }
+                    .buttonStyle(HoverButtonStyle(cornerRadius: 7))
+                }
+            }
+            .padding(7)
+            .frame(minWidth: 190)
+            .background(OmilTheme.panel, in: RoundedRectangle(cornerRadius: 11))
+            .overlay(RoundedRectangle(cornerRadius: 11).stroke(OmilTheme.lineStrong))
+            .shadow(color: .black.opacity(0.16), radius: 12, y: 5)
+        }
+        .accessibilityLabel(title)
+        .accessibilityValue(label(selection))
+        }
+        .frame(height: 32)
+    }
+}
+
 struct HoverButtonStyle: ButtonStyle {
     var cornerRadius: CGFloat = 8
 
@@ -2139,12 +2946,25 @@ private struct HoverButtonBody: View {
 
 private struct SidebarButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
+        SidebarButtonBody(configuration: configuration)
+    }
+}
+
+private struct SidebarButtonBody: View {
+    let configuration: ButtonStyleConfiguration
+    @State private var hovered = false
+
+    var body: some View {
         configuration.label
             .font(.system(size: 12, weight: .medium))
-            .foregroundStyle(OmilTheme.muted)
+            .foregroundStyle(hovered ? OmilTheme.ink : OmilTheme.muted)
             .padding(.horizontal, 9)
-            .frame(height: 30)
-            .background(configuration.isPressed ? OmilTheme.panelLifted : .clear, in: RoundedRectangle(cornerRadius: 7))
+            .frame(height: 34)
+            .background(hovered || configuration.isPressed ? OmilTheme.panelLifted : .clear,
+                        in: RoundedRectangle(cornerRadius: 8))
+            .contentShape(RoundedRectangle(cornerRadius: 8))
+            .opacity(configuration.isPressed ? 0.8 : 1)
+            .onHover { hovered = $0 }
     }
 }
 
@@ -2164,13 +2984,15 @@ private struct SegmentButtonStyle: ButtonStyle {
 
 struct OmilTextFieldStyle: TextFieldStyle {
     func _body(configuration: TextField<Self._Label>) -> some View {
-        configuration
+        let canvas = MainActor.assumeIsolated { OmilTheme.canvas }
+        let lineStrong = MainActor.assumeIsolated { OmilTheme.lineStrong }
+        return configuration
             .textFieldStyle(.plain)
             .font(.system(size: 13))
             .padding(.horizontal, 11)
             .frame(height: 36)
-            .background(OmilTheme.canvas, in: RoundedRectangle(cornerRadius: 9))
-            .overlay(RoundedRectangle(cornerRadius: 9).stroke(OmilTheme.lineStrong))
+            .background(canvas, in: RoundedRectangle(cornerRadius: 9))
+            .overlay(RoundedRectangle(cornerRadius: 9).stroke(lineStrong))
     }
 }
 
@@ -2184,34 +3006,135 @@ enum OmilType {
     }
 }
 
+@MainActor
 enum OmilTheme {
-    static let canvas = adaptive(light: 0xF5F5F3, dark: 0x000000)
-    static let sidebar = adaptive(light: 0xECECEA, dark: 0x050505)
-    static let panel = adaptive(light: 0xFFFFFF, dark: 0x0A0A0A)
-    static let panelDeep = adaptive(light: 0xF0F0EE, dark: 0x050505)
-    static let panelLifted = adaptive(light: 0xE7E7E4, dark: 0x171717)
-    static let line = adaptive(light: 0xDDDDDA, dark: 0x242424)
-    static let lineStrong = adaptive(light: 0xC6C6C2, dark: 0x333333)
-    static let ink = adaptive(light: 0x1C1D1F, dark: 0xEDEDED)
-    static let muted = adaptive(light: 0x626367, dark: 0xA1A1A1)
-    static let faint = adaptive(light: 0x6E7075, dark: 0x949494)
-    static let signal = adaptive(light: 0x25272B, dark: 0xEDEDED)
-    static let signalInk = adaptive(light: 0xFFFFFF, dark: 0x17181A)
-    static let violet = signal
-    static let coral = adaptive(light: 0xB8474F, dark: 0xDB6469)
-    static let mint = adaptive(light: 0x287A59, dark: 0x72B392)
-    static let warning = adaptive(light: 0x94651E, dark: 0xD1A15A)
+    private static var palette: ThemePalette {
+        AppAppearance.shared.themePreset.palette(for: AppAppearance.shared.colorScheme)
+    }
+
+    static var canvas: Color { Color(hex: palette.canvas) }
+    static var sidebar: Color { Color(hex: palette.sidebar) }
+    static var panel: Color { Color(hex: palette.panel) }
+    static var panelDeep: Color { Color(hex: palette.panelDeep) }
+    static var panelLifted: Color { Color(hex: palette.panelLifted) }
+    static var line: Color { Color(hex: palette.line) }
+    static var lineStrong: Color { Color(hex: palette.lineStrong) }
+    static var ink: Color { Color(hex: palette.ink) }
+    static var muted: Color { Color(hex: palette.muted) }
+    static var faint: Color { Color(hex: palette.faint) }
+    static var signal: Color { Color(hex: palette.signal) }
+    static var signalInk: Color { Color(hex: palette.signalInk) }
+    static var violet: Color { signal }
+    static var coral: Color { adaptive(light: 0xB8474F, dark: 0xDB6469) }
+    static var mint: Color { adaptive(light: 0x287A59, dark: 0x72B392) }
+    static var warning: Color { adaptive(light: 0x94651E, dark: 0xD1A15A) }
 
     private static func adaptive(light: UInt, dark: UInt) -> Color {
-        Color(nsColor: NSColor(name: nil) { appearance in
-            let value = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
-            return NSColor(
-                srgbRed: CGFloat((value >> 16) & 0xFF) / 255,
-                green: CGFloat((value >> 8) & 0xFF) / 255,
-                blue: CGFloat(value & 0xFF) / 255,
-                alpha: 1
-            )
-        })
+        Color(hex: AppAppearance.shared.colorScheme == .dark ? dark : light)
+    }
+}
+
+struct ThemePalette {
+    let canvas: UInt
+    let sidebar: UInt
+    let panel: UInt
+    let panelDeep: UInt
+    let panelLifted: UInt
+    let line: UInt
+    let lineStrong: UInt
+    let ink: UInt
+    let muted: UInt
+    let faint: UInt
+    let signal: UInt
+    let signalInk: UInt
+}
+
+extension ThemePreset {
+    func palette(for scheme: ColorScheme) -> ThemePalette {
+        switch (self, scheme) {
+        case (.studio, .light):
+            return ThemePalette(canvas: 0xF5F5F3, sidebar: 0xECECEA, panel: 0xFFFFFF,
+                                panelDeep: 0xF0F0EE, panelLifted: 0xE7E7E4, line: 0xDDDDDA,
+                                lineStrong: 0xC6C6C2, ink: 0x1C1D1F, muted: 0x626367,
+                                faint: 0x6E7075, signal: 0x25272B, signalInk: 0xFFFFFF)
+        case (.studio, .dark):
+            return ThemePalette(canvas: 0x000000, sidebar: 0x050505, panel: 0x0A0A0A,
+                                panelDeep: 0x050505, panelLifted: 0x171717, line: 0x242424,
+                                lineStrong: 0x333333, ink: 0xEDEDED, muted: 0xA1A1A1,
+                                faint: 0x949494, signal: 0xEDEDED, signalInk: 0x17181A)
+        case (.fog, .light):
+            return ThemePalette(canvas: 0xF4F5F6, sidebar: 0xEAEDEF, panel: 0xFFFFFF,
+                                panelDeep: 0xF0F2F3, panelLifted: 0xE4E8EA, line: 0xD8DEE1,
+                                lineStrong: 0xB8C2C7, ink: 0x242A2E, muted: 0x566168,
+                                faint: 0x657077, signal: 0x3E5D6A, signalInk: 0xFFFFFF)
+        case (.fog, .dark):
+            return ThemePalette(canvas: 0x1B1E21, sidebar: 0x202428, panel: 0x262B2F,
+                                panelDeep: 0x21262A, panelLifted: 0x323A3F, line: 0x394248,
+                                lineStrong: 0x526069, ink: 0xF1F4F5, muted: 0xB5C0C5,
+                                faint: 0x9FADB3, signal: 0xA6D2DC, signalInk: 0x193039)
+        case (.slate, .light):
+            return ThemePalette(canvas: 0xF2F4F7, sidebar: 0xE7EBF1, panel: 0xFCFDFE,
+                                panelDeep: 0xEBEFF4, panelLifted: 0xDEE5EE, line: 0xD2DBE5,
+                                lineStrong: 0xB6C3D1, ink: 0x293443, muted: 0x5B6878,
+                                faint: 0x687587, signal: 0x4C617E, signalInk: 0xFFFFFF)
+        case (.slate, .dark):
+            return ThemePalette(canvas: 0x14171C, sidebar: 0x191E25, panel: 0x202731,
+                                panelDeep: 0x1A212A, panelLifted: 0x2C3743, line: 0x34414F,
+                                lineStrong: 0x4D6074, ink: 0xF0F4F8, muted: 0xB2BFCE,
+                                faint: 0x9AABBD, signal: 0xA4BEFF, signalInk: 0x18253E)
+        case (.linen, .light):
+            return ThemePalette(canvas: 0xF8F6F1, sidebar: 0xF0EDE6, panel: 0xFFFEFB,
+                                panelDeep: 0xF3F0E9, panelLifted: 0xEAE5DA, line: 0xDDD7CB,
+                                lineStrong: 0xC6BBAA, ink: 0x342F2A, muted: 0x696057,
+                                faint: 0x746B61, signal: 0x765D48, signalInk: 0xFFFFFF)
+        case (.linen, .dark):
+            return ThemePalette(canvas: 0x191817, sidebar: 0x201F1D, panel: 0x272522,
+                                panelDeep: 0x22201E, panelLifted: 0x35312C, line: 0x3F3A34,
+                                lineStrong: 0x5D554B, ink: 0xF5F1EB, muted: 0xC5BCB0,
+                                faint: 0xAEA396, signal: 0xE7BC8F, signalInk: 0x352516)
+        case (.tide, .light):
+            return ThemePalette(canvas: 0xF0F6F5, sidebar: 0xE5EFED, panel: 0xFCFFFE,
+                                panelDeep: 0xEAF3F1, panelLifted: 0xDDEBE8, line: 0xD1E1DE,
+                                lineStrong: 0xB0CBC5, ink: 0x263A3B, muted: 0x586D6D,
+                                faint: 0x657979, signal: 0x376E70, signalInk: 0xFFFFFF)
+        case (.tide, .dark):
+            return ThemePalette(canvas: 0x141B1D, sidebar: 0x1A2325, panel: 0x202C2F,
+                                panelDeep: 0x1B2528, panelLifted: 0x2C3B3E, line: 0x35474A,
+                                lineStrong: 0x4C6768, ink: 0xEDF5F3, muted: 0xB3CBC8,
+                                faint: 0x9AB7B3, signal: 0x8DDAD2, signalInk: 0x163734)
+        case (.clay, .light):
+            return ThemePalette(canvas: 0xF8F4F3, sidebar: 0xF1EAE8, panel: 0xFFFEFD,
+                                panelDeep: 0xF5EEEC, panelLifted: 0xEDE1DF, line: 0xE1D3D0,
+                                lineStrong: 0xCAB5B0, ink: 0x3D3032, muted: 0x705F62,
+                                faint: 0x7A696B, signal: 0x895A64, signalInk: 0xFFFFFF)
+        case (.clay, .dark):
+            return ThemePalette(canvas: 0x19171A, sidebar: 0x201D21, panel: 0x282329,
+                                panelDeep: 0x221E23, panelLifted: 0x352E35, line: 0x40363F,
+                                lineStrong: 0x604E59, ink: 0xF7F0F2, muted: 0xCEBCC4,
+                                faint: 0xB9A4AE, signal: 0xF0A9BE, signalInk: 0x3B1D2B)
+        case (.lilac, .light):
+            return ThemePalette(canvas: 0xF6F4F8, sidebar: 0xEEEBF2, panel: 0xFFFEFF,
+                                panelDeep: 0xF1EEF5, panelLifted: 0xE7E1EC, line: 0xDBD4E2,
+                                lineStrong: 0xC1B5CC, ink: 0x342F3C, muted: 0x665F70,
+                                faint: 0x746C7D, signal: 0x6C5B80, signalInk: 0xFFFFFF)
+        case (.lilac, .dark):
+            return ThemePalette(canvas: 0x17161C, sidebar: 0x1D1B23, panel: 0x25222D,
+                                panelDeep: 0x1F1D26, panelLifted: 0x322E3D, line: 0x3D374A,
+                                lineStrong: 0x5A4E6A, ink: 0xF5F1F8, muted: 0xC9BFD4,
+                                faint: 0xB2A4C3, signal: 0xCDB2FF, signalInk: 0x2A1944)
+        case (.moss, .light):
+            return ThemePalette(canvas: 0xF3F6F2, sidebar: 0xE9EFE7, panel: 0xFDFFFC,
+                                panelDeep: 0xEEF3EC, panelLifted: 0xE0EADD, line: 0xD3E0D0,
+                                lineStrong: 0xB6C9B2, ink: 0x2B392F, muted: 0x5E7061,
+                                faint: 0x6A7C6D, signal: 0x4D7154, signalInk: 0xFFFFFF)
+        case (.moss, .dark):
+            return ThemePalette(canvas: 0x151A17, sidebar: 0x1B221E, panel: 0x232C26,
+                                panelDeep: 0x1D251F, panelLifted: 0x303C33, line: 0x39483D,
+                                lineStrong: 0x536958, ink: 0xF0F6F0, muted: 0xBCD0C0,
+                                faint: 0xA3BBA8, signal: 0xA9DDB3, signalInk: 0x1D3925)
+        @unknown default:
+            return ThemePreset.studio.palette(for: .light)
+        }
     }
 }
 
@@ -2223,6 +3146,17 @@ extension Color {
             green: Double((hex >> 8) & 0xFF) / 255,
             blue: Double(hex & 0xFF) / 255,
             opacity: alpha
+        )
+    }
+}
+
+extension NSColor {
+    convenience init(hex: UInt) {
+        self.init(
+            srgbRed: CGFloat((hex >> 16) & 0xFF) / 255,
+            green: CGFloat((hex >> 8) & 0xFF) / 255,
+            blue: CGFloat(hex & 0xFF) / 255,
+            alpha: 1
         )
     }
 }

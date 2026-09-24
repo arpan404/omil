@@ -25,122 +25,49 @@ const WHISPER_REPO = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main"
 
 export const MODELS: ReadonlyArray<ModelSpec> = [
   {
-    id: "whisper-tiny", kind: "whisper",
-    url: `${WHISPER_REPO}/ggml-tiny.bin`, filename: "ggml-tiny.bin",
-    expectedBytes: null, description: "Whisper tiny (39M) — fastest, lowest accuracy",
-  },
-  {
-    id: "whisper-base", kind: "whisper",
-    url: `${WHISPER_REPO}/ggml-base.bin`, filename: "ggml-base.bin",
-    expectedBytes: null, description: "Whisper base (74M) — fast draft quality",
-  },
-  {
-    id: "whisper-small", kind: "whisper",
-    url: `${WHISPER_REPO}/ggml-small.bin`, filename: "ggml-small.bin",
-    expectedBytes: null, description: "Whisper small (244M) — balanced",
-  },
-  {
-    id: "whisper-medium", kind: "whisper",
-    url: `${WHISPER_REPO}/ggml-medium.bin`, filename: "ggml-medium.bin",
-    expectedBytes: null, description: "Whisper medium (769M) — high accuracy, slower",
-  },
-  {
-    id: "distil-whisper-medium-en", kind: "whisper",
-    url: "https://huggingface.co/distil-whisper/distil-medium.en/resolve/main/ggml-medium-32-2.en.bin",
-    filename: "ggml-medium-32-2.en.bin",
-    expectedBytes: 794_018_180,
-    description: "Distil-Whisper medium English — fast English transcription from Hugging Face",
-  },
-  {
-    id: "distil-whisper-large-v3", kind: "whisper",
-    url: "https://huggingface.co/distil-whisper/distil-large-v3-ggml/resolve/main/ggml-distil-large-v3.bin",
-    filename: "ggml-distil-large-v3.bin",
-    expectedBytes: 1_519_521_155,
-    description: "Distil-Whisper large-v3 English — faster long-form English model from Hugging Face",
-  },
-  {
-    id: "whisper-large-v3", kind: "whisper",
-    url: `${WHISPER_REPO}/ggml-large-v3.bin`, filename: "ggml-large-v3.bin",
-    expectedBytes: null, description: "OpenAI Whisper large-v3 (1.55B) — most accurate",
-  },
-  {
-    id: "whisper-large-v3-q5", kind: "whisper",
-    url: `${WHISPER_REPO}/ggml-large-v3-q5_0.bin`,
-    filename: "ggml-large-v3-q5_0.bin",
-    expectedBytes: null,
-    description: "Whisper large-v3 Q5 — high accuracy with a smaller memory footprint",
-  },
-  {
-    id: "whisper-large-v3-turbo",
-    kind: "whisper",
-    url: `${WHISPER_REPO}/ggml-large-v3-turbo.bin`,
-    filename: "ggml-large-v3-turbo.bin",
-    expectedBytes: 1_624_345_968,
-    description: "OpenAI Whisper large-v3-turbo (809M params), whisper.cpp format",
-  },
-  {
-    id: "whisper-large-v3-turbo-q5", kind: "whisper",
-    url: `${WHISPER_REPO}/ggml-large-v3-turbo-q5_0.bin`,
-    filename: "ggml-large-v3-turbo-q5_0.bin",
-    expectedBytes: null,
-    description: "Whisper large-v3-turbo Q5 — recommended balance of speed, size, and accuracy",
+    id: "whisper-small-q8", kind: "whisper",
+    url: `${WHISPER_REPO}/ggml-small-q8_0.bin`,
+    filename: "ggml-small-q8_0.bin",
+    expectedBytes: 264_464_607,
+    expectedSha256: "49c8fb02b65e6049d5fa6c04f81f53b867b5ec9540406812c643f177317f779f",
+    description: "Whisper small Q8 — faster transcription with a smaller 8-bit model",
   },
   {
     id: "whisper-large-v3-turbo-q8", kind: "whisper",
     url: `${WHISPER_REPO}/ggml-large-v3-turbo-q8_0.bin`,
     filename: "ggml-large-v3-turbo-q8_0.bin",
-    expectedBytes: null,
-    description: "Whisper large-v3-turbo Q8 — smaller than full precision with higher fidelity than Q5",
-  },
-  {
-    id: "qwen3-0.6b",
-    kind: "llm",
-    url: "https://huggingface.co/unsloth/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q4_K_M.gguf",
-    filename: "Qwen3-0.6B-Q4_K_M.gguf",
-    expectedBytes: 396_705_472,
-    description: "Qwen3 0.6B Instruct, Q4_K_M — tiny, fast, lower repair quality",
-  },
-  {
-    id: "qwen3-4b-instruct",
-    kind: "llm",
-    url: "https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
-    filename: "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
-    expectedBytes: 2_497_281_120,
-    description: "Qwen3 4B Instruct (2507), Q4_K_M GGUF, unsloth quant of Apache-2.0 weights",
-  },
-  {
-    id: "qwen3-8b",
-    kind: "llm",
-    url: "https://huggingface.co/unsloth/Qwen3-8B-GGUF/resolve/main/Qwen3-8B-Q4_K_M.gguf",
-    filename: "Qwen3-8B-Q4_K_M.gguf",
-    expectedBytes: 5_027_784_512,
-    description: "Qwen3 8B Instruct, Q4_K_M — best repair quality, needs 8GB+ headroom",
+    expectedBytes: 874_188_075,
+    expectedSha256: "317eb69c11673c9de1e1f0d459b253999804ec71ac4c23c17ecf5fbe24e259a1",
+    description: "Whisper large-v3 turbo Q8 — accurate 8-bit transcription",
   },
   {
     id: "qwen3.5-0.8b", kind: "llm",
     url: "https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-Q4_K_M.gguf",
     filename: "Qwen3.5-0.8B-Q4_K_M.gguf",
-    expectedBytes: null,
+    expectedBytes: 532_517_120,
+    expectedSha256: "bd258782e35f7f458f8aced1adc053e6e92e89bc735ba3be89d38a06121dc517",
     description: "Qwen3.5 0.8B, Q4_K_M — newest compact option, requires current llama.cpp",
+  },
+  {
+    id: "qwen3.5-2b", kind: "llm",
+    url: "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf",
+    filename: "Qwen3.5-2B-Q4_K_M.gguf",
+    expectedBytes: 1_280_835_840,
+    expectedSha256: "aaf42c8b7c3cab2bf3d69c355048d4a0ee9973d48f16c731c0520ee914699223",
+    description: "Qwen3.5 2B, Q4_K_M — faster cleanup with 4-bit weights",
   },
   {
     id: "qwen3.5-4b", kind: "llm",
     url: "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf",
     filename: "Qwen3.5-4B-Q4_K_M.gguf",
-    expectedBytes: null,
+    expectedBytes: 2_740_937_888,
+    expectedSha256: "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4",
     description: "Qwen3.5 4B, Q4_K_M — newer balanced cleanup model, requires current llama.cpp",
-  },
-  {
-    id: "qwen3.5-9b", kind: "llm",
-    url: "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf",
-    filename: "Qwen3.5-9B-Q4_K_M.gguf",
-    expectedBytes: null,
-    description: "Qwen3.5 9B, Q4_K_M — highest-capacity catalog option, needs more memory",
   },
 ]
 
-export const DEFAULT_WHISPER = "whisper-large-v3-turbo"
-export const DEFAULT_LLM = "qwen3-4b-instruct"
+export const DEFAULT_WHISPER = "whisper-large-v3-turbo-q8"
+export const DEFAULT_LLM = "qwen3.5-2b"
 
 // Internal preprocessing asset, intentionally absent from the user model catalog.
 export const VAD_MODEL: ModelSpec = {
@@ -174,8 +101,8 @@ export const loadConfig = Effect.gen(function* () {
     whisperBin: process.env.OMIL_WHISPER_BIN ?? "whisper-cli",
     llamaBin: process.env.OMIL_LLAMA_BIN ?? "llama-server",
     llamaPort: Number(process.env.OMIL_LLAMA_PORT ?? 3218),
-    whisperModelId: process.env.OMIL_WHISPER_MODEL ?? "whisper-large-v3-turbo",
-    llmModelId: process.env.OMIL_LLM_MODEL ?? "qwen3-4b-instruct",
+    whisperModelId: process.env.OMIL_WHISPER_MODEL ?? DEFAULT_WHISPER,
+    llmModelId: process.env.OMIL_LLM_MODEL ?? DEFAULT_LLM,
   } satisfies ServerConfig
 })
 

@@ -78,7 +78,9 @@ final class RecoveryPlaybackTests: XCTestCase {
         try await withRecording { playback, id, url in
             playback.toggle(id: id, url: url)
             playback.seek(to: 4.9)
-            try await Task.sleep(for: .milliseconds(500))
+            for _ in 0..<20 where playback.isPlaying {
+                try await Task.sleep(for: .milliseconds(100))
+            }
             XCTAssertFalse(playback.isPlaying)
             XCTAssertEqual(playback.position, playback.duration)
             playback.toggle(id: id, url: url)

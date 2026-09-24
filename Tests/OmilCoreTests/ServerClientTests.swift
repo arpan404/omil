@@ -24,6 +24,16 @@ struct ServerClientTests {
         #expect(!ServerConfig(host: "", token: "").isConfigured)
     }
 
+    @Test func pairingCodeRoundTripAndRejectsMalformedCodes() throws {
+        let original = ServerConfig(host: "192.168.1.5", port: 3217, token: "private-token")
+        let url = try #require(original.pairingURL)
+        #expect(ServerConfig(pairingURL: url) == original)
+        #expect(ServerConfig(pairingURL: URL(string: "https://example.com/?host=192.168.1.5&port=3217&token=private-token")!) == nil)
+        #expect(ServerConfig(pairingURL: URL(string: "omil://connect?host=127.0.0.1&port=3217&token=private-token")!) == nil)
+        #expect(ServerConfig(pairingURL: URL(string: "omil://connect?host=192.168.1.5&port=99999&token=private-token")!) == nil)
+        #expect(ServerConfig(pairingURL: URL(string: "omil://connect?host=192.168.1.5&port=3217&token=x&token=y")!) == nil)
+    }
+
     @Test func transcriptionEndpointKeepsLanguageAsQuery() {
         let cfg = ServerConfig(host: "127.0.0.1", port: 3217, token: "test", language: "en-US")
         let url = cfg.endpoint(
@@ -98,8 +108,8 @@ struct ServerCatalogTests {
     }
 
     @Test func defaultsAreValid() {
-        #expect(ServerCatalog.whisperIdForFile[ServerCatalog.defaultWhisperFile] == "whisper-large-v3-turbo")
-        #expect(ServerCatalog.llmIdForFile[ServerCatalog.defaultLlmFile] == "qwen3-4b-instruct")
+        #expect(ServerCatalog.whisperIdForFile[ServerCatalog.defaultWhisperFile] == "whisper-large-v3-turbo-q8")
+        #expect(ServerCatalog.llmIdForFile[ServerCatalog.defaultLlmFile] == "qwen3.5-2b")
     }
 }
 
@@ -108,14 +118,9 @@ struct ServerCatalogTests {
 enum ServerAssetsMirror {
     static let pinnedIds: Set<String> = [
         "whisper-bin", "llama-bin",
-        "ggml-tiny.bin", "ggml-base.bin", "ggml-small.bin",
-        "ggml-medium.bin", "ggml-medium-32-2.en.bin",
-        "ggml-distil-large-v3.bin", "ggml-large-v3-turbo-q5_0.bin",
-        "ggml-large-v3-turbo-q8_0.bin", "ggml-large-v3-turbo.bin",
-        "ggml-large-v3-q5_0.bin", "ggml-large-v3.bin",
-        "Qwen3-0.6B-Q4_K_M.gguf", "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
-        "Qwen3-8B-Q4_K_M.gguf", "Qwen3.5-0.8B-Q4_K_M.gguf",
-        "Qwen3.5-4B-Q4_K_M.gguf", "Qwen3.5-9B-Q4_K_M.gguf",
+        "ggml-small-q8_0.bin", "ggml-large-v3-turbo-q8_0.bin",
+        "Qwen3.5-0.8B-Q4_K_M.gguf", "Qwen3.5-2B-Q4_K_M.gguf",
+        "Qwen3.5-4B-Q4_K_M.gguf",
     ]
     static func pinExists(_ id: String) -> Bool { pinnedIds.contains(id) }
 }

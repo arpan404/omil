@@ -34,6 +34,8 @@ final class SessionCoordinator: ObservableObject {
     @Published var serverConfig = ServerConfig(host: "", port: 3217)
     @Published var serverCleanupEnabled = true
     @Published var serverHealth = "Unknown"
+    @Published var pairingMessage = ""
+    @Published var pairingInProgress = false
     @Published var serverNote = ""
     @Published var cleanupPromptText = ""
     @Published private(set) var cleanupPromptCustom = false
@@ -79,6 +81,8 @@ final class SessionCoordinator: ObservableObject {
     }
 
     func saveServerConfig() {
+        serverHealth = "Checking connection…"
+        pairingMessage = "Checking connection…"
         if let data = try? JSONEncoder().encode(serverConfig) {
             UserDefaults.standard.set(data, forKey: "omil.serverConfig")
         }
@@ -88,7 +92,45 @@ final class SessionCoordinator: ObservableObject {
         UserDefaults.standard.set(serverCleanupEnabled, forKey: "omil.serverCleanup")
         Task {
             await refreshServerHealth()
+            pairingMessage = serverHealth.contains(" · ")
+                ? "Connected to your Mac."
+                : serverHealth
             await loadCleanupPrompt()
+        }
+    }
+
+    func pair(with scannedText: String) async {
+        guard !pairingInProgress else { return }
+        guard let url = URL(string: scannedText),
+              let candidate = ServerConfig(pairingURL: url),
+              let endpoint = candidate.endpoint(path: "/v1/prompt") else {
+            pairingMessage = "This is not an Omil pairing code."
+            return
+        }
+        pairingInProgress = true
+        pairingMessage = "Connecting to your Mac…"
+        defer { pairingInProgress = false }
+        do {
+            var request = URLRequest(url: endpoint)
+            request.timeoutInterval = 8
+            request.setValue("Bearer \(candidate.token)", forHTTPHeaderField: "Authorization")
+            let (_, response) = try await URLSession.shared.data(for: request)
+            guard let response = response as? HTTPURLResponse else {
+                pairingMessage = "The Mac did not respond."
+                return
+            }
+            guard response.statusCode == 200 else {
+                pairingMessage = response.statusCode == 401
+                    ? "The server token was rejected. Generate a new QR code on your Mac."
+                    : "The Mac returned an error (\(response.statusCode))."
+                return
+            }
+            serverConfig = candidate
+            backendPreference = .omilServer
+            saveServerConfig()
+            pairingMessage = "Connected to your Mac."
+        } catch {
+            pairingMessage = "Could not reach your Mac. Keep both devices on the same network and enable sharing in Omil."
         }
     }
 

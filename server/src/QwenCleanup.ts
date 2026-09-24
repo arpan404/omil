@@ -1,12 +1,13 @@
 import { Effect } from "effect"
 import {
-  tokenize, fillerEdits, numberEdits, validateEdit, render, verifyPreservation,
+  tokenize, fillerEdits, dictionaryEdits, numberEdits, validateEdit, render, verifyPreservation,
   RULES_VERSION, type ProposedEdit, type Abstention, type Snapshot, type Token,
 } from "./Cleanup"
 import { resolve as resolveDeterministic } from "./Resolver"
-import { chatJson, type LlamaHandle, type ChatMessage } from "./LlamaServer"
+import { type LlamaHandle } from "./LlamaServer"
 import { ModelError } from "./Models"
 import { applyWritingStyle, expandSnippets, type WritingStyle } from "./Personalization"
+import { PROSE_SYSTEM_PROMPT, proposeProseCleanup, validateProseCleanup, type CleanupContext, type WordChange } from "./ProseCleanup"
 
 export interface CleanedResult {
   readonly snapshotId: string
@@ -18,25 +19,10 @@ export interface CleanedResult {
   readonly rulesVersion: string
   readonly appliedSnippetTriggers?: readonly string[]
   readonly writingStyle?: WritingStyle
+  readonly proseChanges?: WordChange[]
 }
 
-const SYSTEM_PROMPT = `You repair spoken dictation transcripts. You NEVER rewrite freely: you output ONLY grounded edit operations over the given tokens, or no edits.
-
-Token IDs are stable references like "a1f3c9-4". Quoted text and ordinary apologies ("I am sorry about the delay") are CONTENT, never cues. Treat "sorry", "I mean", "actually", "no" as POSSIBLE cues for ordinary replacements only: they authorize an edit ONLY with a type-compatible reparandum on the left and repair on the right (numbers replace numbers, days replace days, names replace names). "or maybe" / "or" alone is ambiguity: do nothing. Negation ("not", "never", "don't") must survive unless the repair restates it. Output NO edits for reversals ("keep ..."), restarts ("scratch that"), subject restatements ("actually Bob 24"), or mirrored restatements — those are handled deterministically. When evidence is insufficient, output zero edits.
-
-Reply with a single JSON object: {"edits": [{"op": "replaceFromSource", "targetTokenIds": [...], "evidenceTokenIds": [...], "reason": "..."}]}.
-- Delete the reparandum + cue (+ redundant restated verbs); the repair value STAYS IN PLACE, so replacementText is omitted.
-- Cue/filler tokens are removed only as part of a validated repair. Never invent words.
-
-Example — replacement. Tokens:
-a-0 [word] "make" / a-1 [word] "it" / a-2 [number,protected] "42" / a-3 [punctuation] "," / a-4 [cue] "sorry" / a-5 [number,protected] "21"
-Correct output: {"edits": [{"op": "replaceFromSource", "targetTokenIds": ["a-2", "a-4"], "evidenceTokenIds": ["a-5", "a-4"], "reason": "sorry replaces 42 with 21"}]}
-("42" and the cue are deleted; "21" stays in place.)
-
-Example — preserve. "Do not send 42. Send 21." has NO cue (no sorry/actually cue between compatible values). Correct output: {"edits": []}
-"I am sorry about the delay." — "sorry" has no number/name/day on its left, so it is an ordinary apology. Correct output: {"edits": []}`
-
-export const DEFAULT_SYSTEM_PROMPT = SYSTEM_PROMPT
+export const DEFAULT_SYSTEM_PROMPT = PROSE_SYSTEM_PROMPT
 
 export interface CleanupInput {
   readonly text: string
@@ -44,6 +30,7 @@ export interface CleanupInput {
   readonly dictionary?: Record<string, string>
   readonly snippets?: Record<string, string>
   readonly style?: WritingStyle
+  readonly context?: CleanupContext
 }
 
 export const cleanWithQwen = (
@@ -72,23 +59,10 @@ export const cleanWithQwen = (
     const fill = fillerEdits(snapshotId, tokens)
     abstentions.push(...fill.abstentions)
 
-    // Deterministic repairs first (restarts, ordinary cues, keep-reversals,
-    // scoped and structural): Qwen competes for the same targets and loses
-    // conflicts, so validated deterministic edits always win ties.
+    // Deterministic repairs handle explicit spoken corrections before the
+    // model sees complete prose. No token IDs are sent to the model.
     const det = resolveDeterministic(snap)
     abstentions.push(...det.abstentions)
-
-    // Qwen proposes repairs; invalid proposals are dropped, never applied loosely.
-    const proposed: ProposedEdit[] = yield* proposeRepairs(handle, snap, input.dictionary ?? {}, systemPrompt).pipe(
-      Effect.catchAll((e) => {
-        abstentions.push({
-          reason: "modelUnavailable",
-          detail: String((e as { reason?: unknown }).reason ?? e),
-          tokenIds: [],
-        })
-        return Effect.succeed([] as ProposedEdit[])
-      }),
-    )
 
     const claimed = new Set<string>()
     const accepted: ProposedEdit[] = []
@@ -113,8 +87,8 @@ export const cleanWithQwen = (
       accepted.push(edit)
       for (const t of edit.targetTokenIds) claimed.add(t)
     }
-    for (const e of [...fill.edits, ...det.edits, ...proposed]) consider(e)
-
+    for (const e of [...fill.edits, ...det.edits]) consider(e)
+    for (const e of dictionaryEdits(snap, input.dictionary ?? {}, claimed)) consider(e)
     const kept = new Set(accepted.flatMap((e) => e.targetTokenIds))
     for (const e of numberEdits(snap, kept)) consider(e)
 
@@ -131,22 +105,41 @@ export const cleanWithQwen = (
       }
     }
 
+    // The structural pass resolves explicit spoken corrections. One full-text
+    // model call fixes grammar and spelling, then a word diff rejects changes
+    // to meaning-bearing content before any result reaches the client.
+    let proseChanges: WordChange[] = []
+    const prose = yield* proposeProseCleanup(handle, text, input.dictionary ?? {}, input.context, systemPrompt).pipe(
+      Effect.catchAll((error) => {
+        abstentions.push({ reason: "modelUnavailable", detail: `copyedit: ${error.reason}`, tokenIds: [] })
+        return Effect.succeed(text)
+      }),
+    )
+    const checked = validateProseCleanup(text, prose, input.dictionary, input.context)
+    if (checked.ok) {
+      text = prose
+      proseChanges = checked.changes
+    } else {
+      abstentions.push({ reason: "unsafeProseRewrite", detail: checked.reason, tokenIds: [] })
+    }
+
     const styled = applyWritingStyle(text, input.style)
     const personalized = expandSnippets(styled, input.snippets)
     return {
       snapshotId, tokens,
       acceptedEdits: final, rejected, abstentions,
       text: personalized.text,
-      rulesVersion: `${RULES_VERSION}/qwen-hybrid+personalization`,
+      rulesVersion: `${RULES_VERSION}/deterministic+prose-3+personalization`,
       appliedSnippetTriggers: personalized.appliedSnippetTriggers,
       writingStyle: input.style ?? "automatic",
+      proseChanges,
     }
   })
 
 /**
  * Local-only pipeline (no model call): deterministic filler + resolver +
  * normalization through the same validator and render. Used by tests and as
- * the offline fallback. Qwen proposals slot into `consider()` above.
+ * the offline fallback.
  */
 export function cleanLocal(
   text: string,
@@ -190,6 +183,7 @@ export function cleanLocal(
     for (const t of edit.targetTokenIds) claimed.add(t)
   }
   for (const e of [...fill.edits, ...det.edits]) consider(e)
+  for (const e of dictionaryEdits(snap, dictionary, claimed)) consider(e)
   const kept = new Set(accepted.flatMap((e) => e.targetTokenIds))
   for (const e of numberEdits(snap, kept)) consider(e)
   let final = accepted
@@ -209,56 +203,6 @@ export function cleanLocal(
     acceptedEdits: final, rejected, abstentions,
     rulesVersion: `${RULES_VERSION}/local`,
   }
-}
-
-interface RawProposal {
-  op?: string
-  targetTokenIds?: string[]
-  evidenceTokenIds?: string[]
-  replacementText?: string
-  candidateValue?: string
-  replacementAnchor?: number
-  reason?: string
-}
-
-function proposeRepairs(
-  handle: LlamaHandle,
-  snap: Snapshot,
-  dictionary: Record<string, string>,
-  systemPrompt?: string,
-): Effect.Effect<ProposedEdit[], ModelError, never> {
-  const tokenLines = snap.tokens.map((t) => `${t.id} [${t.kind}${t.isProtected ? ",protected" : ""}] "${t.text}"`).join("\n")
-  const messages: ChatMessage[] = [
-    { role: "system", content: systemPrompt ?? SYSTEM_PROMPT },
-    {
-      role: "user",
-      content: `Transcript tokens:\n${tokenLines}\n\nRaw: "${snap.tokens.map((t) => t.text).join(" ")}"\nDictionary (confirmed only): ${JSON.stringify(dictionary)}\nReply with the JSON object.`,
-    },
-  ]
-  return Effect.gen(function* () {
-    const raw = (yield* chatJson(handle, messages, 1024)) as { edits?: RawProposal[] }
-    if (process.env.OMIL_DEBUG === "1") {
-      console.log("QWEN raw edits:", JSON.stringify(raw.edits ?? raw).slice(0, 2000))
-    }
-    const edits: ProposedEdit[] = []
-    for (const p of raw.edits ?? []) {
-      if (p.op !== "replaceFromSource" && p.op !== "selectCandidate") continue
-      if (!Array.isArray(p.targetTokenIds) || p.targetTokenIds.length === 0) continue
-      edits.push({
-        editId: crypto.randomUUID(),
-        snapshotId: snap.id,
-        op: p.op,
-        targetTokenIds: p.targetTokenIds.filter((t): t is string => typeof t === "string"),
-        evidenceTokenIds: Array.isArray(p.evidenceTokenIds) ? p.evidenceTokenIds.filter((t): t is string => typeof t === "string") : [],
-        candidateValue: typeof p.candidateValue === "string" ? p.candidateValue : undefined,
-        reason: typeof p.reason === "string" ? p.reason : "qwen proposal",
-        ruleVersion: "qwen3-4b",
-        replacementText: typeof p.replacementText === "string" ? p.replacementText : undefined,
-        replacementAnchor: typeof p.replacementAnchor === "number" ? p.replacementAnchor : undefined,
-      })
-    }
-    return edits
-  })
 }
 
 function verbatim(text: string): string {

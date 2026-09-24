@@ -1,13 +1,13 @@
 import OmilCore
 
-enum TextDeliveryOutcome {
+enum TextDeliveryOutcome: Sendable {
     case inserted(InsertionReceipt)
     case pasteSent
     case copiedForManualPaste
     case retained(String)
 }
 
-enum PasteAttempt {
+enum PasteAttempt: Sendable {
     case sent
     case copied
     case unavailable
@@ -39,6 +39,8 @@ enum TextDelivery {
                     sessionId: sessionId, sequence: sequence
                 )
                 return .inserted(receipt)
+            } catch DeliveryError.destinationChanged(let reason) {
+                return .retained(reason)
             } catch {
                 return fallback(text: text, paste: paste)
             }
