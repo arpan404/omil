@@ -122,7 +122,7 @@ public enum BackendIdentity: Hashable, Codable, Sendable {
         case .appleSpeech(let c): return "AppleSpeech(\(c))"
         case .sfspeech(let l): return "SFSpeech(\(l))"
         case .mock(let n): return "Mock(\(n))"
-        case .server: return "OmilServer(Whisper+Qwen)"
+        case .server: return "OmilServer(Whisper+Cleanup)"
         case .unknown(let n): return n
         }
     }

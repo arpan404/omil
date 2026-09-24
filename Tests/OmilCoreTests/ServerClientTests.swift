@@ -111,16 +111,28 @@ struct ServerCatalogTests {
         #expect(ServerCatalog.whisperIdForFile[ServerCatalog.defaultWhisperFile] == "whisper-large-v3-turbo-q8")
         #expect(ServerCatalog.llmIdForFile[ServerCatalog.defaultLlmFile] == "qwen3.5-2b")
     }
+
+    @Test func optionsAndIdsAreUnique() {
+        let files = ServerCatalog.whisperFiles + ServerCatalog.llmFiles
+        let ids = Array(ServerCatalog.whisperIdForFile.values) + Array(ServerCatalog.llmIdForFile.values)
+        #expect(Set(files).count == files.count)
+        #expect(Set(ids).count == ids.count)
+        #expect(Set(ServerCatalog.whisperIdForFile.keys) == Set(ServerCatalog.whisperFiles))
+        #expect(Set(ServerCatalog.llmIdForFile.keys) == Set(ServerCatalog.llmFiles))
+    }
 }
 
-/// Download pins live in the Mac app (ServerAssets). This mirror records the
-/// pinned set so core tests fail if the catalog drifts from the downloader.
+/// Download pins live in server/src/Config.ts. This mirror keeps the Swift
+/// catalog aligned with the server's downloadable files.
 enum ServerAssetsMirror {
     static let pinnedIds: Set<String> = [
-        "whisper-bin", "llama-bin",
-        "ggml-small-q8_0.bin", "ggml-large-v3-turbo-q8_0.bin",
+        "ggml-base-q8_0.bin", "ggml-small-q8_0.bin",
+        "ggml-medium-q8_0.bin", "ggml-large-v3-turbo-q8_0.bin",
+        "ggml-large-v3-q5_0.bin",
+        "ggml-distil-large-v3.bin",
         "Qwen3.5-0.8B-Q4_K_M.gguf", "Qwen3.5-2B-Q4_K_M.gguf",
-        "Qwen3.5-4B-Q4_K_M.gguf",
+        "Qwen3.5-4B-Q4_K_M.gguf", "Qwen3.5-9B-Q4_K_M.gguf",
+        "Llama-3.1-8B-Instruct-Q4_K_M.gguf", "gemma-3-4b-it-Q4_K_M.gguf",
     ]
     static func pinExists(_ id: String) -> Bool { pinnedIds.contains(id) }
 }

@@ -7,11 +7,13 @@ import { DEFAULT_LLM, DEFAULT_WHISPER, MODELS, type ServerConfig } from "../src/
 import { checkBinaries, verifiedSha256 } from "../src/Models"
 
 describe("curated Mac models", () => {
-  test("offers two 8-bit Whisper models and three current 4-bit cleanup models", () => {
+  test("offers distinct transcription and cleanup models with pinned downloads", () => {
     expect(MODELS.filter((model) => model.kind === "whisper").map((model) => model.id))
-      .toEqual(["whisper-small-q8", "whisper-large-v3-turbo-q8"])
+      .toEqual(["whisper-base-q8", "whisper-small-q8", "whisper-medium-q8", "whisper-large-v3-turbo-q8", "whisper-large-v3-q5", "whisper-distil-large-v3"])
     expect(MODELS.filter((model) => model.kind === "llm").map((model) => model.id))
-      .toEqual(["qwen3.5-0.8b", "qwen3.5-2b", "qwen3.5-4b"])
+      .toEqual(["qwen3.5-0.8b", "qwen3.5-2b", "qwen3.5-4b", "qwen3.5-9b", "llama-3.1-8b-instruct", "gemma-3-4b-it"])
+    expect(new Set(MODELS.map((model) => model.id)).size).toBe(MODELS.length)
+    expect(new Set(MODELS.map((model) => model.filename)).size).toBe(MODELS.length)
     expect(MODELS.every((model) => model.expectedSha256 && model.expectedBytes)).toBe(true)
     expect(DEFAULT_WHISPER).toBe("whisper-large-v3-turbo-q8")
     expect(DEFAULT_LLM).toBe("qwen3.5-2b")
