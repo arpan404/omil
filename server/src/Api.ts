@@ -9,7 +9,7 @@ import type { ServerConfig } from "./Config"
 import { checkAuth } from "./Auth"
 import {
   checkBinaries, checkModelReady, deleteModel, ensureModel, ModelError,
-  modelFileLifecycle,
+  modelFileLifecycle, modelIntegrityIssue,
 } from "./Models"
 import { transcribeFile, whisperMemoryState } from "./Whisper"
 import { parseAudioSensitivity } from "./AudioSensitivity"
@@ -72,16 +72,18 @@ export const makeRouter = (ctx: ApiContext) =>
       for (const m of MODELS) {
         const downloaded = yield* checkModelReady(ctx.cfg, m.id)
         const file = modelFileLifecycle(ctx.cfg, m.id)
+        const integrityIssue = file?.state === "downloading" || file?.state === "verifying"
+          ? null : yield* modelIntegrityIssue(ctx.cfg, m.id)
         out.push({
           id: m.id, kind: m.kind, description: m.description,
           filename: m.filename,
           approxBytes: m.expectedBytes,
           downloaded,
           selected: (m.kind === "whisper" ? ctx.selection.whisper : ctx.selection.llm) === m.id,
-          fileState: file?.state ?? (downloaded ? "ready" : "missing"),
+          fileState: integrityIssue ? "failed" : file?.state ?? (downloaded ? "ready" : "missing"),
           receivedBytes: file?.receivedBytes ?? (downloaded ? m.expectedBytes : 0),
           totalBytes: file?.totalBytes ?? m.expectedBytes,
-          fileError: file?.error ?? null,
+          fileError: integrityIssue ?? file?.error ?? null,
           memoryState: m.kind === "whisper"
             ? whisperMemoryState(m.id)
             : runtime.modelId === m.id ? runtime.state : "unloaded",
@@ -157,6 +159,73 @@ export const makeRouter = (ctx: ApiContext) =>
       if (!authed(ctx, req)) return unauthorized
       const unloaded = yield* Effect.promise(() => unloadLlama())
       return yield* json({ unloaded, runtime: llamaRuntime() })
+    })),
+    HttpRouter.post("/v1/models/repair", Effect.gen(function* () {
+      const req = yield* HttpServerRequest.HttpServerRequest
+      if (!authed(ctx, req)) return unauthorized
+      const body = yield* req.json.pipe(
+        Effect.map((value) => value as { model?: unknown }),
+        Effect.catchAll(() => Effect.succeed({} as { model?: unknown })),
+      )
+      if (typeof body.model !== "string" || !modelSpec(body.model)) {
+        return yield* json({ error: "choose a model to repair" }, 400)
+      }
+      const spec = modelSpec(body.model)!
+      const queue = spec.kind === "whisper" ? transcriptionQueue.snapshot() : cleanupQueue.snapshot()
+      if (queue.active || queue.pending.length > 0 ||
+          (spec.kind === "llm" && llamaRuntime().activeUses > 0)) {
+        return yield* json({ error: "model is in use; repair when processing finishes" }, 409)
+      }
+      if (spec.kind === "llm" && llamaRuntime().modelId === spec.id) {
+        yield* Effect.promise(() => unloadLlama())
+      }
+      const removed = yield* Effect.either(deleteModel(ctx.cfg, spec.id))
+      if (removed._tag === "Left") return yield* json({ error: removed.left.reason }, 409)
+      const prepared = yield* Effect.either(ensureModel(ctx.cfg, spec.id))
+      if (prepared._tag === "Left") return yield* json({ error: prepared.left.reason }, 503)
+      return yield* json({ ready: true, model: spec.id })
+    })),
+    HttpRouter.post("/v1/models/reload", Effect.gen(function* () {
+      const req = yield* HttpServerRequest.HttpServerRequest
+      if (!authed(ctx, req)) return unauthorized
+      const body = yield* req.json.pipe(
+        Effect.map((value) => value as { model?: unknown }),
+        Effect.catchAll(() => Effect.succeed({} as { model?: unknown })),
+      )
+      if (typeof body.model !== "string" || modelSpec(body.model)?.kind !== "llm") {
+        return yield* json({ error: "choose a cleanup model to reload" }, 400)
+      }
+      const queue = cleanupQueue.snapshot()
+      if (queue.active || queue.pending.length > 0 || llamaRuntime().activeUses > 0) {
+        return yield* json({ error: "cleanup is still running; reload when it finishes" }, 409)
+      }
+      const ready = yield* checkModelReady(ctx.cfg, body.model)
+      if (!ready) return yield* json({ error: "download the cleanup model first" }, 409)
+      yield* Effect.promise(() => unloadLlama())
+      const loaded = yield* Effect.either(acquireLlama(ctx.cfg, body.model))
+      if (loaded._tag === "Left") {
+        return yield* json({ error: loaded.left.reason }, 503)
+      }
+      loaded.right.release()
+      return yield* json({ ready: true, model: body.model, runtime: llamaRuntime() })
+    })),
+    HttpRouter.post("/v1/models/warm", Effect.gen(function* () {
+      const req = yield* HttpServerRequest.HttpServerRequest
+      if (!authed(ctx, req)) return unauthorized
+      const body = yield* req.json.pipe(
+        Effect.map((value) => value as { model?: unknown }),
+        Effect.catchAll(() => Effect.succeed({} as { model?: unknown })),
+      )
+      if (typeof body.model !== "string" || modelSpec(body.model)?.kind !== "llm") {
+        return yield* json({ error: "choose a cleanup model to warm" }, 400)
+      }
+      if (!(yield* checkModelReady(ctx.cfg, body.model))) {
+        return yield* json({ error: "download the cleanup model first" }, 409)
+      }
+      const loaded = yield* Effect.either(acquireLlama(ctx.cfg, body.model))
+      if (loaded._tag === "Left") return yield* json({ error: loaded.left.reason }, 503)
+      loaded.right.release()
+      return yield* json({ ready: true, model: body.model, runtime: llamaRuntime() })
     })),
     HttpRouter.post("/v1/models/delete", Effect.gen(function* () {
       const req = yield* HttpServerRequest.HttpServerRequest
@@ -285,6 +354,9 @@ export const makeRouter = (ctx: ApiContext) =>
       const model = modelSpec(requestedModel)
       if (!model || model.kind !== "llm") {
         return yield* json({ error: `unknown cleanup model '${requestedModel}'` }, 400)
+      }
+      if (!(yield* checkModelReady(ctx.cfg, model.id))) {
+        return yield* json({ error: "cleanup model not downloaded" }, 503)
       }
       const requestId = requestIdentity(req)
       const prompt = yield* Effect.promise(() => resolveCleanupPrompt(ctx.cfg.dataDir, body.systemPrompt))

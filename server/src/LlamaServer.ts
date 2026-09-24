@@ -29,10 +29,10 @@ let loadPromiseModel: string | null = null
 let idleTimer: ReturnType<typeof setTimeout> | null = null
 const lifecycle = new ModelRuntimeLifecycle()
 
-const configuredIdleMs = Number(process.env.OMIL_MODEL_IDLE_MS ?? 120_000)
+const configuredIdleMs = Number(process.env.OMIL_MODEL_IDLE_MS ?? 900_000)
 const idleUnloadMs = Number.isFinite(configuredIdleMs) && configuredIdleMs >= 1_000
   ? configuredIdleMs
-  : 120_000
+  : 900_000
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -75,7 +75,6 @@ const startLlama = async (cfg: ServerConfig, selected: string): Promise<LlamaHan
   clearIdleUnload()
   const current = lifecycle.snapshot()
   const baseUrl = `http://127.0.0.1:${cfg.llamaPort}`
-
   if (liveModel === selected && proc && current.state !== "failed" && await Effect.runPromise(isHealthy(baseUrl))) {
     lifecycle.cancelUnload()
     return { baseUrl, modelId: selected }
@@ -97,8 +96,9 @@ const startLlama = async (cfg: ServerConfig, selected: string): Promise<LlamaHan
     const model = await Effect.runPromise(ensureModel(cfg, selected))
     console.log(`loading llama-server (${selected}) on :${cfg.llamaPort}`)
     const child = Bun.spawn(
-      [cfg.llamaBin, "-m", model, "--port", String(cfg.llamaPort), "-c", "4096", "--no-webui"],
-      { stdout: "ignore", stderr: "pipe" },
+      [cfg.llamaBin, "-m", model, "--port", String(cfg.llamaPort), "-c", "4096",
+        "--reasoning", "off", "--no-webui"],
+      { stdout: "ignore", stderr: "inherit" },
     )
     proc = child
 
@@ -115,8 +115,7 @@ const startLlama = async (cfg: ServerConfig, selected: string): Promise<LlamaHan
         return { baseUrl, modelId: selected }
       }
       if (child.exitCode !== null) {
-        const errorText = await readStderr(child)
-        throw new ModelError(`llama-server exited early: ${errorText.slice(-2000)}`)
+        throw new ModelError(`llama-server exited early with status ${child.exitCode}; see the Omil server log`)
       }
     }
     try { child.kill() } catch { /* already gone */ }
@@ -210,15 +209,6 @@ const isHealthy = (baseUrl: string): Effect.Effect<boolean, never, never> =>
     }
   })
 
-const readStderr = async (child: Bun.Subprocess): Promise<string> => {
-  try {
-    const stream = child.stderr
-    if (stream && typeof stream !== "number") {
-      return await new Response(stream as ReadableStream).text()
-    }
-  } catch { /* no diagnostic available */ }
-  return ""
-}
 
 export interface ChatMessage { role: "system" | "user"; content: string }
 

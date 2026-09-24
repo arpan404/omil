@@ -81,6 +81,25 @@ enum ThemePreset: String, CaseIterable, Identifiable {
 // with receipts, scoped undo, and inspectable history.
 
 @MainActor
+final class AudioMeter: ObservableObject {
+    @Published private(set) var levels = Array(repeating: 0.0, count: 36)
+    private var smoothedLevel = 0.0
+
+    func push(_ level: Double) {
+        smoothedLevel = min(1, max(0, smoothedLevel * 0.48 + level * 0.52))
+        levels.append(smoothedLevel)
+        if levels.count > 36 {
+            levels.removeFirst(levels.count - 36)
+        }
+    }
+
+    func reset() {
+        smoothedLevel = 0
+        levels = Array(repeating: 0, count: 36)
+    }
+}
+
+@MainActor
 final class DictationController: ObservableObject {
     enum Phase: String {
         case idle, preparing, recording, processing, ready, failed
@@ -162,13 +181,16 @@ final class DictationController: ObservableObject {
     @Published var serverNote = ""
     var speechSetupSummary: String {
         if serverIsReady {
+            if modelIsDownloaded(file: llmFile) != true {
+                return "Transcription is ready. Download cleanup to polish the text."
+            }
             return usesCustomServer ? "Connected to your transcription server." : "Speech models are ready on this Mac."
         }
         return serverHealth
     }
     @Published var serverHealth = "Unknown"
-    @Published var whisperFile = "ggml-large-v3-turbo.bin"
-    @Published var llmFile = "Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
+    @Published var whisperFile = ServerCatalog.defaultWhisperFile
+    @Published var llmFile = ServerCatalog.defaultLlmFile
     @Published private(set) var pendingWhisperFile: String?
     @Published private(set) var pendingLLMFile: String?
     @Published var promptText = ""
@@ -177,8 +199,8 @@ final class DictationController: ObservableObject {
     @Published var serverOpNote = ""
     @Published private(set) var modelsPreparing = false
     @Published private(set) var downloadingModelIDs: Set<String> = []
-    @Published private(set) var audioLevels = Array(repeating: 0.0, count: 36)
-    @Published private(set) var audioLevel = 0.0
+    @Published private(set) var reloadingLLM = false
+    let audioMeter = AudioMeter()
     @Published var pillEnabled = true {
         didSet { UserDefaults.standard.set(pillEnabled, forKey: "omil.pillEnabled") }
     }
@@ -277,7 +299,7 @@ final class DictationController: ObservableObject {
     private var precondition: SelectionPrecondition?
     private var sessionSeq = 0
     private var deliveryTail: Task<Void, Never>?
-    private var pasteRestoreTask: Task<Void, Never>?
+    private var recoverySaveTail: Task<Void, Never>?
     private var eventTask: Task<Void, Never>?
     private var dictionary = PersonalDictionary()
     private var lastMeterTimestamp: Double = -.infinity
@@ -317,8 +339,18 @@ final class DictationController: ObservableObject {
         usesCustomServer = UserDefaults.standard.bool(forKey: "omil.usesCustomServer")
         lanSharingEnabled = UserDefaults.standard.bool(forKey: "omil.lanSharingEnabled")
         if usesCustomServer { serverConfig = externalServerConfig }
-        whisperFile = UserDefaults.standard.string(forKey: "omil.whisperFile") ?? whisperFile
-        llmFile = UserDefaults.standard.string(forKey: "omil.llmFile") ?? llmFile
+        if let saved = UserDefaults.standard.string(forKey: "omil.whisperFile"),
+           ServerCatalog.whisperIdForFile[saved] != nil {
+            whisperFile = saved
+        } else {
+            UserDefaults.standard.set(whisperFile, forKey: "omil.whisperFile")
+        }
+        if let saved = UserDefaults.standard.string(forKey: "omil.llmFile"),
+           ServerCatalog.llmIdForFile[saved] != nil {
+            llmFile = saved
+        } else {
+            UserDefaults.standard.set(llmFile, forKey: "omil.llmFile")
+        }
         automaticallyCopyTranscripts = UserDefaults.standard.bool(forKey: "omil.automaticallyCopyTranscripts")
         pillEnabled = UserDefaults.standard.object(forKey: "omil.pillEnabled") as? Bool ?? true
         pillAlwaysVisible = UserDefaults.standard.bool(forKey: "omil.pillAlwaysVisible")
@@ -344,6 +376,9 @@ final class DictationController: ObservableObject {
         }.store(in: &cancellables)
         localServer.$sharedCredentials.sink { [weak self] credentials in
             self?.lanCredentials = credentials
+        }.store(in: &cancellables)
+        localServer.$toolInstallState.sink { [weak self] _ in
+            self?.objectWillChange.send()
         }.store(in: &cancellables)
     }
 
@@ -387,7 +422,6 @@ final class DictationController: ObservableObject {
         return serverConfig.isConfigured
             && value.contains("binaries ok")
             && modelIsDownloaded(file: whisperFile) == true
-            && modelIsDownloaded(file: llmFile) == true
             && !value.contains("unreachable")
             && !value.contains("failed")
     }
@@ -538,17 +572,43 @@ final class DictationController: ObservableObject {
                 ? localServer.restart(allowLANAccess: lanSharingEnabled)
                 : localServer.start(allowLANAccess: lanSharingEnabled))
             serverConfig = config
+            await localServer.ensureInferenceTools()
             await refreshCurrentServerHealth()
             await fetchServerModels()
-            if serverHealth.lowercased().contains("sidecars missing") {
-                serverOpNote = "Whisper and llama sidecars are missing from this build."
-            } else if !serverIsReady {
+            if case .ready = localServer.toolInstallState,
+               !serverIsReady || modelIsDownloaded(file: llmFile) != true {
                 await prepareSelectedModels()
             }
+            Task { await warmSelectedCleanupModel() }
         } catch {
             serverHealth = "Local engine failed: \(error.localizedDescription)"
             assetState = serverHealth
         }
+    }
+
+    var toolInstallState: LocalServerManager.ToolInstallState { localServer.toolInstallState }
+
+    func retryInferenceToolInstall() {
+        Task {
+            await localServer.ensureInferenceTools()
+            await refreshCurrentServerHealth()
+            await fetchServerModels()
+            if case .ready = localServer.toolInstallState,
+               !serverIsReady || modelIsDownloaded(file: llmFile) != true {
+                await prepareSelectedModels()
+            }
+            await warmSelectedCleanupModel()
+        }
+    }
+
+    private func warmSelectedCleanupModel() async {
+        guard !usesCustomServer,
+              modelIsDownloaded(file: llmFile) == true,
+              let id = ServerCatalog.llmIdForFile[llmFile],
+              let request = serverRequest(path: "/v1/models/warm", method: "POST",
+                                          jsonBody: ["model": id], timeout: 300) else { return }
+        _ = try? await URLSession.shared.data(for: request)
+        await fetchServerModels()
     }
 
     private func serverRequest(
@@ -591,8 +651,7 @@ final class DictationController: ObservableObject {
 
     @Published var serverModels: [ServerModelInfo] = []
 
-    /// Model choice belongs to this client. Missing weights download first;
-    /// the current model remains usable until verification succeeds.
+    /// A missing model is only previewed until the user downloads it.
     func chooseWhisperModel(file: String) {
         chooseModel(file: file, kind: "whisper")
     }
@@ -618,8 +677,7 @@ final class DictationController: ObservableObject {
             return
         }
         if kind == "whisper" { pendingWhisperFile = file } else { pendingLLMFile = file }
-        serverOpNote = "Downloading before switching. The current model remains available."
-        downloadModel(file: file)
+        serverOpNote = "Download this model to use it. The current model stays active."
     }
 
     private func activateModel(file: String, kind: String) {
@@ -631,6 +689,7 @@ final class DictationController: ObservableObject {
             llmFile = file
             pendingLLMFile = nil
             UserDefaults.standard.set(file, forKey: "omil.llmFile")
+            Task { await warmSelectedCleanupModel() }
         }
     }
 
@@ -683,6 +742,40 @@ final class DictationController: ObservableObject {
         modelInfo(file: llmFile)?.memoryState ?? "unloaded"
     }
 
+    func reloadCleanupModel() {
+        guard !reloadingLLM, processingJobs.isEmpty, phase != .recording,
+              phase != .preparing, downloadingModelIDs.isEmpty else {
+            serverOpNote = "Finish recording and model downloads before reloading cleanup."
+            return
+        }
+        guard modelIsDownloaded(file: llmFile) == true,
+              let model = modelInfo(file: llmFile),
+              let request = serverRequest(path: "/v1/models/reload", method: "POST",
+                                          jsonBody: ["model": model.id], timeout: 300) else {
+            serverOpNote = "Download the selected cleanup model first."
+            return
+        }
+        reloadingLLM = true
+        serverOpNote = "Reloading cleanup model on the server."
+        Task {
+            defer { reloadingLLM = false }
+            do {
+                let (data, response) = try await URLSession.shared.data(for: request)
+                let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+                await fetchServerModels()
+                guard code == 200 else {
+                    let detail = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["error"] as? String
+                    serverOpNote = "Cleanup reload failed: \(detail ?? "server error")"
+                    return
+                }
+                serverOpNote = "Cleanup model reloaded and ready."
+            } catch {
+                await fetchServerModels()
+                serverOpNote = "Cleanup reload failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
     func unloadModels() {
         guard let request = serverRequest(path: "/v1/models/unload", method: "POST") else {
             serverOpNote = "Server not configured"
@@ -711,14 +804,15 @@ final class DictationController: ObservableObject {
     }
 
     func downloadModel(file: String) {
-        guard !modelsPreparing, downloadingModelIDs.isEmpty,
+        guard !modelsPreparing,
               let model = serverModels.first(where: { $0.filename == file }) else {
             serverOpNote = "Model availability is still loading."
             return
         }
         guard !model.downloaded, !downloadingModelIDs.contains(model.id) else { return }
+        let repairing = model.fileState == "failed"
         guard let request = serverRequest(
-            path: "/v1/models/prepare",
+            path: repairing ? "/v1/models/repair" : "/v1/models/prepare",
             method: "POST",
             jsonBody: ["model": model.id],
             timeout: 7_200
@@ -728,7 +822,7 @@ final class DictationController: ObservableObject {
         }
 
         downloadingModelIDs.insert(model.id)
-        serverOpNote = model.kind == "whisper"
+        serverOpNote = repairing ? "Repairing model with a fresh download." : model.kind == "whisper"
             ? "Downloading transcription model."
             : "Downloading cleanup model."
         Task { await downloadModel(model, with: request) }
@@ -739,22 +833,17 @@ final class DictationController: ObservableObject {
             serverOpNote = "Finish pending recordings before deleting a model."
             return
         }
-        guard downloadingModelIDs.isEmpty,
-              let model = serverModels.first(where: { $0.filename == file }),
+        guard let model = serverModels.first(where: { $0.filename == file }),
               model.downloaded,
+              !downloadingModelIDs.contains(model.id),
               let request = serverRequest(
                 path: "/v1/models/delete",
                 method: "POST",
                 jsonBody: ["model": model.id]
               ) else { return }
         if file == whisperFile || file == llmFile {
-            guard let fallback = serverModels.first(where: {
-                $0.kind == model.kind && $0.downloaded && $0.filename != file
-            }) else {
-                serverOpNote = "Download another \(model.kind == "whisper" ? "transcription" : "cleanup") model before deleting the active one."
-                return
-            }
-            activateModel(file: fallback.filename, kind: model.kind)
+            serverOpNote = "Select another \(model.kind == "whisper" ? "transcription" : "cleanup") model before deleting the active one."
+            return
         }
         serverOpNote = "Deleting \(model.filename)."
         Task {
@@ -790,10 +879,13 @@ final class DictationController: ObservableObject {
             }
             await fetchServerModels()
             await refreshCurrentServerHealth()
-            activateModel(file: model.filename, kind: model.kind)
-            serverOpNote = model.kind == "whisper"
-                ? "Transcription model downloaded and selected for this Mac."
-                : "Cleanup model downloaded and selected for this Mac."
+            let shouldSelect = model.kind == "whisper"
+                ? pendingWhisperFile == model.filename
+                : pendingLLMFile == model.filename
+            if shouldSelect { activateModel(file: model.filename, kind: model.kind) }
+            serverOpNote = shouldSelect
+                ? "Model downloaded and selected for this Mac."
+                : "Model downloaded. Select it when you want to use it."
         } catch {
             guard serverConfig == targetConfig else { return }
             serverOpNote = "Download failed: \(error.localizedDescription)"
@@ -1016,27 +1108,37 @@ final class DictationController: ObservableObject {
             statusMessage = "The Omil engine is unavailable. Open Engine to check its status."
             return
         }
-        // Capture the intended destination + selection first.
-        let axOk = ax.captureTarget(application: recentTargetApp.target(for: source))
-        precondition = ax.capturePrecondition()
-        insertionSerialAtCapture = insertionSerial
-        sessionSeq += 1
-        let session = DictationSession(
-            mode: cleanupMode,
-            dictionary: dictionary,
-            performsCleanup: false
-        )
-        self.session = session
-        self.backend = backend
-        recoveryBuffer.reset()
+        let target = recentTargetApp.target(for: source)
+        let targetPID = target?.processIdentifier
+        let targetBundleID = target?.bundleIdentifier
+        let captureAX = AXInserter()
+        ax = captureAX
         phase = .preparing
-        statusMessage = !axTrusted
-            ? "Accessibility access is needed to insert into other apps. The transcript will stay in Omil."
-            : axOk ? "Preparing microphone" : "No text field selected. Transcript stays in Omil."
+        statusMessage = "Preparing microphone"
         draftText = ""
         resetAudioMeter()
-        let sessionID = session.sessionId
         Task {
+            // A target app can take seconds to answer Accessibility queries.
+            // Keep that work off the key event and Omil's main thread.
+            let axOk = await Task.detached(priority: .userInitiated) {
+                captureAX.captureTarget(pid: targetPID, bundleId: targetBundleID)
+            }.value
+            guard startAttempt == attempt, phase == .preparing else { return }
+            precondition = captureAX.capturePrecondition()
+            insertionSerialAtCapture = insertionSerial
+            sessionSeq += 1
+            let session = DictationSession(
+                mode: cleanupMode,
+                dictionary: dictionary,
+                performsCleanup: false
+            )
+            self.session = session
+            self.backend = backend
+            recoveryBuffer.reset()
+            statusMessage = !axTrusted
+                ? "Accessibility access is needed to insert into other apps. The transcript will stay in Omil."
+                : axOk ? "Preparing microphone" : "No text field selected. Transcript stays in Omil."
+            let sessionID = session.sessionId
             do {
                 try await session.start(backend: backend)
             } catch {
@@ -1146,7 +1248,7 @@ final class DictationController: ObservableObject {
         capture.stop()
         let forwarder = audioForwarder
         audioForwarder = nil
-        saveRecoveryAudio(for: sessionID)
+        let recoverySave = saveRecoveryAudio(for: sessionID)
         session = nil
         backend = nil
         ax = AXInserter()
@@ -1160,7 +1262,9 @@ final class DictationController: ObservableObject {
         let previousDelivery = deliveryTail
         deliveryTail = Task {
             await forwarder?.finish()
-            if let result = await activeSession.stop() {
+            let result = await activeSession.stop()
+            await recoverySave?.value
+            if let result {
                 self.setProcessingStage(.queued, for: sessionID)
                 await deliver(result: result, session: activeSession, context: context, after: previousDelivery)
             } else {
@@ -1201,17 +1305,11 @@ final class DictationController: ObservableObject {
     private func pushAudioLevel(_ level: Double, timestamp: Double) {
         guard phase == .recording, timestamp - lastMeterTimestamp >= 1.0 / 30.0 else { return }
         lastMeterTimestamp = timestamp
-        let smoothed = min(1, max(0, audioLevel * 0.48 + level * 0.52))
-        audioLevel = smoothed
-        audioLevels.append(smoothed)
-        if audioLevels.count > 36 {
-            audioLevels.removeFirst(audioLevels.count - 36)
-        }
+        audioMeter.push(level)
     }
 
     private func resetAudioMeter() {
-        audioLevel = 0
-        audioLevels = Array(repeating: 0, count: 36)
+        audioMeter.reset()
         lastMeterTimestamp = -.infinity
     }
 
@@ -1227,6 +1325,7 @@ final class DictationController: ObservableObject {
         }
         let text: String
         let note: String
+        let usedRawFallback: Bool
         if committed.cleaned.text.isEmpty && committed.rawSnapshot.rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             // A10: never insert an empty result (would wipe the selection).
             processingJobs.removeAll { $0.id == committed.sessionId }
@@ -1243,24 +1342,12 @@ final class DictationController: ObservableObject {
                 )
                 text = cleaned.text
                 note = cleaned.note
+                usedRawFallback = false
             } catch {
-                processingJobs.removeAll { $0.id == committed.sessionId }
-                lastRaw = committed.rawSnapshot.rawText
-                lastCleaned = committed.rawSnapshot.rawText
-                lastDiff = "(no changes)"
-                lastReceipt = nil
-                lastReceiptAX = nil
-                lastDeliveryMethod = "Cleanup failed. Raw transcript saved."
-                serverNote = "Server cleanup failed: \(error)"
-                if phase != .recording && phase != .preparing {
-                    statusMessage = "Cleanup failed. The raw transcript is saved in History."
-                }
-                recordHistory(raw: committed.rawSnapshot.rawText, cleaned: committed.rawSnapshot.rawText,
-                              backend: committed.backend.displayName, duration: committed.duration)
-                updateRecovery(for: committed.sessionId, state: .ready,
-                               transcript: committed.rawSnapshot.rawText, rawTranscript: committed.rawSnapshot.rawText,
-                               failureReason: "Cleanup failed; raw transcript preserved.")
-                return
+                text = committed.rawSnapshot.rawText.isEmpty
+                    ? committed.cleaned.text : committed.rawSnapshot.rawText
+                note = "Cleanup unavailable: \(error). Original transcript delivered."
+                usedRawFallback = true
             }
         }
         // Transcription and cleanup can overlap across sessions. Only insertion
@@ -1268,64 +1355,74 @@ final class DictationController: ObservableObject {
         setProcessingStage(.queued, for: committed.sessionId)
         await previousDelivery?.value
         serverNote = note
+        let fallbackNote = usedRawFallback ? " · Original transcript used; cleanup unavailable" : ""
         if context.source == .app && context.ax.capturedPID == nil {
-            finishDelivery(text: text, method: "Transcript ready", receipt: nil, result: committed)
+            finishDelivery(text: text, method: "Transcript ready\(fallbackNote)", receipt: nil, result: committed)
             return
         }
         setProcessingStage(.inserting, for: committed.sessionId)
         await restoreCapturedAppFocusIfNeeded(target: context.ax)
-        var deliveryPrecondition = context.precondition
         let intervening = priorInsertions
             .filter { $0.serial > context.insertionSerialAtCapture }
             .map { (receipt: $0.receipt, by: $0.ax) }
-        if let rebased = context.ax.rebaseAfterOmilInsertions(intervening) {
-            deliveryPrecondition = rebased
-        } else {
-            let appendPastes = priorPastes
-                .filter { $0.serial > context.insertionSerialAtCapture }
-                .map { (text: $0.text, by: $0.ax) }
-            if let rebased = context.ax.rebaseAfterOmilAppendPastes(appendPastes) {
+        let appendPastes = priorPastes
+            .filter { $0.serial > context.insertionSerialAtCapture }
+            .map { (text: $0.text, by: $0.ax) }
+        let destination = context.ax
+        let initialPrecondition = context.precondition
+        let sessionID = committed.sessionId
+        let sequence = committed.commitSequence
+        let clipboard = self.clipboard
+        let (outcome, pasteReceipt) = await Task.detached(priority: .userInitiated) {
+            var deliveryPrecondition = initialPrecondition
+            if let rebased = destination.rebaseAfterOmilInsertions(intervening) {
+                deliveryPrecondition = rebased
+            } else if let rebased = destination.rebaseAfterOmilAppendPastes(appendPastes) {
                 deliveryPrecondition = rebased
             }
-        }
-        let outcome = TextDelivery.attempt(
-            text: text, precondition: deliveryPrecondition,
-            sessionId: committed.sessionId, sequence: committed.commitSequence,
-            destination: context.ax, trusted: context.ax.isTrusted,
-            paste: { text in
-                guard let prepared = clipboard.prepare(text: text) else { return .unavailable }
-                guard clipboard.paste() else { return .copied }
-                let inserter = clipboard
-                pasteRestoreTask = Task.detached {
-                    _ = inserter.restoreIfOwned(prepared: prepared)
+            var pasteToRestore: ClipboardInserter.PreparedPaste?
+            let outcome = TextDelivery.attempt(
+                text: text, precondition: deliveryPrecondition,
+                sessionId: sessionID, sequence: sequence,
+                destination: destination, trusted: destination.isTrusted,
+                paste: { text in
+                    guard let prepared = clipboard.prepare(text: text) else { return .unavailable }
+                    guard clipboard.paste() else { return .copied }
+                    pasteToRestore = prepared
+                    return .sent
                 }
-                return .sent
+            )
+            if let pasteToRestore { _ = clipboard.restoreIfOwned(prepared: pasteToRestore) }
+            let receipt: InsertionReceipt?
+            if case .pasteSent = outcome {
+                receipt = destination.receiptAfterPaste(
+                    text: text, precondition: deliveryPrecondition,
+                    sessionId: sessionID, sequence: sequence
+                )
+            } else {
+                receipt = nil
             }
-        )
-        await pasteRestoreTask?.value
-        pasteRestoreTask = nil
+            return (outcome, receipt)
+        }.value
         switch outcome {
         case .inserted(let receipt):
             insertionSerial += 1
             priorInsertions.append(PriorInsertion(serial: insertionSerial, receipt: receipt, ax: context.ax))
-            finishDelivery(text: text, method: "Inserted into focused field", receipt: receipt, result: committed, inserter: context.ax)
+            finishDelivery(text: text, method: "Inserted into focused field\(fallbackNote)", receipt: receipt, result: committed, inserter: context.ax)
         case .pasteSent:
-            if let receipt = context.ax.receiptAfterPaste(
-                text: text, precondition: deliveryPrecondition,
-                sessionId: committed.sessionId, sequence: committed.commitSequence
-            ) {
+            if let receipt = pasteReceipt {
                 insertionSerial += 1
                 priorInsertions.append(PriorInsertion(serial: insertionSerial, receipt: receipt, ax: context.ax))
-                finishDelivery(text: text, method: "Pasted into focused field", receipt: receipt, result: committed, inserter: context.ax)
+                finishDelivery(text: text, method: "Pasted into focused field\(fallbackNote)", receipt: receipt, result: committed, inserter: context.ax)
             } else {
                 insertionSerial += 1
                 priorPastes.append(PriorPaste(serial: insertionSerial, text: text, ax: context.ax))
-                finishDelivery(text: text, method: "Paste sent; field could not be verified", receipt: nil, result: committed)
+                finishDelivery(text: text, method: "Paste sent; field could not be verified\(fallbackNote)", receipt: nil, result: committed)
             }
         case .copiedForManualPaste:
-            finishDelivery(text: text, method: "Copied. Press ⌘V to paste.", receipt: nil, result: committed)
+            finishDelivery(text: text, method: "Copied. Press ⌘V to paste.\(fallbackNote)", receipt: nil, result: committed)
         case .retained(let reason):
-            finishDelivery(text: text, method: reason, receipt: nil, result: committed)
+            finishDelivery(text: text, method: reason + fallbackNote, receipt: nil, result: committed)
         }
     }
 
@@ -1561,16 +1658,25 @@ final class DictationController: ObservableObject {
         }
     }
 
-    private func saveRecoveryAudio(for sessionID: SessionID) {
+    private func saveRecoveryAudio(for sessionID: SessionID) -> Task<Void, Never>? {
         let pcm = recoveryBuffer.take()
-        guard audioRetentionDays > 0, !pcm.isEmpty else { return }
-        do {
-            let recording = try recoveryStore.save(pcm16: pcm)
-            recoveryIDsBySession[sessionID] = recording.id
-            recoveryRecordings.insert(recording, at: 0)
-        } catch {
-            serverNote = "Could not save recovery audio: \(error.localizedDescription)"
+        guard audioRetentionDays > 0, !pcm.isEmpty else { return nil }
+        let previous = recoverySaveTail
+        let store = recoveryStore
+        let task = Task {
+            await previous?.value
+            do {
+                let recording = try await Task.detached(priority: .utility) {
+                    try store.save(pcm16: pcm)
+                }.value
+                recoveryIDsBySession[sessionID] = recording.id
+                recoveryRecordings.insert(recording, at: 0)
+            } catch {
+                serverNote = "Could not save recovery audio: \(error.localizedDescription)"
+            }
         }
+        recoverySaveTail = task
+        return task
     }
 
     private func updateRecovery(

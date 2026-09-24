@@ -52,6 +52,14 @@ enum LocalPortPicker {
 /// A custom server is an explicit override managed by DictationController.
 @MainActor
 final class LocalServerManager: ObservableObject {
+    enum ToolInstallState: Equatable {
+        case idle
+        case installing([String])
+        case ready
+        case failed(message: String, homebrewMissing: Bool)
+    }
+
+    static let manualInstallCommand = "brew install whisper.cpp llama.cpp"
     enum State: Equatable {
         case stopped
         case starting
@@ -61,13 +69,81 @@ final class LocalServerManager: ObservableObject {
 
     @Published private(set) var state: State = .stopped
     @Published private(set) var sharedCredentials: LANConnectionCredentials?
+    @Published private(set) var toolInstallState: ToolInstallState = .idle
 
     private var process: Process?
     private var logHandle: FileHandle?
     private var activeConfig: ServerConfig?
     private var activeLANAccess = false
+    private var toolInstallTask: Task<Void, Never>?
 
     var isRunning: Bool { process?.isRunning == true }
+
+    /// Homebrew is only invoked when a required executable is absent.
+    func ensureInferenceTools() async {
+        if let toolInstallTask {
+            await toolInstallTask.value
+            return
+        }
+        let task = Task { await installMissingTools() }
+        toolInstallTask = task
+        await task.value
+        toolInstallTask = nil
+    }
+
+    private func installMissingTools() async {
+        let tools = [("whisper-cli", "whisper.cpp"), ("llama-server", "llama.cpp")]
+        let missing = tools.filter { executablePath(named: $0.0) == nil }.map(\.1)
+        guard !missing.isEmpty else {
+            toolInstallState = .ready
+            return
+        }
+        guard let brew = executablePath(named: "brew") else {
+            toolInstallState = .failed(
+                message: "Homebrew is required to install \(missing.joined(separator: " and ")).",
+                homebrewMissing: true
+            )
+            return
+        }
+        toolInstallState = .installing(missing)
+        do {
+            let root = try serverDirectory(fileManager: .default)
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            let logURL = root.appendingPathComponent("homebrew-install.log")
+            let path = mergedPath(ProcessInfo.processInfo.environment["PATH"])
+            let status = try await Task.detached(priority: .utility) {
+                if !FileManager.default.fileExists(atPath: logURL.path) {
+                    FileManager.default.createFile(atPath: logURL.path, contents: nil)
+                }
+                let log = try FileHandle(forWritingTo: logURL)
+                defer { try? log.close() }
+                try log.seekToEnd()
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: brew)
+                process.arguments = ["install"] + missing
+                process.environment = ProcessInfo.processInfo.environment.merging(["PATH": path]) { _, new in new }
+                process.standardOutput = log
+                process.standardError = log
+                try process.run()
+                process.waitUntilExit()
+                return process.terminationStatus
+            }.value
+            let stillMissing = tools.filter { executablePath(named: $0.0) == nil }.map(\.1)
+            if status == 0 && stillMissing.isEmpty {
+                toolInstallState = .ready
+            } else {
+                toolInstallState = .failed(
+                    message: "Homebrew could not install the required tools. See \(logURL.path) for details.",
+                    homebrewMissing: false
+                )
+            }
+        } catch {
+            toolInstallState = .failed(
+                message: "Homebrew could not start: \(error.localizedDescription)",
+                homebrewMissing: false
+            )
+        }
+    }
 
     func start(allowLANAccess: Bool = false) async throws -> ServerConfig {
         if let activeConfig, isRunning, activeLANAccess == allowLANAccess { return activeConfig }
@@ -284,15 +360,14 @@ final class LocalServerManager: ObservableObject {
     private func mergedPath(_ current: String?) -> String {
         let required = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"]
         let existing = (current ?? "").split(separator: ":").map(String.init)
-        return Array(Set(required + existing)).joined(separator: ":")
+        var seen = Set<String>()
+        return (required + existing).filter { seen.insert($0).inserted }.joined(separator: ":")
     }
 
     private func executablePath(named name: String) -> String? {
-        let candidates = [
-            Bundle.main.resourceURL?.appendingPathComponent(name).path,
-            "/opt/homebrew/bin/\(name)",
-            "/usr/local/bin/\(name)"
-        ].compactMap { $0 }
+        let candidates = mergedPath(ProcessInfo.processInfo.environment["PATH"])
+            .split(separator: ":")
+            .map { "\($0)/\(name)" }
         return candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) })
     }
 

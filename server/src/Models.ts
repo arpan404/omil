@@ -1,5 +1,6 @@
 import { Effect } from "effect"
-import { mkdir, rm } from "node:fs/promises"
+import { access, mkdir, rm, stat } from "node:fs/promises"
+import { constants } from "node:fs"
 import path from "node:path"
 import { createHash } from "node:crypto"
 import { modelSpec, VAD_MODEL, type ServerConfig } from "./Config"
@@ -28,6 +29,7 @@ export interface ModelFileLifecycle {
 
 const operations = new Map<string, ModelFileLifecycle>()
 const inFlight = new Map<string, Promise<string>>()
+const verifiedFiles = new Map<string, { size: number; mtimeMs: number; ctimeMs: number; ino: number; sha256: string }>()
 const operationKey = (cfg: ServerConfig, id: string) => `${cfg.dataDir}\u0000${id}`
 const managedModelSpec = (id: string) => id === VAD_MODEL.id ? VAD_MODEL : modelSpec(id)
 
@@ -53,12 +55,16 @@ export const checkBinaries = (cfg: ServerConfig): Effect.Effect<Record<string, b
   Effect.promise(async () => {
     const out: Record<string, boolean> = {}
     for (const [name, bin] of [["whisper", cfg.whisperBin], ["llama", cfg.llamaBin]] as const) {
-      try {
-        const proc = Bun.spawn([bin, "--version"], { stdout: "pipe", stderr: "pipe" })
-        await proc.exited
-        out[name] = proc.exitCode === 0
-      } catch {
-        out[name] = false
+      const candidates = bin.includes(path.sep)
+        ? [bin]
+        : (process.env.PATH ?? "").split(path.delimiter).map((dir) => path.join(dir, bin))
+      out[name] = false
+      for (const candidate of candidates) {
+        try {
+          await access(candidate, constants.X_OK)
+          out[name] = true
+          break
+        } catch { /* try the next PATH entry */ }
       }
     }
     return out
@@ -70,6 +76,24 @@ const sha256File = async (file: string): Promise<string> => {
   const stream = f.stream()
   for await (const chunk of stream as unknown as AsyncIterable<Uint8Array>) h.update(chunk)
   return h.digest("hex")
+}
+
+export const verifiedSha256 = async (file: string): Promise<string> => {
+  const before = await stat(file)
+  const cached = verifiedFiles.get(file)
+  if (cached && cached.size === before.size && cached.mtimeMs === before.mtimeMs
+    && cached.ctimeMs === before.ctimeMs && cached.ino === before.ino) {
+    return cached.sha256
+  }
+  const sha256 = await sha256File(file)
+  const after = await stat(file)
+  if (before.size !== after.size || before.mtimeMs !== after.mtimeMs
+    || before.ctimeMs !== after.ctimeMs || before.ino !== after.ino) {
+    throw new ModelError(`${path.basename(file)} changed during verification`)
+  }
+  verifiedFiles.set(file, { size: after.size, mtimeMs: after.mtimeMs,
+    ctimeMs: after.ctimeMs, ino: after.ino, sha256 })
+  return sha256
 }
 
 interface LocalManifest { [filename: string]: { sha256: string; bytes: number; url: string } }
@@ -102,7 +126,11 @@ export const checkModelReady = (
       const pinned = manifest[spec.filename]
       if (pinned) {
         return f.size === pinned.bytes
+          && (spec.expectedBytes === null || (spec.expectedSha256
+            ? f.size === spec.expectedBytes : sizeMatches(spec.expectedBytes, f.size)))
+          && (!spec.expectedSha256 || pinned.sha256 === spec.expectedSha256)
       }
+      if (spec.expectedSha256) return false
       if (spec.expectedBytes !== null) return sizeMatches(spec.expectedBytes, f.size)
       // Unknown-size entries are not ready until ensureModel hashes and pins
       // the complete file. A nonempty partial must never appear installed.
@@ -110,6 +138,33 @@ export const checkModelReady = (
     } catch {
       return false
     }
+  })
+
+/** Fast explanation for a file that cannot be used, without hashing a large weight on each poll. */
+export const modelIntegrityIssue = (
+  cfg: ServerConfig,
+  id: string,
+): Effect.Effect<string | null, never, never> =>
+  Effect.promise(async () => {
+    const spec = managedModelSpec(id)
+    if (!spec) return null
+    try {
+      const file = Bun.file(modelPath(cfg, id))
+      if (!(await file.exists())) return null
+      const manifest = await readManifest(cfg)
+      const pinned = manifest[spec.filename]
+      if (spec.expectedBytes !== null && (spec.expectedSha256
+        ? file.size !== spec.expectedBytes : !sizeMatches(spec.expectedBytes, file.size))) {
+        return "Model file is incomplete. Repair will download it again."
+      }
+      if (pinned && file.size !== pinned.bytes) {
+        return "Model file changed after download. Repair will download it again."
+      }
+      if (spec.expectedSha256 && pinned && pinned.sha256 !== spec.expectedSha256) {
+        return "Model file failed its integrity check. Repair will download it again."
+      }
+      return null
+    } catch { return null }
   })
 
 /** Ensure a weight file exists and matches its pinned (or expected) identity. */
@@ -137,7 +192,7 @@ const ensureModelOnce = (
           state: "verifying", receivedBytes: size,
           totalBytes: pinned.bytes, error: null,
         })
-        const actual = yield* Effect.promise(() => sha256File(dest))
+        const actual = yield* Effect.promise(() => verifiedSha256(dest))
         if (actual !== pinned.sha256) {
           return yield* Effect.fail(
             new ModelError(`${spec.filename}: checksum mismatch (expected ${pinned.sha256.slice(0, 12)}…, got ${actual.slice(0, 12)}…). Delete it to re-download.`),
@@ -161,7 +216,7 @@ const ensureModelOnce = (
           state: "verifying", receivedBytes: size,
           totalBytes: spec.expectedBytes ?? size, error: null,
         })
-        const sha = yield* Effect.promise(() => sha256File(dest))
+        const sha = yield* Effect.promise(() => verifiedSha256(dest))
         if (spec.expectedSha256 && sha !== spec.expectedSha256) {
           return yield* Effect.fail(new ModelError(`${spec.filename}: checksum mismatch. Delete it to re-download.`))
         }
@@ -213,7 +268,7 @@ const ensureModelOnce = (
       state: "verifying", receivedBytes: received,
       totalBytes: total > 0 ? total : received, error: null,
     })
-    const sha = yield* Effect.promise(() => sha256File(dest))
+    const sha = yield* Effect.promise(() => verifiedSha256(dest))
     if (spec.expectedSha256 && sha !== spec.expectedSha256) {
       return yield* Effect.fail(new ModelError(`${spec.filename}: download checksum mismatch`))
     }
@@ -274,6 +329,7 @@ export const deleteModel = (
         throw new ModelError(`${spec.filename} is still downloading`)
       }
       const destination = modelPath(cfg, id)
+      verifiedFiles.delete(destination)
       const existed = await Bun.file(destination).exists()
       await rm(destination, { force: true })
       const manifest = await readManifest(cfg)

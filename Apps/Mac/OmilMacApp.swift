@@ -247,7 +247,7 @@ struct MenuBarView: View {
                         .font(.system(size: 13, weight: .medium))
                 }
                 if recording {
-                    SignalRail(levels: controller.audioLevels, active: true)
+                    LiveSignalRail(meter: controller.audioMeter)
                         .frame(height: 28)
                 } else if busy {
                     HStack(spacing: 8) {
@@ -765,6 +765,11 @@ struct SettingsView: View {
                         Button("Change") { startShortcutCapture() }
                             .buttonStyle(SignalButtonStyle())
                     }
+                }
+                if hotkeys.pushToTalkKeyCode == 63 && hotkeys.pushToTalkModifiers.isEmpty {
+                    Text("If Fn also opens Emoji & Symbols, set “Press Fn key to” to “Do Nothing” in macOS Keyboard settings.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(OmilTheme.muted)
                 }
             }
 

@@ -94,16 +94,23 @@ final class AXInserter: TextDestination, @unchecked Sendable {
     /// Capture the frontmost app's focused text field. Call at recording start.
     @discardableResult
     func captureTarget(application: NSRunningApplication? = NSWorkspace.shared.frontmostApplication) -> Bool {
+        captureTarget(pid: application?.processIdentifier, bundleId: application?.bundleIdentifier)
+    }
+
+    @discardableResult
+    func captureTarget(pid: pid_t?, bundleId: String?) -> Bool {
         lock.lock()
         target = nil
         lock.unlock()
         guard isTrusted else { return false }
-        guard let app = application else { return false }
-        let appEl = AXUIElementCreateApplication(app.processIdentifier)
+        guard let pid else { return false }
+        let appEl = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(appEl, 1)
         var focused: CFTypeRef?
         guard AXUIElementCopyAttributeValue(appEl, axAttr(.focusedUIElement), &focused) == .success,
               let el = focused, CFGetTypeID(el) == AXUIElementGetTypeID() else { return false }
         let element = (el as! AXUIElement)
+        AXUIElementSetMessagingTimeout(element, 1)
         // Only text-ish roles.
         var role: CFTypeRef?
         AXUIElementCopyAttributeValue(element, axAttr(.role), &role)
@@ -124,7 +131,7 @@ final class AXInserter: TextDestination, @unchecked Sendable {
         AXUIElementCopyAttributeValue(element, axAttr(.value), &value)
         lock.lock()
         target = CapturedTarget(
-            pid: app.processIdentifier, bundleId: app.bundleIdentifier,
+            pid: pid, bundleId: bundleId,
             element: element, selectedText: selText as? String,
             selectedRange: range, valueHash: (value as? String)?.hashValue,
             valueSnapshot: value as? String)
@@ -219,6 +226,7 @@ final class AXInserter: TextDestination, @unchecked Sendable {
             return .stale(reason: "frontmost app changed; result retained for explicit insertion")
         }
         let appEl = AXUIElementCreateApplication(t.pid)
+        AXUIElementSetMessagingTimeout(appEl, 1)
         var focused: CFTypeRef?
         guard AXUIElementCopyAttributeValue(appEl, axAttr(.focusedUIElement), &focused) == .success,
               let focused, CFGetTypeID(focused) == AXUIElementGetTypeID(),

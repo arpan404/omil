@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import CoreImage
 import SwiftUI
 import OmilCore
 
@@ -678,7 +679,7 @@ private struct RecorderStage: View {
 
             Group {
                 if active {
-                    SignalRail(levels: controller.audioLevels, active: true)
+                    LiveSignalRail(meter: controller.audioMeter)
                 } else if controller.phase == .processing {
                     ProcessingTrack(stage: controller.processingStage)
                 } else {
@@ -897,31 +898,64 @@ private struct ResultCard: View {
 
 // MARK: - History
 
+enum HistoryListRow: Identifiable {
+    case savedHeader
+    case recording(RecoveryRecording)
+    case dayHeader(Date)
+    case transcript(DictationController.HistoryEntry)
+
+    var id: String {
+        switch self {
+        case .savedHeader: return "saved-header"
+        case .recording(let recording): return "recording-\(recording.id)"
+        case .dayHeader(let day): return "day-\(day.timeIntervalSinceReferenceDate)"
+        case .transcript(let entry): return "transcript-\(entry.id)"
+        }
+    }
+
+    static func make(
+        recordings: [RecoveryRecording],
+        history: [DictationController.HistoryEntry],
+        search: String
+    ) -> [HistoryListRow] {
+        let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
+        let matches: (String) -> Bool = { query.isEmpty || $0.localizedCaseInsensitiveContains(query) }
+        var rows: [HistoryListRow] = []
+        let matchingRecordings = recordings.filter {
+            matches($0.transcript ?? "") || matches($0.rawTranscript ?? "")
+        }
+        if !matchingRecordings.isEmpty {
+            rows.append(.savedHeader)
+            rows.append(contentsOf: matchingRecordings.map(HistoryListRow.recording))
+        }
+        var lastDay: Date?
+        for entry in history.sorted(by: { $0.date > $1.date }) where matches(entry.cleaned) || matches(entry.raw) {
+            let day = Calendar.current.startOfDay(for: entry.date)
+            if lastDay != day {
+                rows.append(.dayHeader(day))
+                lastDay = day
+            }
+            rows.append(.transcript(entry))
+        }
+        return rows
+    }
+}
+
 struct HistoryView: View {
     @ObservedObject var controller: DictationController
     @State private var search = ""
+    @State private var rows: [HistoryListRow]
     @State private var confirmDelete: DictationController.HistoryEntry?
     @State private var confirmRecoveryDelete: RecoveryRecording?
     @State private var selectedTranscript: HistoryTranscript?
 
-    private var query: String { search.trimmingCharacters(in: .whitespacesAndNewlines).localizedLowercase }
-
-    private var filteredRecordings: [RecoveryRecording] {
-        guard !query.isEmpty else { return controller.recoveryRecordings }
-        return controller.recoveryRecordings.filter {
-            ($0.transcript ?? "").localizedLowercase.contains(query) ||
-            ($0.rawTranscript ?? "").localizedLowercase.contains(query)
-        }
-    }
-
-    private var filtered: [(day: Date, entries: [DictationController.HistoryEntry])] {
-        guard !query.isEmpty else { return controller.historyByDay }
-        return controller.historyByDay.compactMap { day, entries in
-            let matches = entries.filter {
-                $0.cleaned.localizedLowercase.contains(query) || $0.raw.localizedLowercase.contains(query)
-            }
-            return matches.isEmpty ? nil : (day, matches)
-        }
+    init(controller: DictationController) {
+        self.controller = controller
+        _rows = State(initialValue: HistoryListRow.make(
+            recordings: controller.recoveryRecordings,
+            history: controller.history,
+            search: ""
+        ))
     }
 
     var body: some View {
@@ -965,56 +999,12 @@ struct HistoryView: View {
                 )
             } else {
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 22) {
-                        if !filteredRecordings.isEmpty {
-                            VStack(alignment: .leading, spacing: 10) {
-                                HStack(alignment: .firstTextBaseline) {
-                                    Text("Saved recordings")
-                                        .font(OmilType.utility(10, weight: .bold))
-                                        .tracking(1)
-                                        .foregroundStyle(OmilTheme.muted)
-                                    Spacer()
-                                    Text(controller.audioRetentionDays == 1 ? "Kept for 1 day" : "Kept for \(controller.audioRetentionDays) days")
-                                        .font(OmilType.utility(10))
-                                        .foregroundStyle(OmilTheme.faint)
-                                }
-                                ForEach(filteredRecordings) { recording in
-                                    RecoveryRecordingCard(
-                                        recording: recording,
-                                        playback: controller.recoveryPlayback,
-                                        isBusy: controller.phase == .recording || controller.phase == .preparing || controller.phase == .processing,
-                                        play: { controller.playRecovery(recording) },
-                                        seek: { controller.seekRecovery(recording, to: $0) },
-                                        retry: { controller.retryRecovery(recording) },
-                                        copy: { copy(recording.transcript ?? "") },
-                                        viewTranscript: { selectedTranscript = transcript(for: recording) },
-                                        delete: { confirmRecoveryDelete = recording }
-                                    )
-                                }
-                            }
+                    LazyVStack(alignment: .leading, spacing: 10) {
+                        if rows.isEmpty && !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            EmptyState(icon: "magnifyingglass", title: "Nothing matched", detail: "Try a shorter word or phrase.")
                         }
-
-                        if filtered.isEmpty {
-                            if filteredRecordings.isEmpty && !query.isEmpty {
-                                EmptyState(icon: "magnifyingglass", title: "Nothing matched", detail: "Try a shorter word or phrase.")
-                            }
-                        } else {
-                        ForEach(filtered, id: \.day) { group in
-                            VStack(alignment: .leading, spacing: 10) {
-                                Text(controller.dayLabel(for: group.day).uppercased())
-                                    .font(OmilType.utility(10, weight: .bold))
-                                    .tracking(1)
-                                    .foregroundStyle(OmilTheme.muted)
-                                ForEach(group.entries) { entry in
-                                    HistoryCard(
-                                        entry: entry,
-                                        copy: { copy(entry.cleaned) },
-                                        viewTranscript: { selectedTranscript = HistoryTranscript(entry: entry) },
-                                        delete: { confirmDelete = entry }
-                                    )
-                                }
-                            }
-                        }
+                        ForEach(rows) { row in
+                            historyRow(row)
                         }
                     }
                     .padding(.horizontal, 30)
@@ -1022,6 +1012,9 @@ struct HistoryView: View {
                 }
             }
         }
+        .onChange(of: search) { _, _ in refreshRows() }
+        .onReceive(controller.$history) { history in refreshRows(history: history) }
+        .onReceive(controller.$recoveryRecordings) { recordings in refreshRows(recordings: recordings) }
         .onDisappear { controller.recoveryPlayback.stop() }
         .sheet(item: $selectedTranscript) { transcript in
             HistoryTranscriptSheet(transcript: transcript)
@@ -1056,6 +1049,59 @@ struct HistoryView: View {
         } message: {
             Text("This permanently deletes the recording. Your transcript stays in History.")
         }
+    }
+
+    @ViewBuilder
+    private func historyRow(_ row: HistoryListRow) -> some View {
+        switch row {
+        case .savedHeader:
+            HStack(alignment: .firstTextBaseline) {
+                Text("Saved recordings")
+                    .font(OmilType.utility(10, weight: .bold))
+                    .tracking(1)
+                    .foregroundStyle(OmilTheme.muted)
+                Spacer()
+                Text(controller.audioRetentionDays == 1 ? "Kept for 1 day" : "Kept for \(controller.audioRetentionDays) days")
+                    .font(OmilType.utility(10))
+                    .foregroundStyle(OmilTheme.faint)
+            }
+        case .recording(let recording):
+            RecoveryRecordingCard(
+                recording: recording,
+                playback: controller.recoveryPlayback,
+                isBusy: controller.phase == .recording || controller.phase == .preparing || controller.phase == .processing,
+                play: { controller.playRecovery(recording) },
+                seek: { controller.seekRecovery(recording, to: $0) },
+                retry: { controller.retryRecovery(recording) },
+                copy: { copy(recording.transcript ?? "") },
+                viewTranscript: { selectedTranscript = transcript(for: recording) },
+                delete: { confirmRecoveryDelete = recording }
+            )
+        case .dayHeader(let day):
+            Text(controller.dayLabel(for: day).uppercased())
+                .font(OmilType.utility(10, weight: .bold))
+                .tracking(1)
+                .foregroundStyle(OmilTheme.muted)
+                .padding(.top, 12)
+        case .transcript(let entry):
+            HistoryCard(
+                entry: entry,
+                copy: { copy(entry.cleaned) },
+                viewTranscript: { selectedTranscript = HistoryTranscript(entry: entry) },
+                delete: { confirmDelete = entry }
+            )
+        }
+    }
+
+    private func refreshRows(
+        recordings: [RecoveryRecording]? = nil,
+        history: [DictationController.HistoryEntry]? = nil
+    ) {
+        rows = HistoryListRow.make(
+            recordings: recordings ?? controller.recoveryRecordings,
+            history: history ?? controller.history,
+            search: search
+        )
     }
 
     private func copy(_ text: String) {
@@ -1424,7 +1470,7 @@ struct SnippetsView: View {
             ) { EmptyView() }
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
+                LazyVStack(alignment: .leading, spacing: 18) {
                     VStack(alignment: .leading, spacing: 14) {
                         LabeledField(label: "When I say", placeholder: "my intro", text: $trigger)
 
@@ -1475,31 +1521,29 @@ struct SnippetsView: View {
                         )
                         .frame(minHeight: 240)
                     } else {
-                        LazyVStack(spacing: 10) {
-                            ForEach(controller.snippets) { snippet in
-                                HStack(alignment: .top, spacing: 14) {
-                                    VStack(alignment: .leading, spacing: 6) {
-                                        Text("\"\(snippet.trigger)\"")
-                                            .font(.system(size: 13, weight: .semibold))
-                                            .foregroundStyle(OmilTheme.signal)
-                                        Text(snippet.expansion)
-                                            .font(.system(size: 12))
-                                            .foregroundStyle(OmilTheme.muted)
-                                            .lineLimit(4)
-                                            .textSelection(.enabled)
-                                    }
-                                    Spacer()
-                                    Button(role: .destructive) { controller.deleteSnippet(snippet) } label: {
-                                        Image(systemName: "trash")
-                                    }
-                                    .buttonStyle(.plain)
-                                    .foregroundStyle(OmilTheme.faint)
-                                    .help("Delete snippet")
+                        ForEach(controller.snippets) { snippet in
+                            HStack(alignment: .top, spacing: 14) {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text("\"\(snippet.trigger)\"")
+                                        .font(.system(size: 13, weight: .semibold))
+                                        .foregroundStyle(OmilTheme.signal)
+                                    Text(snippet.expansion)
+                                        .font(.system(size: 12))
+                                        .foregroundStyle(OmilTheme.muted)
+                                        .lineLimit(4)
+                                        .textSelection(.enabled)
                                 }
-                                .padding(16)
-                                .background(OmilTheme.panel, in: RoundedRectangle(cornerRadius: 14))
-                                .overlay(RoundedRectangle(cornerRadius: 14).stroke(OmilTheme.line))
+                                Spacer()
+                                Button(role: .destructive) { controller.deleteSnippet(snippet) } label: {
+                                    Image(systemName: "trash")
+                                }
+                                .buttonStyle(.plain)
+                                .foregroundStyle(OmilTheme.faint)
+                                .help("Delete snippet")
                             }
+                            .padding(16)
+                            .background(OmilTheme.panel, in: RoundedRectangle(cornerRadius: 14))
+                            .overlay(RoundedRectangle(cornerRadius: 14).stroke(OmilTheme.line))
                         }
                     }
                 }
@@ -1626,6 +1670,7 @@ struct DictionaryView: View {
     @State private var written = ""
 
     var body: some View {
+        let keys = controller.dictionaryEntries.keys.sorted()
         VStack(spacing: 0) {
             PageHeader(
                 title: "Dictionary",
@@ -1633,7 +1678,7 @@ struct DictionaryView: View {
             ) { EmptyView() }
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
+                LazyVStack(alignment: .leading, spacing: 18) {
                     HStack(alignment: .bottom, spacing: 12) {
                         LabeledField(label: "When I say", placeholder: "oh mill", text: $spoken)
                         Image(systemName: "arrow.right")
@@ -1653,7 +1698,7 @@ struct DictionaryView: View {
                         .tracking(1)
                         .foregroundStyle(OmilTheme.muted)
 
-                    if controller.dictionaryEntries.isEmpty {
+                    if keys.isEmpty {
                         EmptyState(
                             icon: "character.book.closed",
                             title: "No corrections yet",
@@ -1661,36 +1706,31 @@ struct DictionaryView: View {
                         )
                         .frame(minHeight: 280)
                     } else {
-                        VStack(spacing: 0) {
-                            ForEach(Array(controller.dictionaryEntries.keys.sorted()), id: \.self) { key in
-                                HStack(spacing: 18) {
-                                    Text(key)
-                                        .foregroundStyle(OmilTheme.muted)
-                                    Image(systemName: "arrow.right")
-                                        .font(.system(size: 10, weight: .semibold))
-                                        .foregroundStyle(OmilTheme.faint)
-                                    Text(controller.dictionaryEntries[key] ?? "")
-                                        .fontWeight(.semibold)
-                                    Spacer()
-                                    Button(role: .destructive) {
-                                        controller.deleteDictionaryEntry(spoken: key)
-                                    } label: {
-                                        Image(systemName: "trash")
-                                    }
-                                    .buttonStyle(.plain)
+                        ForEach(keys, id: \.self) { key in
+                            HStack(spacing: 18) {
+                                Text(key)
+                                    .foregroundStyle(OmilTheme.muted)
+                                Image(systemName: "arrow.right")
+                                    .font(.system(size: 10, weight: .semibold))
                                     .foregroundStyle(OmilTheme.faint)
-                                    .help("Delete correction")
+                                Text(controller.dictionaryEntries[key] ?? "")
+                                    .fontWeight(.semibold)
+                                Spacer()
+                                Button(role: .destructive) {
+                                    controller.deleteDictionaryEntry(spoken: key)
+                                } label: {
+                                    Image(systemName: "trash")
                                 }
-                                .font(.system(size: 13))
-                                .padding(.horizontal, 16)
-                                .frame(height: 48)
-                                if key != controller.dictionaryEntries.keys.sorted().last {
-                                    Divider().overlay(OmilTheme.line).padding(.leading, 16)
-                                }
+                                .buttonStyle(.plain)
+                                .foregroundStyle(OmilTheme.faint)
+                                .help("Delete correction")
                             }
+                            .font(.system(size: 13))
+                            .padding(.horizontal, 16)
+                            .frame(height: 48)
+                            .background(OmilTheme.panel, in: RoundedRectangle(cornerRadius: 12))
+                            .overlay(RoundedRectangle(cornerRadius: 12).stroke(OmilTheme.line))
                         }
-                        .background(OmilTheme.panel, in: RoundedRectangle(cornerRadius: 14))
-                        .overlay(RoundedRectangle(cornerRadius: 14).stroke(OmilTheme.line))
                     }
                 }
                 .padding(.horizontal, 30)
@@ -1718,26 +1758,14 @@ private struct ModelOption {
 }
 
 private let whisperModelOptions = [
-    ModelOption(file: "ggml-tiny.bin", name: "Whisper tiny", size: "77 MB"),
-    ModelOption(file: "ggml-base.bin", name: "Whisper base", size: "148 MB"),
-    ModelOption(file: "ggml-small.bin", name: "Whisper small", size: "488 MB"),
-    ModelOption(file: "ggml-medium.bin", name: "Whisper medium", size: "1.5 GB"),
-    ModelOption(file: "ggml-medium-32-2.en.bin", name: "Distil-Whisper medium · English", size: "794 MB"),
-    ModelOption(file: "ggml-distil-large-v3.bin", name: "Distil-Whisper large-v3 · English", size: "1.5 GB"),
-    ModelOption(file: "ggml-large-v3-turbo-q5_0.bin", name: "Whisper large-v3 turbo Q5", size: "574 MB"),
+    ModelOption(file: "ggml-small-q8_0.bin", name: "Whisper small Q8 · faster", size: "264 MB"),
     ModelOption(file: "ggml-large-v3-turbo-q8_0.bin", name: "Whisper large-v3 turbo Q8", size: "874 MB"),
-    ModelOption(file: "ggml-large-v3-turbo.bin", name: "Whisper large-v3 turbo", size: "1.6 GB"),
-    ModelOption(file: "ggml-large-v3-q5_0.bin", name: "Whisper large-v3 Q5", size: "1.1 GB"),
-    ModelOption(file: "ggml-large-v3.bin", name: "Whisper large-v3", size: "3.1 GB")
 ]
 
 private let rewriteModelOptions = [
-    ModelOption(file: "Qwen3-0.6B-Q4_K_M.gguf", name: "Qwen3 0.6B", size: "397 MB"),
-    ModelOption(file: "Qwen3-4B-Instruct-2507-Q4_K_M.gguf", name: "Qwen3 4B", size: "2.5 GB"),
-    ModelOption(file: "Qwen3-8B-Q4_K_M.gguf", name: "Qwen3 8B", size: "5 GB"),
     ModelOption(file: "Qwen3.5-0.8B-Q4_K_M.gguf", name: "Qwen3.5 0.8B", size: "533 MB"),
+    ModelOption(file: "Qwen3.5-2B-Q4_K_M.gguf", name: "Qwen3.5 2B", size: "1.3 GB"),
     ModelOption(file: "Qwen3.5-4B-Q4_K_M.gguf", name: "Qwen3.5 4B", size: "2.7 GB"),
-    ModelOption(file: "Qwen3.5-9B-Q4_K_M.gguf", name: "Qwen3.5 9B", size: "5.7 GB")
 ]
 
 struct EngineView: View {
@@ -1758,6 +1786,48 @@ struct EngineView: View {
             ScrollView {
                 VStack(spacing: 16) {
                     EngineStatusBar(controller: controller)
+                    if !controller.usesCustomServer {
+                        switch controller.toolInstallState {
+                        case .idle, .ready:
+                            EmptyView()
+                        case .installing(let formulae):
+                            Label("Installing \(formulae.joined(separator: " and ")) with Homebrew. This may take a few minutes.", systemImage: "arrow.down.circle")
+                                .font(.system(size: 12))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(14)
+                                .background(OmilTheme.panel, in: RoundedRectangle(cornerRadius: 12))
+                        case .failed(let message, let homebrewMissing):
+                            VStack(alignment: .leading, spacing: 10) {
+                                Label(message, systemImage: "exclamationmark.triangle")
+                                    .font(.system(size: 12, weight: .medium))
+                                if homebrewMissing {
+                                    Link("Install Homebrew", destination: URL(string: "https://brew.sh/")!)
+                                        .font(.system(size: 12, weight: .semibold))
+                                    Text("After installing Homebrew, run this command in Terminal:")
+                                        .font(.system(size: 11))
+                                } else {
+                                    Text("You can run this command in Terminal:")
+                                        .font(.system(size: 11))
+                                }
+                                HStack {
+                                    Text(LocalServerManager.manualInstallCommand)
+                                        .font(.system(.caption, design: .monospaced))
+                                        .textSelection(.enabled)
+                                    Spacer()
+                                    Button("Copy") {
+                                        NSPasteboard.general.clearContents()
+                                        NSPasteboard.general.setString(LocalServerManager.manualInstallCommand, forType: .string)
+                                    }
+                                    .buttonStyle(QuietButtonStyle())
+                                    Button("Retry") { controller.retryInferenceToolInstall() }
+                                        .buttonStyle(QuietButtonStyle())
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(14)
+                            .background(OmilTheme.panel, in: RoundedRectangle(cornerRadius: 12))
+                        }
+                    }
 
                     VStack(spacing: 0) {
                         ModelPipelineRow(
@@ -1768,6 +1838,7 @@ struct EngineView: View {
                                 get: { controller.displayedWhisperFile },
                                 set: { controller.chooseWhisperModel(file: $0) }
                             ),
+                            activeFile: controller.whisperFile,
                             options: whisperModelOptions,
                             downloaded: controller.modelIsDownloaded(file: controller.displayedWhisperFile),
                             fileState: controller.modelInfo(file: controller.displayedWhisperFile)?.fileState,
@@ -1775,13 +1846,8 @@ struct EngineView: View {
                             totalBytes: controller.modelInfo(file: controller.displayedWhisperFile)?.totalBytes,
                             memoryState: controller.modelInfo(file: controller.displayedWhisperFile)?.memoryState,
                             downloading: controller.modelIsDownloading(file: controller.displayedWhisperFile),
-                            interactionDisabled: controller.modelsPreparing || !controller.downloadingModelIDs.isEmpty,
-                            download: { controller.downloadModel(file: controller.displayedWhisperFile) },
-                            delete: {
-                                modelPendingDeletion = whisperModelOptions.first {
-                                    $0.file == controller.displayedWhisperFile
-                                }
-                            }
+                            interactionDisabled: controller.modelsPreparing,
+                            download: { controller.downloadModel(file: controller.displayedWhisperFile) }
                         )
                         Divider()
                             .overlay(OmilTheme.line)
@@ -1794,6 +1860,7 @@ struct EngineView: View {
                                 get: { controller.displayedLLMFile },
                                 set: { controller.chooseLLMModel(file: $0) }
                             ),
+                            activeFile: controller.llmFile,
                             options: rewriteModelOptions,
                             downloaded: controller.modelIsDownloaded(file: controller.displayedLLMFile),
                             fileState: controller.modelInfo(file: controller.displayedLLMFile)?.fileState,
@@ -1801,17 +1868,14 @@ struct EngineView: View {
                             totalBytes: controller.modelInfo(file: controller.displayedLLMFile)?.totalBytes,
                             memoryState: controller.modelInfo(file: controller.displayedLLMFile)?.memoryState,
                             downloading: controller.modelIsDownloading(file: controller.displayedLLMFile),
-                            interactionDisabled: controller.modelsPreparing || !controller.downloadingModelIDs.isEmpty,
-                            download: { controller.downloadModel(file: controller.displayedLLMFile) },
-                            delete: {
-                                modelPendingDeletion = rewriteModelOptions.first {
-                                    $0.file == controller.displayedLLMFile
-                                }
-                            }
+                            interactionDisabled: controller.modelsPreparing,
+                            download: { controller.downloadModel(file: controller.displayedLLMFile) }
                         )
                     }
                     .background(OmilTheme.panel, in: RoundedRectangle(cornerRadius: 14))
                     .overlay(RoundedRectangle(cornerRadius: 14).stroke(OmilTheme.line))
+
+                    ModelLibraryCard(controller: controller) { modelPendingDeletion = $0 }
 
                     LANSharingCard(
                         controller: controller,
@@ -1922,7 +1986,9 @@ struct EngineView: View {
             }
             Button("Cancel", role: .cancel) { modelPendingDeletion = nil }
         } message: {
-            Text("This deletes the model from this Mac. You can download it again later.")
+            Text(controller.usesCustomServer
+                 ? "This deletes the model from the connected server. You can download it again later."
+                 : "This deletes the model from this Mac. You can download it again later.")
         }
         .confirmationDialog(
             "Replace the connection token?",
@@ -1939,10 +2005,196 @@ struct EngineView: View {
     }
 }
 
+private struct ModelLibraryCard: View {
+    @ObservedObject var controller: DictationController
+    let requestDelete: (ModelOption) -> Void
+    @State private var showsAll = false
+
+    private var actionsLocked: Bool {
+        controller.phase == .recording || controller.phase == .preparing ||
+        !controller.processingJobs.isEmpty || controller.modelsPreparing
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .center, spacing: 14) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Model library")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(OmilTheme.ink)
+                    Text(controller.usesCustomServer ? "Models on the connected server" : "Models stored on this Mac")
+                        .font(.system(size: 11))
+                        .foregroundStyle(OmilTheme.muted)
+                }
+                Spacer()
+                HStack(spacing: 3) {
+                    Button("Installed") { showsAll = false }
+                        .buttonStyle(SegmentButtonStyle(selected: !showsAll))
+                    Button("All models") { showsAll = true }
+                        .buttonStyle(SegmentButtonStyle(selected: showsAll))
+                }
+            }
+            .padding(18)
+
+            Divider().overlay(OmilTheme.line)
+
+            if controller.serverModels.isEmpty {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Checking available models")
+                        .font(.system(size: 12))
+                        .foregroundStyle(OmilTheme.muted)
+                }
+                .padding(18)
+            } else {
+                group(title: "Transcription", icon: "waveform", options: whisperModelOptions,
+                      activeFile: controller.whisperFile, isWhisper: true)
+                Divider().overlay(OmilTheme.line)
+                group(title: "Cleanup", icon: "wand.and.stars", options: rewriteModelOptions,
+                      activeFile: controller.llmFile, isWhisper: false)
+            }
+        }
+        .background(OmilTheme.panel, in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(OmilTheme.line))
+    }
+
+    private func group(title: String, icon: String, options: [ModelOption],
+                       activeFile: String, isWhisper: Bool) -> some View {
+        let installed = options.filter { controller.modelIsDownloaded(file: $0.file) == true }
+        let visible = showsAll ? options : options.filter {
+            controller.modelIsDownloaded(file: $0.file) == true ||
+            controller.modelInfo(file: $0.file)?.fileState == "failed" ||
+            controller.modelIsDownloading(file: $0.file) ||
+            controller.modelInfo(file: $0.file)?.fileState == "downloading" ||
+            controller.modelInfo(file: $0.file)?.fileState == "verifying"
+        }
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: icon)
+                    .foregroundStyle(OmilTheme.signal)
+                    .frame(width: 18)
+                Text(title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(OmilTheme.ink)
+                Spacer()
+                Text("\(installed.count) installed")
+                    .font(OmilType.utility(10))
+                    .foregroundStyle(OmilTheme.muted)
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 13)
+            .background(OmilTheme.panelDeep.opacity(0.5))
+
+            if visible.isEmpty {
+                Text("No \(title.lowercased()) models installed. Choose All models to download one.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(OmilTheme.muted)
+                    .padding(18)
+            } else {
+                ForEach(visible, id: \.file) { option in
+                    modelRow(option, activeFile: activeFile, isWhisper: isWhisper)
+                    if option.file != visible.last?.file {
+                        Divider().overlay(OmilTheme.line)
+                            .padding(.leading, 18)
+                    }
+                }
+            }
+        }
+    }
+
+    private func modelRow(_ option: ModelOption, activeFile: String, isWhisper: Bool) -> some View {
+        let info = controller.modelInfo(file: option.file)
+        let isActive = option.file == activeFile
+        let isDownloading = controller.modelIsDownloading(file: option.file) ||
+            info?.fileState == "downloading" || info?.fileState == "verifying"
+        let needsRepair = info?.fileState == "failed" && info?.downloaded != true
+        let isSelected = isActive && info?.downloaded == true
+        return HStack(spacing: 10) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(isSelected ? OmilTheme.mint : .clear)
+                .frame(width: 18)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(option.name)
+                    .font(.system(size: 12, weight: isActive ? .semibold : .medium))
+                    .foregroundStyle(OmilTheme.ink)
+                    .lineLimit(1)
+                Text(status(for: info, isActive: isActive, isDownloading: isDownloading))
+                    .font(.system(size: 10))
+                    .foregroundStyle(needsRepair ? OmilTheme.warning : OmilTheme.muted)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 8)
+            Text(option.size)
+                .font(OmilType.utility(10))
+                .foregroundStyle(OmilTheme.faint)
+                .fixedSize()
+            if isDownloading {
+                ProgressView().controlSize(.small)
+                    .frame(width: 78)
+            } else if isSelected {
+                Text("In use")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(OmilTheme.mint)
+                    .frame(width: 78, alignment: .trailing)
+            } else if info?.downloaded == true {
+                Button("Select") {
+                    if isWhisper { controller.chooseWhisperModel(file: option.file) }
+                    else { controller.chooseLLMModel(file: option.file) }
+                }
+                .buttonStyle(QuietButtonStyle())
+                .disabled(actionsLocked)
+                .frame(width: 78)
+            } else {
+                Button(needsRepair ? "Repair" : "Download") {
+                    controller.downloadModel(file: option.file)
+                }
+                .buttonStyle(QuietButtonStyle())
+                .disabled(actionsLocked || info == nil)
+                .frame(width: 78)
+            }
+            if info?.downloaded == true && !isActive {
+                Button { requestDelete(option) } label: {
+                    Image(systemName: "trash")
+                        .font(.system(size: 11))
+                        .frame(width: 25, height: 25)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(OmilTheme.faint)
+                .disabled(actionsLocked)
+                .help("Delete \(option.name)")
+                .accessibilityLabel("Delete \(option.name)")
+            } else {
+                Color.clear.frame(width: 25, height: 25)
+                    .accessibilityHidden(true)
+            }
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 10)
+        .background(isActive ? OmilTheme.mint.opacity(0.035) : .clear)
+    }
+
+    private func status(for info: DictationController.ServerModelInfo?, isActive: Bool,
+                        isDownloading: Bool) -> String {
+        guard let info else { return "Checking availability" }
+        if isDownloading {
+            if let received = info.receivedBytes, let total = info.totalBytes, total > 0 {
+                return "Downloading · \(min(100, Int(Double(received) / Double(total) * 100)))%"
+            }
+            return "Downloading"
+        }
+        if info.fileState == "failed" { return info.fileError ?? "Model needs repair" }
+        if info.downloaded { return isActive ? "Selected for dictation" : "Installed and ready to select" }
+        return "Available to download"
+    }
+}
+
 private struct LANSharingCard: View {
     @ObservedObject var controller: DictationController
     @Binding var confirmTokenRotation: Bool
     @State private var revealToken = false
+    @State private var showPairingCode = false
 
     private var connectionLocked: Bool {
         controller.phase == .recording
@@ -2010,6 +2262,8 @@ private struct LANSharingCard: View {
                         Button("New token") { confirmTokenRotation = true }
                             .buttonStyle(QuietButtonStyle())
                             .disabled(connectionLocked)
+                        Button("Pair iPhone") { showPairingCode = true }
+                            .buttonStyle(QuietButtonStyle())
                         Button("Copy setup") { controller.copyLANCredentials() }
                             .buttonStyle(SignalButtonStyle())
                     }
@@ -2029,6 +2283,59 @@ private struct LANSharingCard: View {
             RoundedRectangle(cornerRadius: 14)
                 .stroke(controller.lanSharingEnabled ? OmilTheme.mint.opacity(0.35) : OmilTheme.line)
         )
+        .sheet(isPresented: $showPairingCode) {
+            if let credentials = controller.lanCredentials {
+                LANPairingSheet(credentials: credentials)
+            }
+        }
+    }
+}
+
+private struct LANPairingSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let credentials: LANConnectionCredentials
+
+    private var code: NSImage? {
+        guard let url = ServerConfig(host: credentials.host, port: credentials.port, token: credentials.token).pairingURL,
+              let filter = CIFilter(name: "CIQRCodeGenerator") else { return nil }
+        filter.setValue(Data(url.absoluteString.utf8), forKey: "inputMessage")
+        filter.setValue("M", forKey: "inputCorrectionLevel")
+        let context = CIContext()
+        guard let output = filter.outputImage,
+              let cgImage = context.createCGImage(output, from: output.extent) else { return nil }
+        return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+    }
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Text("Connect your iPhone")
+                .font(OmilType.display(20))
+                .foregroundStyle(OmilTheme.ink)
+            Text("In Omil on iPhone, open Settings and tap Scan QR code.")
+                .font(.system(size: 12))
+                .foregroundStyle(OmilTheme.muted)
+            if let code {
+                Image(nsImage: code)
+                    .interpolation(.none)
+                    .resizable()
+                    .frame(width: 224, height: 224)
+                    .padding(16)
+                    .background(.white, in: RoundedRectangle(cornerRadius: 12))
+                    .accessibilityLabel("Omil server pairing QR code")
+            }
+            Text(verbatim: credentials.endpoint)
+                .font(OmilType.utility(11))
+                .foregroundStyle(OmilTheme.faint)
+            Text("This code contains your server token. Show it only to devices you trust.")
+                .font(.system(size: 11))
+                .foregroundStyle(OmilTheme.muted)
+            Button("Done") { dismiss() }
+                .buttonStyle(QuietButtonStyle())
+                .keyboardShortcut(.defaultAction)
+        }
+        .padding(28)
+        .frame(width: 340)
+        .omilAppearance()
     }
 }
 
@@ -2092,6 +2399,15 @@ private struct EngineStatusBar: View {
                 Button("Restart") { controller.restartManagedServer() }
                     .buttonStyle(QuietButtonStyle())
             }
+            if controller.modelIsDownloaded(file: controller.llmFile) == true {
+                Button(controller.reloadingLLM ? "Reloading…" : "Reload cleanup") {
+                    controller.reloadCleanupModel()
+                }
+                .buttonStyle(QuietButtonStyle())
+                .disabled(controller.reloadingLLM || !controller.processingJobs.isEmpty ||
+                          !controller.downloadingModelIDs.isEmpty)
+                .help("Restart the selected cleanup model on the server")
+            }
             Button("Check now") { Task { await controller.refreshServerHealth() } }
                 .buttonStyle(QuietButtonStyle())
         }
@@ -2105,6 +2421,7 @@ private struct ModelPipelineRow: View {
     let detail: String
     let icon: String
     @Binding var selection: String
+    let activeFile: String
     let options: [ModelOption]
     let downloaded: Bool?
     let fileState: String?
@@ -2114,7 +2431,6 @@ private struct ModelPipelineRow: View {
     let downloading: Bool
     let interactionDisabled: Bool
     let download: () -> Void
-    let delete: () -> Void
 
     private var selectedOption: ModelOption? {
         options.first(where: { $0.file == selection })
@@ -2147,7 +2463,8 @@ private struct ModelPipelineRow: View {
                     title: stage + " model",
                     selection: $selection,
                     options: options.map(\.file),
-                    label: { file in options.first(where: { $0.file == file })?.name ?? file }
+                    label: { file in options.first(where: { $0.file == file })?.name ?? file },
+                    markedSelection: activeFile
                 )
                 .disabled(interactionDisabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -2171,7 +2488,7 @@ private struct ModelPipelineRow: View {
                     } else if downloaded == true {
                         memoryStatus
                     } else if fileState == "failed" {
-                        Button("Retry", action: download)
+                        Button("Repair", action: download)
                             .buttonStyle(SignalButtonStyle())
                             .disabled(interactionDisabled)
                     } else if downloaded == false {
@@ -2184,24 +2501,18 @@ private struct ModelPipelineRow: View {
                         Text("Checking")
                             .foregroundStyle(OmilTheme.muted)
                     }
-                    if downloaded == true {
-                        Button(action: delete) {
-                            Image(systemName: "trash")
-                                .font(.system(size: 11, weight: .semibold))
-                                .foregroundStyle(OmilTheme.faint)
-                                .frame(width: 24, height: 24)
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(interactionDisabled)
-                        .help("Delete downloaded model")
-                        .accessibilityLabel("Delete " + stage.lowercased() + " model")
-                    }
                 }
                 .font(.system(size: 11, weight: .medium))
                 .frame(width: 124, alignment: .trailing)
                 .frame(minHeight: 34)
             }
             .padding(.leading, 48)
+            if selection != activeFile {
+                Text("Current: \(options.first(where: { $0.file == activeFile })?.name ?? activeFile)")
+                    .font(.system(size: 10))
+                    .foregroundStyle(OmilTheme.muted)
+                    .padding(.leading, 48)
+            }
         }
         .padding(16)
     }
@@ -2393,22 +2704,32 @@ private struct ProcessingTrack: View {
     }
 }
 
+struct LiveSignalRail: View {
+    @ObservedObject var meter: AudioMeter
+
+    var body: some View {
+        SignalRail(levels: meter.levels, active: true)
+    }
+}
+
 struct SignalRail: View {
     let levels: [Double]
     let active: Bool
 
     var body: some View {
-        GeometryReader { proxy in
-            let visible = Array(levels.suffix(36))
-            HStack(alignment: .center, spacing: 4) {
-                ForEach(Array(visible.enumerated()), id: \.offset) { item in
-                    Capsule()
-                        .fill(barColor(level: item.element))
-                        .frame(maxWidth: .infinity)
-                        .frame(height: barHeight(level: item.element, available: proxy.size.height))
-                }
+        Canvas { context, size in
+            let visible = levels.suffix(36)
+            guard !visible.isEmpty else { return }
+            let spacing: CGFloat = 4
+            let width = max(1, (size.width - CGFloat(visible.count - 1) * spacing) / CGFloat(visible.count))
+            for (index, level) in visible.enumerated() {
+                let height = barHeight(level: level, available: size.height)
+                let rect = CGRect(x: CGFloat(index) * (width + spacing),
+                                  y: (size.height - height) / 2,
+                                  width: width, height: height)
+                context.fill(Path(roundedRect: rect, cornerRadius: min(width, height) / 2),
+                             with: .color(barColor(level: level)))
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .accessibilityHidden(true)
     }
@@ -2519,6 +2840,7 @@ struct OmilPickerField<Value: Hashable>: View {
     @Binding var selection: Value
     let options: [Value]
     let label: (Value) -> String
+    var markedSelection: Value? = nil
     @State private var isPresented = false
     @State private var attachmentPoint = UnitPoint(x: 0.5, y: 1)
     @State private var pointerTapPending = false
@@ -2567,17 +2889,17 @@ struct OmilPickerField<Value: Hashable>: View {
                         HStack(spacing: 12) {
                             Text(label(option))
                             Spacer(minLength: 12)
-                            if option == selection {
+                            if option == (markedSelection ?? selection) {
                                 Image(systemName: "checkmark")
                                     .foregroundStyle(OmilTheme.signal)
                             }
                         }
-                        .font(.system(size: 12, weight: option == selection ? .semibold : .medium))
+                        .font(.system(size: 12, weight: option == (markedSelection ?? selection) ? .semibold : .medium))
                         .foregroundStyle(OmilTheme.ink)
                         .padding(.horizontal, 11)
                         .frame(height: 32)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(option == selection ? OmilTheme.panelLifted : .clear,
+                        .background(option == (markedSelection ?? selection) ? OmilTheme.panelLifted : .clear,
                                     in: RoundedRectangle(cornerRadius: 7))
                     }
                     .buttonStyle(HoverButtonStyle(cornerRadius: 7))

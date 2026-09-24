@@ -200,6 +200,7 @@ final class PillManager: NSObject, ObservableObject, NSWindowDelegate {
         let screen = NSScreen.main?.visibleFrame ?? .zero
         let fallback = NSPoint(x: screen.midX, y: screen.minY + 24)
         let frame = position.frame(size: size, fallback: fallback, screens: NSScreen.screens.map(\.visibleFrame))
+        guard panel.frame != frame else { return }
         placingPanel = true
         defer { placingPanel = false }
         panel.setFrame(frame, display: true)
@@ -272,7 +273,7 @@ final class PillPresentation: ObservableObject {
         processingStage = controller.processingStage
         lastCleaned = controller.lastCleaned
         statusMessage = controller.statusMessage
-        audioLevels = controller.audioLevels
+        audioLevels = controller.audioMeter.levels
         pillAlwaysVisible = controller.pillAlwaysVisible
         pendingCount = controller.processingJobs.count
         pendingStage = controller.processingJobs.first?.stage
@@ -287,7 +288,7 @@ final class PillPresentation: ObservableObject {
         controller.$processingStage.sink { [weak self] in self?.processingStage = $0 }.store(in: &cancellables)
         controller.$lastCleaned.sink { [weak self] in self?.lastCleaned = $0 }.store(in: &cancellables)
         controller.$statusMessage.sink { [weak self] in self?.statusMessage = $0 }.store(in: &cancellables)
-        controller.$audioLevels.sink { [weak self] in self?.audioLevels = $0 }.store(in: &cancellables)
+        controller.audioMeter.$levels.sink { [weak self] in self?.audioLevels = $0 }.store(in: &cancellables)
         controller.$pillAlwaysVisible.sink { [weak self] in self?.pillAlwaysVisible = $0 }.store(in: &cancellables)
         controller.$processingJobs.sink { [weak self] jobs in
             guard let self else { return }

@@ -1,13 +1,13 @@
 import OmilCore
 
-enum TextDeliveryOutcome {
+enum TextDeliveryOutcome: Sendable {
     case inserted(InsertionReceipt)
     case pasteSent
     case copiedForManualPaste
     case retained(String)
 }
 
-enum PasteAttempt {
+enum PasteAttempt: Sendable {
     case sent
     case copied
     case unavailable

@@ -23,7 +23,7 @@ The macOS app is the user-facing process. It owns recording, UI state,
 shortcuts, insertion, and local history. A bundled server owns model downloads,
 transcription, and cleanup. The server calls Homebrew-installed
 transcription and cleanup binaries. Today those are `whisper-cli` and
-`llama-server`, from the `whisper-cpp` and `llama.cpp` packages. The speech
+`llama-server`, from the `whisper.cpp` and `llama.cpp` packages. The speech
 and cleanup models are catalog entries, so another model can be added without
 changing this layout.
 
@@ -41,9 +41,12 @@ raw transcript that was already produced.
 4. It launches the bundled `omil-server` executable on `127.0.0.1` and passes
    the app process ID to it. If the user explicitly enables local-network
    sharing, it binds to `0.0.0.0` instead.
-5. The app polls `/v1/health`, reads the model catalog, and prepares the selected
-   speech and cleanup weights when needed.
-6. Closing the app terminates the managed server. The server also watches the
+5. If `whisper-cli` or `llama-server` is missing, the app runs Homebrew to install
+   `whisper.cpp` or `llama.cpp`. If Homebrew is missing or fails, Engine shows
+   the official install page and a command to run in Terminal.
+6. The app polls `/v1/health`, reads the model catalog, prepares selected
+   weights when needed, and warms the cleanup model in the background.
+7. Closing the app terminates the managed server. The server also watches the
    parent process and exits if the app disappears unexpectedly.
 
 The Engine screen can expose the managed server to trusted devices on the same
@@ -54,10 +57,11 @@ as an advanced development override.
 
 ## Supported models
 
-The Engine screen can select any speech or cleanup model in the server catalog.
-The defaults are initial selections, not fixed dependencies. Changing a model
-saves the selection on the server. The selected weights download separately,
-and the next transcription or cleanup uses that model.
+The Engine screen offers Whisper small Q8 and large-v3 turbo Q8 for speech,
+and Qwen3.5 0.8B, 2B, and 4B at Q4 for cleanup. The defaults are large-v3
+turbo Q8 and Qwen3.5 2B. Each client sends its model choice with a request.
+Selected weights download separately. Changing the cleanup model warms it in
+the background before the next recording.
 
 ## Dictation lifecycle
 

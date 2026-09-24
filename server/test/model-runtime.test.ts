@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { ModelRuntimeLifecycle } from "../src/ModelRuntime"
-import { checkModelReady, deleteModel } from "../src/Models"
+import { checkModelReady, deleteModel, modelIntegrityIssue } from "../src/Models"
 import type { ServerConfig } from "../src/Config"
 
 describe("model runtime lifecycle", () => {
@@ -59,6 +59,30 @@ describe("model runtime lifecycle", () => {
 })
 
 describe("model file lifecycle", () => {
+  test("a pinned but truncated Qwen3.5 download is marked for repair", async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), "omil-model-corrupt-"))
+    const cfg: ServerConfig = {
+      host: "127.0.0.1", port: 3217, dataDir,
+      whisperBin: "whisper-cli", llamaBin: "llama-server", llamaPort: 3218,
+      whisperModelId: "whisper-large-v3-turbo-q8", llmModelId: "qwen3.5-4b",
+    }
+    try {
+      const dir = path.join(dataDir, "models")
+      const filename = "Qwen3.5-4B-Q4_K_M.gguf"
+      await mkdir(dir, { recursive: true })
+      await writeFile(path.join(dir, filename), new Uint8Array([1, 2, 3]))
+      await writeFile(path.join(dir, "manifest.local.json"), JSON.stringify({
+        [filename]: { sha256: "local-pin-for-truncated-file", bytes: 3, url: "https://example.test/model" },
+      }))
+
+      expect(await Effect.runPromise(checkModelReady(cfg, "qwen3.5-4b"))).toBe(false)
+      expect(await Effect.runPromise(modelIntegrityIssue(cfg, "qwen3.5-4b")))
+        .toContain("incomplete")
+    } finally {
+      await rm(dataDir, { recursive: true, force: true })
+    }
+  })
+
   test("an unpinned partial file is not reported as downloaded", async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), "omil-model-state-"))
     const cfg: ServerConfig = {
@@ -68,15 +92,15 @@ describe("model file lifecycle", () => {
       whisperBin: "whisper-cli",
       llamaBin: "llama-server",
       llamaPort: 3218,
-      whisperModelId: "whisper-large-v3",
-      llmModelId: "qwen3-4b-instruct",
+      whisperModelId: "whisper-large-v3-turbo-q8",
+      llmModelId: "qwen3.5-2b",
     }
     try {
       const dir = path.join(dataDir, "models")
       await mkdir(dir, { recursive: true })
-      await writeFile(path.join(dir, "ggml-large-v3.bin"), new Uint8Array([1, 2, 3]))
+      await writeFile(path.join(dir, "ggml-large-v3-turbo-q8_0.bin"), new Uint8Array([1, 2, 3]))
 
-      expect(await Effect.runPromise(checkModelReady(cfg, "whisper-large-v3"))).toBe(false)
+      expect(await Effect.runPromise(checkModelReady(cfg, "whisper-large-v3-turbo-q8"))).toBe(false)
     } finally {
       await rm(dataDir, { recursive: true, force: true })
     }
@@ -91,17 +115,17 @@ describe("model file lifecycle", () => {
       whisperBin: "whisper-cli",
       llamaBin: "llama-server",
       llamaPort: 3218,
-      whisperModelId: "whisper-large-v3-turbo",
-      llmModelId: "qwen3-4b-instruct",
+      whisperModelId: "whisper-large-v3-turbo-q8",
+      llmModelId: "qwen3.5-2b",
     }
     try {
       const dir = path.join(dataDir, "models")
       await mkdir(dir, { recursive: true })
-      await writeFile(path.join(dir, "ggml-large-v3-turbo.bin"), new Uint8Array([1, 2, 3]))
+      await writeFile(path.join(dir, "ggml-large-v3-turbo-q8_0.bin"), new Uint8Array([1, 2, 3]))
 
-      expect(await Effect.runPromise(deleteModel(cfg, "whisper-large-v3-turbo"))).toBe(true)
-      expect(await Bun.file(path.join(dir, "ggml-large-v3-turbo.bin")).exists()).toBe(false)
-      expect(await Effect.runPromise(checkModelReady(cfg, "whisper-large-v3-turbo"))).toBe(false)
+      expect(await Effect.runPromise(deleteModel(cfg, "whisper-large-v3-turbo-q8"))).toBe(true)
+      expect(await Bun.file(path.join(dir, "ggml-large-v3-turbo-q8_0.bin")).exists()).toBe(false)
+      expect(await Effect.runPromise(checkModelReady(cfg, "whisper-large-v3-turbo-q8"))).toBe(false)
     } finally {
       await rm(dataDir, { recursive: true, force: true })
     }
