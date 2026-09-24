@@ -9,7 +9,7 @@ import { makeRouter, stopLlama, type ApiContext } from "./Api"
 import { stopWhisper } from "./Whisper"
 
 /**
- * Omil inference core. Serves Whisper transcription + Qwen cleanup to
+ * Omil inference core. Serves Whisper transcription + local-model cleanup to
  * Omil Swift clients on the LAN. Run on your Mac; point iPhone/iPad at it.
  *
  *   bun src/main.ts

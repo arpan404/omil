@@ -2,7 +2,7 @@ import { Effect } from "effect"
 import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { VAD_MODEL, type ServerConfig } from "./Config"
+import { modelSpec, VAD_MODEL, type ServerConfig } from "./Config"
 import { AUDIO_PROFILES, type AudioSensitivity } from "./AudioSensitivity"
 import { ensureModel, ModelError } from "./Models"
 import { preprocessWav } from "./AudioPreprocessor"
@@ -44,6 +44,9 @@ export const transcribeFile = (
   Effect.gen(function* () {
     const selected = modelId ?? cfg.whisperModelId
     const whisperLanguage = normalizeWhisperLanguage(language)
+    if (!supportsWhisperLanguage(selected, whisperLanguage)) {
+      return yield* Effect.fail(new ModelError("Distil-Whisper large-v3 supports English only. Choose a multilingual Whisper model for this language."))
+    }
     const profile = AUDIO_PROFILES[sensitivity]
     const prepared = yield* Effect.promise(() => readFile(audioPath).then((wav) => preprocessWav(wav, sensitivity)))
     if (prepared.silent) return { text: "", segments: [], model: selected }
@@ -105,6 +108,11 @@ export const normalizeWhisperLanguage = (language: string): string => {
   const normalized = language.trim().toLowerCase()
   if (!normalized || normalized === "auto") return normalized || "en"
   return normalized.split(/[-_]/, 1)[0] || "en"
+}
+
+export const supportsWhisperLanguage = (modelId: string, language: string): boolean => {
+  const spec = modelSpec(modelId)
+  return spec?.language === undefined || normalizeWhisperLanguage(language) === spec.language
 }
 
 const tsToSec = (s: string): number => {

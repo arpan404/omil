@@ -470,7 +470,7 @@ final class DictationController: ObservableObject {
     // MARK: Status
 
     func refreshBackendStatus() async {
-        backendDescription = "Omil server · Whisper + Qwen"
+        backendDescription = "Omil server · transcription + cleanup"
         assetState = "Checking server"
         await refreshServerHealth()
     }
@@ -983,7 +983,7 @@ final class DictationController: ObservableObject {
         defer { modelsPreparing = false }
         serverHealth = "Downloading selected models"
         assetState = serverHealth
-        serverOpNote = "Preparing Whisper and Qwen. You can keep using the rest of the app."
+        serverOpNote = "Preparing speech and cleanup models. You can keep using the rest of the app."
         do {
             for modelID in modelIDs {
                 guard let request = serverRequest(
@@ -1028,7 +1028,7 @@ final class DictationController: ObservableObject {
         }
         let snippetNote = result.appliedSnippetTriggers?.isEmpty == false ? " · snippet expanded" : ""
         let editCount = result.acceptedEdits.count + (result.proseChanges?.count ?? 0)
-        let note = "Qwen cleanup via server: \(editCount) edits, \(result.abstentions.count) abstentions · \((result.writingStyle ?? .automatic).displayName)\(snippetNote) (\(result.rulesVersion))"
+        let note = "Model cleanup via server: \(editCount) edits, \(result.abstentions.count) abstentions · \((result.writingStyle ?? .automatic).displayName)\(snippetNote) (\(result.rulesVersion))"
         return (result.text, note)
     }
 

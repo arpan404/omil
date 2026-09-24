@@ -3,7 +3,7 @@ import Foundation
 // MARK: - ServerConfig
 //
 // Connection to the Omil inference core (Effect/TS server on the user's own
-// Mac): Whisper transcription + Qwen cleanup. Swift apps are thin clients —
+// Mac): Whisper transcription + local-model cleanup. Swift apps are thin clients —
 // they capture audio, display results, and insert text locally.
 
 public struct ServerConfig: Codable, Sendable, Equatable {

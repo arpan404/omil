@@ -153,7 +153,7 @@ public actor ServerTranscriptionBackend: TranscriptionBackend {
             var parts: [String] = []
             parts.append((h.whisperBin == true && h.llamaBin == true) ? "binaries ok" : "sidecars missing")
             parts.append((h.whisperModelReady ?? false) ? "whisper ready" : "whisper downloading")
-            parts.append((h.llmModelReady ?? false) ? "qwen ready" : "qwen downloading")
+            parts.append((h.llmModelReady ?? false) ? "cleanup ready" : "cleanup model downloading")
             return parts.joined(separator: " · ")
         } catch {
             return "Unreachable — is the server running on \(config.host)?"

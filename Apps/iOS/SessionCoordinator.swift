@@ -189,7 +189,7 @@ final class SessionCoordinator: ObservableObject {
                 mode: cleanupMode,
                 requestId: requestId
             )
-            return (r.text, "Qwen cleanup via server (\(r.acceptedEdits.count) edits)")
+            return (r.text, "Model cleanup via server (\(r.acceptedEdits.count) edits)")
         } catch {
             return (rawText, "Server cleanup unavailable (\(error)); used local rules")
         }

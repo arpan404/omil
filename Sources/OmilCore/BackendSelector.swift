@@ -50,7 +50,7 @@ public struct BackendSelector: Sendable {
     public func describe(status: AppleSpeechStatus, resolved: ResolvedBackend) -> String {
         switch resolved {
         case .omilServer:
-            return "Omil server (Whisper large + Qwen 4B on your Mac)"
+            return "Omil server (speech and cleanup models on your Mac)"
         case .appleSpeech:
             return "System (Apple Speech, on-device, system-managed assets)"
         case .legacySFSpeech:

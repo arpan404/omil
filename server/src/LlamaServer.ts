@@ -6,7 +6,7 @@ import {
   type ModelRuntimeSnapshot,
 } from "./ModelRuntime"
 
-/** Manages the resident Qwen sidecar and its memory lifetime. */
+/** Manages the resident cleanup model sidecar and its memory lifetime. */
 
 export interface LlamaHandle {
   readonly baseUrl: string

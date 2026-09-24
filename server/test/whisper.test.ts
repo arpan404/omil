@@ -1,11 +1,17 @@
 import { describe, expect, test } from "bun:test"
-import { normalizeWhisperLanguage, parseWhisperJson } from "../src/Whisper"
+import { normalizeWhisperLanguage, parseWhisperJson, supportsWhisperLanguage } from "../src/Whisper"
 
 describe("whisper adapter", () => {
   test("normalizes locale tags to whisper language codes", () => {
     expect(normalizeWhisperLanguage("en-US")).toBe("en")
     expect(normalizeWhisperLanguage("pt_BR")).toBe("pt")
     expect(normalizeWhisperLanguage("auto")).toBe("auto")
+  })
+
+  test("limits distilled Whisper to English without restricting multilingual models", () => {
+    expect(supportsWhisperLanguage("whisper-distil-large-v3", "en-US")).toBe(true)
+    expect(supportsWhisperLanguage("whisper-distil-large-v3", "fr-FR")).toBe(false)
+    expect(supportsWhisperLanguage("whisper-large-v3-turbo-q8", "fr-FR")).toBe(true)
   })
 
   test("parses comma timestamps from whisper.cpp JSON", () => {

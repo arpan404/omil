@@ -1758,14 +1758,21 @@ private struct ModelOption {
 }
 
 private let whisperModelOptions = [
+    ModelOption(file: "ggml-base-q8_0.bin", name: "Whisper base Q8 · compact", size: "82 MB"),
     ModelOption(file: "ggml-small-q8_0.bin", name: "Whisper small Q8 · faster", size: "264 MB"),
+    ModelOption(file: "ggml-medium-q8_0.bin", name: "Whisper medium Q8", size: "823 MB"),
     ModelOption(file: "ggml-large-v3-turbo-q8_0.bin", name: "Whisper large-v3 turbo Q8", size: "874 MB"),
+    ModelOption(file: "ggml-large-v3-q5_0.bin", name: "Whisper large-v3 Q5", size: "1.1 GB"),
+    ModelOption(file: "ggml-distil-large-v3.bin", name: "Distil-Whisper large-v3 · English only", size: "1.5 GB"),
 ]
 
 private let rewriteModelOptions = [
     ModelOption(file: "Qwen3.5-0.8B-Q4_K_M.gguf", name: "Qwen3.5 0.8B", size: "533 MB"),
     ModelOption(file: "Qwen3.5-2B-Q4_K_M.gguf", name: "Qwen3.5 2B", size: "1.3 GB"),
     ModelOption(file: "Qwen3.5-4B-Q4_K_M.gguf", name: "Qwen3.5 4B", size: "2.7 GB"),
+    ModelOption(file: "Qwen3.5-9B-Q4_K_M.gguf", name: "Qwen3.5 9B", size: "5.7 GB"),
+    ModelOption(file: "Llama-3.1-8B-Instruct-Q4_K_M.gguf", name: "Llama 3.1 8B Instruct", size: "4.9 GB"),
+    ModelOption(file: "gemma-3-4b-it-Q4_K_M.gguf", name: "Gemma 3 4B Instruct", size: "2.5 GB"),
 ]
 
 struct EngineView: View {
@@ -2120,6 +2127,7 @@ private struct ModelLibraryCard: View {
                     .font(.system(size: 12, weight: isActive ? .semibold : .medium))
                     .foregroundStyle(OmilTheme.ink)
                     .lineLimit(1)
+                    .help(info?.description ?? option.name)
                 Text(status(for: info, isActive: isActive, isDownloading: isDownloading))
                     .font(.system(size: 10))
                     .foregroundStyle(needsRepair ? OmilTheme.warning : OmilTheme.muted)
