@@ -421,28 +421,29 @@ struct PillView: View {
         canCancel: Bool,
         canStart: Bool = false
     ) -> some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 6) {
             if showsProgress {
                 ProgressView()
                     .controlSize(.small)
                     .tint(.white)
-                    .frame(width: 18, height: 18)
+                    .frame(width: 14, height: 18)
             } else {
                 Image(systemName: icon)
-                    .font(.system(size: 11, weight: .bold))
+                    .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(.white)
-                    .frame(width: 18, height: 18)
+                    .frame(width: 14, height: 18)
             }
 
             Text(title)
-                .font(.system(size: 10.5, weight: .semibold))
+                .font(.system(size: 9.5, weight: .semibold))
                 .foregroundStyle(.white)
                 .lineLimit(1)
-                .minimumScaleFactor(0.85)
+                .allowsTightening(true)
+                .minimumScaleFactor(0.8)
+                .layoutPriority(1)
                 .overlay(PillDragArea())
                 .help("Drag to move")
 
-            Spacer(minLength: 0)
             if canCancel {
                 pillIconButton(icon: "xmark", help: "Cancel recording") {
                     presentation.cancel()
@@ -454,7 +455,7 @@ struct PillView: View {
                 }
             }
         }
-        .padding(.horizontal, 10)
+        .padding(.horizontal, 8)
     }
 
     private func pillIconButton(
@@ -466,7 +467,7 @@ struct PillView: View {
             Image(systemName: icon)
                 .font(.system(size: 9, weight: .bold))
                 .foregroundStyle(Color.white.opacity(0.72))
-                .frame(width: 26, height: 26)
+                .frame(width: 22, height: 22)
                 .background(Color.white.opacity(0.07), in: Circle())
         }
         .buttonStyle(.plain)

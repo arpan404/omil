@@ -25,6 +25,7 @@
 		6763F7728DD80767EB1540CD /* HotkeyManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A78857FCA8E85093D7547B8 /* HotkeyManagerTests.swift */; };
 		8CA3599C407E3FDB678A9405 /* LocalPortPickerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 321C8441BF550D3CBB8BC34A /* LocalPortPickerTests.swift */; };
 		9363B889A20F33367E8A7AE8 /* PillPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0868C0A9F0ED53B1EAC71507 /* PillPresentationTests.swift */; };
+		A13375DF34A15ED13C6BF065 /* DiffUtilTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18A4150AE36033E556680B69 /* DiffUtilTests.swift */; };
 		A440BA01828D7F2EA3516236 /* ClipboardInserter.swift in Sources */ = {isa = PBXBuildFile; fileRef = D848F1CE08AE5D255D009732 /* ClipboardInserter.swift */; };
 		A57A1BC73285B4EA4B3D02F6 /* DictationController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C59DC022BA72956BFC5C9C30 /* DictationController.swift */; };
 		AFB127F15462B24B9A2774AC /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 95C9B641D58FC29E10C96E1B /* Assets.xcassets */; };
@@ -74,6 +75,7 @@
 		049BF89C8C48F72E25AB3907 /* OmilIOSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OmilIOSApp.swift; sourceTree = "<group>"; };
 		0868C0A9F0ED53B1EAC71507 /* PillPresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PillPresentationTests.swift; sourceTree = "<group>"; };
 		0B70C2E88C7B28A5691266EB /* OmilKeyboard.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = OmilKeyboard.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		18A4150AE36033E556680B69 /* DiffUtilTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiffUtilTests.swift; sourceTree = "<group>"; };
 		1AB5C36E850C783EEC69C7FF /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		244A391BBADE6B5BB0FE41E8 /* RecentTargetApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecentTargetApp.swift; sourceTree = "<group>"; };
 		2D2D0C2740C556FDE07B6101 /* LocalServerManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalServerManager.swift; sourceTree = "<group>"; };
@@ -189,6 +191,7 @@
 		A4BDFB511D6EAEE26C51C5E1 /* OmilMacTests */ = {
 			isa = PBXGroup;
 			children = (
+				18A4150AE36033E556680B69 /* DiffUtilTests.swift */,
 				4A78857FCA8E85093D7547B8 /* HotkeyManagerTests.swift */,
 				321C8441BF550D3CBB8BC34A /* LocalPortPickerTests.swift */,
 				0868C0A9F0ED53B1EAC71507 /* PillPresentationTests.swift */,
@@ -426,6 +429,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A13375DF34A15ED13C6BF065 /* DiffUtilTests.swift in Sources */,
 				6763F7728DD80767EB1540CD /* HotkeyManagerTests.swift in Sources */,
 				8CA3599C407E3FDB678A9405 /* LocalPortPickerTests.swift in Sources */,
 				9363B889A20F33367E8A7AE8 /* PillPresentationTests.swift in Sources */,

@@ -1760,14 +1760,15 @@ final class DictationController: ObservableObject {
 // MARK: - Diff helper
 
 enum DiffUtil {
-    /// Simple word-level diff for the Raw/Cleaned/Diff inspector.
-    /// Capped so pathological inputs cannot hang the UI.
+    /// Compare the raw transcript with the final plain-text result.
+    /// Words and punctuation are separate so punctuation cleanup does not
+    /// appear as a replacement of the entire neighboring word.
     static func diff(raw: String, cleaned: String) -> String {
         if raw == cleaned { return "(no changes)" }
-        var a = raw.split(separator: " ").map(String.init)
-        var b = cleaned.split(separator: " ").map(String.init)
-        if a.count > 2000 || b.count > 2000 {
-            a = Array(a.prefix(2000)); b = Array(b.prefix(2000))
+        let a = tokens(raw)
+        let b = tokens(cleaned)
+        if (a.count + 1) * (b.count + 1) > 250_000 {
+            return "Original:\n\(raw)\n\nCleaned:\n\(cleaned)"
         }
         // LCS-based minimal diff.
         let n = a.count, m = b.count
@@ -1781,10 +1782,19 @@ enum DiffUtil {
         var i = 0, j = 0
         while i < n || j < m {
             if i < n, j < m, a[i] == b[j] { out.append(a[i]); i += 1; j += 1 }
-            else if j < m, (i >= n || dp[i][j + 1] >= dp[i + 1][j]) { out.append("[+\(b[j])]"); j += 1 }
+            else if j < m, (i >= n || dp[i][j + 1] > dp[i + 1][j]) { out.append("[+\(b[j])]"); j += 1 }
             else if i < n { out.append("[-\(a[i])]"); i += 1 }
         }
         return out.joined(separator: " ")
+    }
+
+    private static func tokens(_ text: String) -> [String] {
+        let pattern = #"[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)*|[^\p{L}\p{N}\s]"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [text] }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        return regex.matches(in: text, range: range).compactMap { match in
+            Range(match.range, in: text).map { String(text[$0]) }
+        }
     }
 }
 
