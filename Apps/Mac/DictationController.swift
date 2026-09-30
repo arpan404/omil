@@ -181,7 +181,7 @@ final class DictationController: ObservableObject {
         case unknown, granted, denied
     }
 
-    struct HistoryEntry: Identifiable, Codable {
+    struct HistoryEntry: Identifiable, Codable, Sendable, Equatable {
         var id: UUID = UUID()
         var date: Date = Date()
         var raw: String

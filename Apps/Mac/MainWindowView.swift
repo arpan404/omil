@@ -924,86 +924,19 @@ private struct RowAction: View {
 
 // MARK: - History
 
-enum HistoryListRow: Identifiable {
-    case savedHeader
-    case recording(RecoveryRecording)
-    case dayHeader(Date)
-    case transcript(DictationController.HistoryEntry)
-
-    var id: String {
-        switch self {
-        case .savedHeader: return "saved-header"
-        case .recording(let recording): return "recording-\(recording.id)"
-        case .dayHeader(let day): return "day-\(day.timeIntervalSinceReferenceDate)"
-        case .transcript(let entry): return "transcript-\(entry.id)"
-        }
-    }
-
-    static func make(
-        recordings: [RecoveryRecording],
-        history: [DictationController.HistoryEntry],
-        search: String
-    ) -> [HistoryListRow] {
-        let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
-        let matches: (String) -> Bool = { query.isEmpty || $0.localizedCaseInsensitiveContains(query) }
-        var rows: [HistoryListRow] = []
-        let matchingRecordings = recordings.filter {
-            matches($0.transcript ?? "") || matches($0.rawTranscript ?? "")
-        }
-        if !matchingRecordings.isEmpty {
-            rows.append(.savedHeader)
-            rows.append(contentsOf: matchingRecordings.map(HistoryListRow.recording))
-        }
-        var lastDay: Date?
-        for entry in history.sorted(by: { $0.date > $1.date }) where matches(entry.cleaned) || matches(entry.raw) {
-            let day = Calendar.current.startOfDay(for: entry.date)
-            if lastDay != day {
-                rows.append(.dayHeader(day))
-                lastDay = day
-            }
-            rows.append(.transcript(entry))
-        }
-        return rows
-    }
-}
-
-/// Rows grouped under their header so each group renders as one Form section.
-private struct HistorySection: Identifiable {
-    let id: String
-    let header: HistoryListRow
-    var rows: [HistoryListRow]
-
-    static func group(_ rows: [HistoryListRow]) -> [HistorySection] {
-        var sections: [HistorySection] = []
-        for row in rows {
-            switch row {
-            case .savedHeader, .dayHeader:
-                sections.append(HistorySection(id: row.id, header: row, rows: []))
-            case .recording, .transcript:
-                if sections.isEmpty { sections.append(HistorySection(id: "orphan", header: .savedHeader, rows: [])) }
-                sections[sections.count - 1].rows.append(row)
-            }
-        }
-        return sections
-    }
-}
-
 struct HistoryView: View {
     @ObservedObject var controller: DictationController
     @State private var search = ""
-    @State private var rows: [HistoryListRow]
+    @StateObject private var feed = HistoryFeed()
     @State private var confirmDelete: DictationController.HistoryEntry?
     @State private var confirmRecoveryDelete: RecoveryRecording?
     @State private var selectedTranscript: HistoryTranscript?
-    @State private var searchGeneration = 0
+    @State private var dataRevision = 0
+    @State private var lastQuery = ""
 
-    init(controller: DictationController) {
-        self.controller = controller
-        _rows = State(initialValue: HistoryListRow.make(
-            recordings: controller.recoveryRecordings,
-            history: controller.history,
-            search: ""
-        ))
+    private struct Request: Hashable {
+        let search: String
+        let revision: Int
     }
 
     private var isBusy: Bool {
@@ -1011,9 +944,7 @@ struct HistoryView: View {
     }
 
     private var itemCountLabel: String {
-        let count = rows.filter {
-            switch $0 { case .recording, .transcript: return true; default: return false }
-        }.count
+        let count = feed.totalCount
         return count == 1 ? "1 item" : "\(count) items"
     }
 
@@ -1025,19 +956,61 @@ struct HistoryView: View {
                     title: "No History Yet",
                     detail: "Your transcripts and saved recordings will appear here."
                 )
-            } else if rows.isEmpty {
+            } else if !feed.hasLoaded || (feed.isLoading && feed.rows.isEmpty) {
+                ProgressView("Loading History…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if feed.rows.isEmpty {
                 EmptyState(icon: "magnifyingglass", title: "No Results", detail: "Try a shorter word or phrase.")
             } else {
-                Form {
-                    ForEach(HistorySection.group(rows)) { section in
-                        Section {
-                            ForEach(section.rows) { row in historyRow(row) }
-                        } header: {
-                            sectionHeader(section.header)
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 8) {
+                        ForEach(feed.rows) { row in
+                            switch row {
+                            case .savedHeader, .dayHeader:
+                                sectionHeader(row)
+                                    .font(OmilFont.caption)
+                                    .foregroundStyle(.secondary)
+                                    .padding(.top, 12)
+                                    .padding(.horizontal, 4)
+                            case .recording, .transcript:
+                                historyRow(row)
+                                    .padding(12)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .background(OmilTheme.groupFill, in: RoundedRectangle(cornerRadius: 12))
+                                    .onAppear {
+                                        guard row.id == feed.rows.last?.id else { return }
+                                        Task { await feed.loadMore() }
+                                    }
+                            }
+                        }
+                        if feed.hasMore {
+                            Button {
+                                Task { await feed.loadMore() }
+                            } label: {
+                                HStack(spacing: 8) {
+                                    if feed.isLoadingMore { ProgressView().controlSize(.small) }
+                                    Text(feed.isLoadingMore ? "Loading…" : "Load More")
+                                }
+                                .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.secondary)
+                            .padding(12)
+                            .disabled(feed.isLoading || feed.isLoadingMore)
                         }
                     }
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 20)
+                    .frame(maxWidth: 920)
+                    .frame(maxWidth: .infinity)
                 }
+                .id(lastQuery)
                 .omilPage(subtitle: itemCountLabel)
+            }
+        }
+        .overlay(alignment: .topTrailing) {
+            if feed.isLoading && !feed.rows.isEmpty {
+                ProgressView().controlSize(.small).padding(12)
             }
         }
         .toolbar {
@@ -1054,15 +1027,18 @@ struct HistoryView: View {
             }
         }
         .searchable(text: $search, placement: .toolbar, prompt: "Search Dictations")
-        .onChange(of: search) { _, _ in searchGeneration += 1 }
-        .task(id: searchGeneration) {
-            guard searchGeneration > 0 else { return }
-            try? await Task.sleep(for: .milliseconds(150))
-            guard !Task.isCancelled else { return }
-            refreshRows()
+        .task(id: Request(search: search, revision: dataRevision)) {
+            let sameQuery = search == lastQuery
+            if !sameQuery {
+                try? await Task.sleep(for: .milliseconds(150))
+                guard !Task.isCancelled else { return }
+            }
+            lastQuery = search
+            await feed.reload(recordings: controller.recoveryRecordings, history: controller.history,
+                              search: search, preserveLoadedCount: sameQuery)
         }
-        .onReceive(controller.$history.dropFirst()) { history in refreshRows(history: history) }
-        .onReceive(controller.$recoveryRecordings.dropFirst()) { recordings in refreshRows(recordings: recordings) }
+        .onReceive(controller.$history.dropFirst()) { _ in dataRevision += 1 }
+        .onReceive(controller.$recoveryRecordings.dropFirst()) { _ in dataRevision += 1 }
         .onDisappear { controller.recoveryPlayback.stop() }
         .sheet(item: $selectedTranscript) { transcript in
             HistoryTranscriptSheet(transcript: transcript)
@@ -1127,6 +1103,7 @@ struct HistoryView: View {
         case .recording(let recording):
             RecoveryRecordingRow(
                 recording: recording,
+                preview: feed.display[row.id]?.preview ?? "",
                 playback: controller.recoveryPlayback,
                 isBusy: isBusy,
                 play: { controller.playRecovery(recording) },
@@ -1139,27 +1116,20 @@ struct HistoryView: View {
                 viewTranscript: { selectedTranscript = transcript(for: recording) },
                 delete: { confirmRecoveryDelete = recording }
             )
+            .equatable()
         case .transcript(let entry):
             HistoryRow(
                 entry: entry,
+                preview: feed.display[row.id]?.preview ?? "",
+                wordCount: feed.display[row.id]?.wordCount ?? 0,
                 copy: { copy(entry.cleaned) },
                 viewTranscript: { selectedTranscript = HistoryTranscript(entry: entry) },
                 delete: { confirmDelete = entry }
             )
+            .equatable()
         case .savedHeader, .dayHeader:
             EmptyView()
         }
-    }
-
-    private func refreshRows(
-        recordings: [RecoveryRecording]? = nil,
-        history: [DictationController.HistoryEntry]? = nil
-    ) {
-        rows = HistoryListRow.make(
-            recordings: recordings ?? controller.recoveryRecordings,
-            history: history ?? controller.history,
-            search: search
-        )
     }
 
     private func copy(_ text: String) {
@@ -1264,8 +1234,9 @@ private struct HistoryTranscriptSheet: View {
     }
 }
 
-private struct RecoveryRecordingRow: View {
+private struct RecoveryRecordingRow: View, Equatable {
     let recording: RecoveryRecording
+    let preview: String
     /// Not observed here: only the play button and the controls of the
     /// playing row subscribe, so playback progress doesn't redraw every row.
     let playback: RecoveryPlayback
@@ -1276,6 +1247,11 @@ private struct RecoveryRecordingRow: View {
     let copy: () -> Void
     let viewTranscript: () -> Void
     let delete: () -> Void
+
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.recording == rhs.recording && lhs.preview == rhs.preview &&
+        lhs.isBusy == rhs.isBusy && lhs.playback === rhs.playback
+    }
 
     private var stateLabel: String {
         switch recording.state {
@@ -1304,7 +1280,7 @@ private struct RecoveryRecordingRow: View {
             RecoveryPlaybackControls(playback: playback, recordingID: recording.id, seek: seek)
 
             if let transcript = recording.transcript, !transcript.isEmpty {
-                Text(transcript)
+                Text(preview)
                     .lineLimit(2)
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
@@ -1400,20 +1376,26 @@ func clockLabel(_ time: TimeInterval) -> String {
     return String(format: "%d:%02d", seconds / 60, seconds % 60)
 }
 
-private struct HistoryRow: View {
+private struct HistoryRow: View, Equatable {
     let entry: DictationController.HistoryEntry
+    let preview: String
+    let wordCount: Int
     let copy: () -> Void
     let viewTranscript: () -> Void
     let delete: () -> Void
     @State private var expanded = false
 
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.entry == rhs.entry && lhs.preview == rhs.preview && lhs.wordCount == rhs.wordCount
+    }
+
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
-                Text(entry.cleaned)
+                Text(expanded ? entry.cleaned : preview)
                     .lineLimit(expanded ? nil : 2)
                     .textSelection(.enabled)
-                Text("\(entry.date.formatted(date: .omitted, time: .shortened)) · \(entry.wordCount) words")
+                Text("\(entry.date.formatted(date: .omitted, time: .shortened)) · \(wordCount) words")
                     .font(OmilFont.caption)
                     .foregroundStyle(.secondary)
             }
