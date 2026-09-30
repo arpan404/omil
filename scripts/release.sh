@@ -178,25 +178,25 @@ PYBUILD
   if [[ -n "$notes_file" ]]; then cp "$notes_file" "$artifacts_dir/RELEASE_NOTES.md"; else cp "$artifacts_dir/CHANGELOG.md" "$artifacts_dir/RELEASE_NOTES.md"; fi
 
   OMIL_DISTRIBUTION_DIR="$output_dir/mac" ./scripts/distribute-mac.sh "$version" "$build"
-  local mac_zips=("$output_dir/mac/"*-macos-arm64.zip)
-  [[ ${#mac_zips[@]} -eq 1 && -f ${mac_zips[0]} ]] || fail 'expected one notarized Mac ZIP'
-  cp "${mac_zips[0]}" "$artifacts_dir/"
-  local zip_name zip_path appcast_path
-  zip_name=$(basename "${mac_zips[0]}")
-  zip_path="$artifacts_dir/$zip_name"
+  local mac_dmgs=("$output_dir/mac/"*-macos-arm64.dmg)
+  [[ ${#mac_dmgs[@]} -eq 1 && -f ${mac_dmgs[0]} ]] || fail 'expected one notarized installer DMG'
+  cp "${mac_dmgs[0]}" "$artifacts_dir/"
+  local dmg_name dmg_path appcast_path
+  dmg_name=$(basename "${mac_dmgs[0]}")
+  dmg_path="$artifacts_dir/$dmg_name"
   appcast_path="$artifacts_dir/appcast.xml"
   local feed public_key
   feed=$(/usr/libexec/PlistBuddy -c 'Print :SUFeedURL' "$output_dir/mac/Omil.app/Contents/Info.plist")
   [[ "$feed" == "https://github.com/$repository/releases/latest/download/appcast.xml" ]] || fail 'Mac updater feed does not match the release repository'
   public_key=$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$output_dir/mac/Omil.app/Contents/Info.plist")
   [[ "$public_key" == "$SPARKLE_PUBLIC_KEY" ]] || fail 'Mac updater public key mismatch'
-  cp "$artifacts_dir/RELEASE_NOTES.md" "$artifacts_dir/${zip_name%.zip}.md"
+  cp "$artifacts_dir/RELEASE_NOTES.md" "$artifacts_dir/${dmg_name%.dmg}.md"
   printf '%s' "$SPARKLE_PRIVATE_KEY" | "$release_cache_dir/bin/generate_appcast" \
     --ed-key-file - --download-url-prefix "https://github.com/$repository/releases/download/$tag/" \
     --link "https://github.com/$repository/releases/tag/$tag" --embed-release-notes \
     --maximum-versions 1 --maximum-deltas 0 -o "$appcast_path" "$artifacts_dir"
   local signature
-  signature=$(/usr/bin/python3 - "$appcast_path" "$zip_name" "$repository" "$tag" "$build" <<'PYFEED'
+  signature=$(/usr/bin/python3 - "$appcast_path" "$dmg_name" "$repository" "$tag" "$build" <<'PYFEED'
 import sys, xml.etree.ElementTree as ET
 path,name,repo,tag,build=sys.argv[1:]
 def require(condition, message):
@@ -213,16 +213,16 @@ require(enc.get(ns+'edSignature'), 'Missing Sparkle signature')
 print(enc.get(ns+'edSignature'))
 PYFEED
   )
-  xcrun swift scripts/verify-appcast.swift "$public_key" "$signature" "$zip_path"
+  xcrun swift scripts/verify-appcast.swift "$public_key" "$signature" "$dmg_path"
   # shellcheck disable=SC2016
-  printf '\n## Mac installation\n\nDownload `%s`, unzip it, and move Omil.app to Applications. Existing installs update through the signed GitHub Sparkle feed. Requires Apple silicon and macOS 14+.\n' "$zip_name" >> "$artifacts_dir/RELEASE_NOTES.md"
+  printf '\n## Mac installation\n\nDownload `%s`, open it, and drag Omil.app onto Applications. Quit an existing Omil installation before replacing it. Eject the disk image, then open Omil from Applications. Complete the first-launch permissions setup. Existing installs update through the signed GitHub Sparkle feed. Requires Apple silicon and macOS 14+.\n' "$dmg_name" >> "$artifacts_dir/RELEASE_NOTES.md"
   /usr/bin/python3 - "$artifacts_dir/release.json" "$version" "$build" "$head" "$APPLE_TEAM_ID" <<'PYMANIFEST'
 import json,sys,datetime
 with open(sys.argv[1], 'w') as f:
     json.dump(dict(version=sys.argv[2], build=sys.argv[3], commit=sys.argv[4], team=sys.argv[5],
         createdAt=datetime.datetime.now(datetime.timezone.utc).isoformat()), f, indent=2)
 PYMANIFEST
-  (cd "$artifacts_dir" && shasum -a 256 ./*.zip ./*.xml ./*.md ./*.json > SHA256SUMS)
+  (cd "$artifacts_dir" && shasum -a 256 ./*.dmg ./*.xml ./*.md ./*.json > SHA256SUMS)
   [[ "$(git rev-parse HEAD)" == "$head" && -z "$(git status --porcelain)" ]] \
     || fail 'the source changed during the build; no release was published'
   # Upload every asset as a draft before making the release visible to the updater.

@@ -25,7 +25,7 @@ with tempfile.TemporaryDirectory(prefix='omil-release-tests-') as tmp:
   check=subprocess.run(['bash','-euc','source "$1"; configure_apple_api_auth','api-test',str(source/'scripts/release-env.sh')],cwd=root,env=bad_env,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
   assert check.returncode!=0,scenario+' unexpectedly accepted'
   print('API '+scenario+' rejection: passed')
- for scenario in ['accepted','mac-failure','bad-signature','prerelease']:
+ for scenario in ['accepted','mac-failure','missing-dmg','bad-signature','prerelease']:
   case=root/scenario; (case/'scripts').mkdir(parents=True); (case/'bin').mkdir()
   for name in ['release.sh','release-env.sh','changelog.py','verify-appcast.swift']:
    shutil.copy2(source/'scripts'/name,case/'scripts'/name)
@@ -34,7 +34,7 @@ set -eu
 [[ ${1:-} != --check ]] || exit 0
 [[ $MOCK_SCENARIO != mac-failure ]] || exit 23
 mkdir -p "$OMIL_DISTRIBUTION_DIR/Omil.app/Contents"
-printf fixture-update-archive > "$OMIL_DISTRIBUTION_DIR/Omil-0.2.0-2-macos-arm64.zip"
+if [[ $MOCK_SCENARIO != missing-dmg ]]; then printf fixture-update-archive > "$OMIL_DISTRIBUTION_DIR/Omil-0.2.0-2-macos-arm64.dmg"; fi
 /usr/bin/python3 - "$OMIL_DISTRIBUTION_DIR/Omil.app/Contents/Info.plist" <<'PLIST'
 import os,sys,plistlib
 with open(sys.argv[1],'wb') as f: plistlib.dump(dict(SUFeedURL='https://github.com/fixture/omil/releases/latest/download/appcast.xml', SUPublicEDKey=os.environ['SPARKLE_PUBLIC_KEY']),f)
@@ -61,12 +61,14 @@ esac
   generator='''#!/usr/bin/python3
 import sys,os,pathlib,xml.etree.ElementTree as ET
 args=sys.argv[1:]; sys.stdin.read()
+assert not list(pathlib.Path(args[-1]).glob('*.zip')), 'ZIP must not enter the DMG updater feed'
+assert len(list(pathlib.Path(args[-1]).glob('*.dmg'))) == 1, 'Expected one update DMG'
 ns='{http://www.andymatuschak.org/xml-namespaces/sparkle}'
 root=ET.Element('rss'); channel=ET.SubElement(root,'channel'); item=ET.SubElement(channel,'item')
 ET.SubElement(item,ns+'version').text='2'
 sig=os.environ['MOCK_SIGNATURE']
 if os.environ['MOCK_SCENARIO']=='bad-signature': sig='A'*86+'=='
-ET.SubElement(item,'enclosure',{'url':'https://github.com/fixture/omil/releases/download/v0.2.0/Omil-0.2.0-2-macos-arm64.zip', ns+'edSignature':sig})
+ET.SubElement(item,'enclosure',{'url':'https://github.com/fixture/omil/releases/download/v0.2.0/Omil-0.2.0-2-macos-arm64.dmg', ns+'edSignature':sig})
 ET.ElementTree(root).write(args[args.index('-o')+1])
 '''
   p=tools/'generate_appcast';p.write_text(generator);p.chmod(0o755)
@@ -92,11 +94,14 @@ ET.ElementTree(root).write(args[args.index('-o')+1])
    assert len(actions)==2 and '--draft' in actions[0], actions
    assert '--latest=false' in actions[1] if scenario=='prerelease' else '--latest=true' in actions[1]
    artifacts=list((case/'.build/distribution').glob('GitHub-release.*/artifacts'))[0]
-   assert not list(artifacts.glob('*.ipa')) and list(artifacts.glob('*.zip'))
+   assert not list(artifacts.glob('*.ipa')) and not list(artifacts.glob('*.zip'))
+   assert '.zip' not in actions[0]
+   assert list(artifacts.glob('*.dmg')) and '.dmg' in actions[0]
+   assert 'drag Omil.app onto Applications' in (artifacts/'RELEASE_NOTES.md').read_text()
    assert 'iOS installation' not in (artifacts/'RELEASE_NOTES.md').read_text()
    assert 'feat: add fixture release' in (artifacts/'CHANGELOG.md').read_text()
    checks=(artifacts/'SHA256SUMS').read_text()
-   assert '.ipa' not in checks and '.zip' in checks and 'appcast.xml' in checks
+   assert '.ipa' not in checks and '.zip' not in checks and '.dmg' in checks and 'appcast.xml' in checks
   else:
    assert result.returncode!=0,result.stdout
    assert not trace.exists(),'Failure published a GitHub release'

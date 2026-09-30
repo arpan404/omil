@@ -10,8 +10,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var controller: DictationController { AppContext.controller }
     private var mainWindowController: NSWindowController?
     private var settingsWindowController: NSWindowController?
+    private var installationPending = InstallationFlow.requiresInstallation()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if installationPending {
+            _ = InstallationFlow.handleLaunch()
+            return
+        }
         AppContext.appDelegate = self
         controller.startup()
         PillManager.shared.attach(controller)
@@ -116,17 +121,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        guard !installationPending else { return false }
         // Dock icon click reopens the main window.
         if !flag { showMainWindow() }
         return true
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
+        guard !installationPending else { return }
         controller.refreshMicPermission()
         controller.refreshAXTrust()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        guard !installationPending else { return }
         AppContext.localServer.stop()
         HotkeyManager.shared.stop()
     }

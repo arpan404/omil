@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build a signed, notarized ZIP from the current working tree. No publishing.
+# Build a signed, notarized DMG from the current working tree. No publishing.
 set +x
 set -euo pipefail
 umask 077
@@ -11,7 +11,7 @@ Usage: ./scripts/distribute-mac.sh [--check] [version build-number]
 
 Loads the repository's .env, preserving values already exported in your shell.
 Builds the Mac app and server, signs with Developer ID, notarizes with Apple,
-staples the ticket, verifies Gatekeeper acceptance, and creates a local ZIP.
+staples the ticket, verifies Gatekeeper acceptance, and creates a local installer DMG.
 The build includes uncommitted changes and does not publish or install anything.
 
 Required: APPLE_TEAM_ID, SPARKLE_PUBLIC_KEY
@@ -39,7 +39,7 @@ fi
 # shellcheck source=scripts/release-env.sh
 source scripts/release-env.sh
 
-for tool in bun xcodegen xcodebuild codesign security xcrun ditto shasum spctl; do
+for tool in bun xcodegen xcodebuild codesign security xcrun ditto shasum spctl hdiutil; do
   command -v "$tool" >/dev/null 2>&1 || fail "$tool is required"
 done
 [[ -x /usr/bin/python3 ]] || fail "Xcode's Python 3 is required"
@@ -73,35 +73,13 @@ ditto .build/local-derived-data/Build/Products/Release/Omil.app "$app"
 version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")
 build=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")
 submission_zip="$output_dir/notarization-upload.zip"
-result_json="$output_dir/notarization-result.json"
 
 codesign --verify --deep --strict "$app"
 codesign --verify --strict "$app/Contents/Resources/omil-server"
 /usr/bin/python3 scripts/verify-mac-signing.py "$app" "$APPLE_TEAM_ID"
 echo "==> submitting Omil $version ($build) to Apple; waiting for notarization"
 ditto -c -k --sequesterRsrc --keepParent "$app" "$submission_zip"
-submit_exit=0
-xcrun notarytool submit "$submission_zip" "${notary_auth[@]}" \
-  --wait --output-format json > "$result_json" || submit_exit=$?
-json_field() {
-  /usr/bin/python3 - "$result_json" "$1" <<'PY'
-import json, sys
-try:
-    with open(sys.argv[1]) as f:
-        print(json.load(f).get(sys.argv[2], ""))
-except (ValueError, OSError):
-    pass
-PY
-}
-submission_id=$(json_field id)
-status=$(json_field status)
-if [[ -n $submission_id ]]; then
-  echo "Notarization submission: $submission_id ($status)"
-  xcrun notarytool log "$submission_id" "${notary_auth[@]}" "$output_dir/notarization-log.json" \
-    || echo "Could not retrieve Apple's diagnostic log." >&2
-fi
-[[ $submit_exit -eq 0 && $status == Accepted ]] \
-  || fail "notarization was not accepted; inspect $result_json and notarization-log.json in $output_dir"
+./scripts/notarize-file.sh "$submission_zip" "$output_dir/notarization"
 
 echo "==> stapling and verifying notarization"
 xcrun stapler staple "$app"
@@ -109,18 +87,8 @@ xcrun stapler validate "$app"
 codesign --verify --deep --strict "$app"
 spctl --assess --type execute --verbose=2 "$app"
 
-zip_name="Omil-${version}-${build}-macos-arm64.zip"
-zip_path="$output_dir/$zip_name"
-ditto -c -k --sequesterRsrc --keepParent "$app" "$zip_path"
-# Verify the actual shipped ZIP, including its stapled ticket.
-verification_dir="$output_dir/verification"
-mkdir "$verification_dir"
-ditto -x -k "$zip_path" "$verification_dir"
-codesign --verify --deep --strict "$verification_dir/Omil.app"
-codesign --verify --strict "$verification_dir/Omil.app/Contents/Resources/omil-server"
-xcrun stapler validate "$verification_dir/Omil.app"
-spctl --assess --type execute --verbose=2 "$verification_dir/Omil.app"
-rm -rf "$verification_dir"
+# The submission ZIP is internal. The DMG is the only distributable artifact.
 rm "$submission_zip"
-(cd "$output_dir" && shasum -a 256 "$zip_name" > "$zip_name.sha256")
-printf '\nNotarized ZIP: %s\nChecksum: %s.sha256\nApple logs: %s\n' "$zip_path" "$zip_path" "$output_dir"
+dmg_path="$output_dir/Omil-${version}-${build}-macos-arm64.dmg"
+./scripts/build-mac-dmg.sh "$app" "$dmg_path"
+printf '\nNotarized DMG: %s\nChecksum: %s.sha256\nApple logs: %s\n' "$dmg_path" "$dmg_path" "$output_dir"

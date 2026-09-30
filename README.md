@@ -70,8 +70,8 @@ xcodegen generate
 git diff -- Omil.xcodeproj
 ```
 
-To create a downloadable Mac ZIP locally, fill in `.env` using `.env.release.example`
-as a reference. Keep your existing `.env` if you already have one. The local ZIP
+To create a downloadable Mac DMG locally, fill in `.env` using `.env.release.example`
+as a reference. Keep your existing `.env` if you already have one. The local DMG
 needs `APPLE_TEAM_ID`, `SPARKLE_PUBLIC_KEY`, and an App Store Connect team API
 key. It detects your Developer ID Application certificate automatically, or uses
 `DEVELOPER_ID_APPLICATION` if you set it. Password authentication is not used.
@@ -104,9 +104,14 @@ for permissions and key creation. Private `.p8` files are ignored by git.
 The script builds your current working tree, including uncommitted changes, and
 creates a signed and notarized Apple silicon build for macOS 14 or later. It waits
 for Apple to accept the submission, staples the ticket, checks Gatekeeper, and
-verifies the app extracted from the final ZIP. The ZIP, SHA-256 checksum, and Apple
+creates a signed and
+notarized DMG with a custom installer window and an Applications shortcut. Open
+the DMG, drag Omil.app onto Applications, eject the image, and launch Omil from
+Applications. Launching directly from the image offers to install and open the
+app before starting permissions or engine setup. Existing installations use
+Finder's replacement flow. The DMG, SHA-256 checksum, and Apple
 diagnostics go into a new folder under `.build/distribution/`. It does not install
-the app or publish a release. Shell credentials override `.env`. The local ZIP
+the app or publish a release. Shell credentials override `.env`. The local DMG
 does not need a GitHub token or Sparkle private key.
 
 To build iOS locally for manual App Store upload, configure the team API credentials
@@ -145,14 +150,14 @@ Sparkle keys. Shell credentials override `.env`.
 ```
 
 `publish` requires a clean worktree whose commit is pushed to its upstream. It
-builds a notarized Mac ZIP, generates `CHANGELOG.md` from commits
+builds a notarized installer DMG, generates `CHANGELOG.md` from commits
 since the previous stable GitHub Release, and includes release notes, a commit
 manifest, and `SHA256SUMS`. All files and Apple diagnostics remain in
 `.build/distribution/GitHub-release.*` if a step fails.
 
 The Mac updater uses
 `https://github.com/arpan404/omil/releases/latest/download/appcast.xml`.
-The script generates that feed with the Sparkle private key, verifies the ZIP's
+The script generates that feed with the Sparkle private key, verifies the DMG's
 Ed25519 signature against the public key embedded in the app, and checks the
 download URL and build number. Build numbers must increase above the previous
 feed so existing installations detect updates. Every asset uploads to a draft
@@ -161,7 +166,8 @@ unpublished; `--prerelease` publishes without replacing the stable updater feed.
 
 GitHub releases contain only the Mac distribution and its release metadata.
 GitHub is the automatic update source for the Mac app. iOS builds stay local for
-manual upload to Apple.
+manual upload to Apple. The DMG is the only app download published on GitHub and
+is also used by Sparkle for automatic updates.
 
 Run `/usr/bin/python3 scripts/tests/release-workflow.py` to check the release
 workflow. It uses temporary Git repositories and mocked Apple/GitHub operations,
