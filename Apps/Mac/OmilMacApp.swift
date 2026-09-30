@@ -17,6 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             _ = InstallationFlow.handleLaunch()
             return
         }
+        _ = AppContext.updater
         AppContext.appDelegate = self
         controller.startup()
         PillManager.shared.attach(controller)
@@ -129,6 +130,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidBecomeActive(_ notification: Notification) {
         guard !installationPending else { return }
+        AppContext.updater.refreshAvailabilityIfNeeded()
         controller.refreshMicPermission()
         controller.refreshAXTrust()
     }
@@ -190,6 +192,7 @@ struct OmilMacApp: App {
         }
         .menuBarExtraStyle(.window)
         .commands {
+            UpdateCommands(updater: AppContext.updater)
             CommandGroup(replacing: .appSettings) {
                 Button("Settings…") {
                     AppContext.appDelegate?.showSettings()
@@ -234,6 +237,7 @@ private struct RecordingMenuBarLabel: View {
 // MARK: - Menu bar
 
 struct MenuBarView: View {
+    @ObservedObject private var updater = AppContext.updater
     @ObservedObject var controller: DictationController
     @ObservedObject private var hotkeys = HotkeyManager.shared
     @State private var copied = false
@@ -399,10 +403,10 @@ struct MenuBarView: View {
                 get: { controller.pillEnabled },
                 set: { controller.setPillEnabled($0) }
             ))
-            menuRow("Check for Updates…", icon: "arrow.down.circle") {
-                AppContext.updater.checkForUpdates()
+            menuRow(updater.availableVersion.map { "Update to \($0)…" } ?? "Check for Updates…", icon: "arrow.down.circle") {
+                updater.checkForUpdates()
             }
-            .disabled(!AppContext.updater.canCheckForUpdates)
+            .disabled(!updater.canCheckForUpdates)
             Divider().padding(.vertical, 4).padding(.horizontal, 8)
             menuRow("Quit Omil", icon: "power", shortcut: "⌘Q") { NSApp.terminate(nil) }
         }
@@ -506,6 +510,7 @@ private enum SettingsPillMode: String, CaseIterable {
 }
 
 struct SettingsView: View {
+    @ObservedObject private var updater = AppContext.updater
     @ObservedObject var controller: DictationController
     @ObservedObject private var appearance = AppAppearance.shared
     @AppStorage("omil.settingsPane") private var pane: SettingsPane = .general
@@ -733,9 +738,9 @@ struct SettingsView: View {
 
             Section("Updates") {
                 SettingsRow(title: AppVersion.display, detail: "Updates are delivered from GitHub Releases.") {
-                    Button("Check now") { AppContext.updater.checkForUpdates() }
+                    Button("Check now") { updater.checkForUpdates() }
                         .omilButton()
-                        .disabled(!AppContext.updater.canCheckForUpdates)
+                        .disabled(!updater.canCheckForUpdates)
                 }
             }
         }

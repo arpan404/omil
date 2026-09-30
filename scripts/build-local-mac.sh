@@ -1,8 +1,12 @@
 #!/bin/bash
 # Build a Release-configured Mac app for local use with a stable distribution signature.
+set +x
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+
+# shellcheck source=scripts/release-env.sh
+source scripts/release-env.sh
 
 install_after_build=false
 if [[ ${1:-} == --install ]]; then

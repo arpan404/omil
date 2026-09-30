@@ -155,6 +155,11 @@ since the previous stable GitHub Release, and includes release notes, a commit
 manifest, and `SHA256SUMS`. All files and Apple diagnostics remain in
 `.build/distribution/GitHub-release.*` if a step fails.
 
+Choose Omil → Check for Updates from the app menu, or use the menu-bar panel.
+When a new version is available, the sidebar shows its version and an Update Now
+button that opens the download and installation flow without entering Settings.
+Automatic checks are enabled by default and respect an existing user preference.
+
 The Mac updater uses
 `https://github.com/arpan404/omil/releases/latest/download/appcast.xml`.
 The script generates that feed with the Sparkle private key, verifies the DMG's

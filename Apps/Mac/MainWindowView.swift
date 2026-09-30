@@ -386,7 +386,10 @@ struct MainWindowView: View {
         }
         .listStyle(.sidebar)
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            SidebarEngineNotice(controller: controller) { navigation.section = .engine }
+            VStack(spacing: 0) {
+                SidebarUpdateNotice(updater: AppContext.updater)
+                SidebarEngineNotice(controller: controller) { navigation.section = .engine }
+            }
         }
         .navigationSplitViewColumnWidth(min: 180, ideal: 210, max: 260)
     }
