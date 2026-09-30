@@ -403,7 +403,7 @@ struct MenuBarView: View {
                 get: { controller.pillEnabled },
                 set: { controller.setPillEnabled($0) }
             ))
-            menuRow(updater.availableVersion.map { "Update to \($0)…" } ?? "Check for Updates…", icon: "arrow.down.circle") {
+            menuRow(updater.availableVersion.map { "Update to \($0)" } ?? "Check for Updates", icon: "arrow.down.circle") {
                 updater.checkForUpdates()
             }
             .disabled(!updater.canCheckForUpdates)

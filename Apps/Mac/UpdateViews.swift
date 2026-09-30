@@ -6,7 +6,7 @@ struct UpdateCommands: Commands {
 
     var body: some Commands {
         CommandGroup(after: .appInfo) {
-            Button("Check for Updates…") { updater.checkForUpdates() }
+            Button("Check for Updates", systemImage: "arrow.down.circle") { updater.checkForUpdates() }
                 .disabled(!updater.canCheckForUpdates)
         }
     }
