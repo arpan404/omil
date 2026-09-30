@@ -67,23 +67,7 @@ xcodebuild -project Omil.xcodeproj -scheme OmilMac -configuration Release \
   "${build_settings[@]}" build
 
 app="$derived_data/Build/Products/Release/Omil.app"
-codesign --force --options runtime --timestamp \
-  --entitlements Apps/Mac/OmilServer.entitlements \
-  --sign "${signing_identities[0]}" "$app/Contents/Resources/omil-server"
-codesign --force --options runtime --timestamp \
-  --entitlements Apps/Mac/OmilMac.entitlements \
-  --sign "${signing_identities[0]}" "$app"
-codesign --verify --deep --strict "$app"
-signed_team=$(codesign -dv --verbose=4 "$app" 2>&1 | sed -n 's/^TeamIdentifier=//p')
-if [[ "$signed_team" != "$team_id" ]]; then
-  echo "error: built app has TeamIdentifier=$signed_team; expected $team_id" >&2
-  exit 1
-fi
-sparkle_team=$(codesign -dv --verbose=4 "$app/Contents/Frameworks/Sparkle.framework" 2>&1 | sed -n 's/^TeamIdentifier=//p')
-if [[ "$sparkle_team" != "$signed_team" ]]; then
-  echo "error: Sparkle and Omil have different signing teams ($sparkle_team vs $signed_team)" >&2
-  exit 1
-fi
+./scripts/sign-mac-app.sh "$app" "${signing_identities[0]}" "$team_id"
 
 echo "==> app: $app"
 if [[ "$install_after_build" == false ]]; then

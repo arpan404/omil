@@ -77,6 +77,7 @@ result_json="$output_dir/notarization-result.json"
 
 codesign --verify --deep --strict "$app"
 codesign --verify --strict "$app/Contents/Resources/omil-server"
+/usr/bin/python3 scripts/verify-mac-signing.py "$app" "$APPLE_TEAM_ID"
 echo "==> submitting Omil $version ($build) to Apple; waiting for notarization"
 ditto -c -k --sequesterRsrc --keepParent "$app" "$submission_zip"
 submit_exit=0
