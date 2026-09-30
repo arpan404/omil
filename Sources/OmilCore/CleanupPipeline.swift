@@ -15,7 +15,6 @@ public struct CleanupPipeline: Sendable {
     private let resolver = CorrectionResolver()
     private let validator = EditValidator()
     private let numbers = NumberNormalizer()
-    private let formatting = FormattingCommands()
 
     public init(dictionary: PersonalDictionary = PersonalDictionary(), applyDictionary: Bool = true) {
         self.dictionary = dictionary

@@ -1,216 +1,72 @@
 import { Effect } from "effect"
 import type { ServerConfig } from "./Config"
-import { ensureModel, ModelError } from "./Models"
+import { ensureModel, ModelError, toModelError } from "./Models"
 import {
-  ModelRuntimeLifecycle,
-  type ModelRuntimeSnapshot,
-} from "./ModelRuntime"
+  ManagedSidecar, type SidecarHandle, type SidecarLease, type SidecarSnapshot,
+} from "./Sidecar"
 
-/** Manages the resident cleanup model sidecar and its memory lifetime. */
+/** The resident cleanup model sidecar. */
 
-export interface LlamaHandle {
-  readonly baseUrl: string
-  readonly modelId: string
-}
+export type LlamaHandle = SidecarHandle
 
-export interface LlamaLease {
-  readonly handle: LlamaHandle
-  release(): void
-}
+const llama = new ManagedSidecar({ name: "llama-server", readyTimeoutMs: 240_000, captureStderr: false })
 
-export interface LlamaRuntimeSnapshot extends ModelRuntimeSnapshot {
-  readonly idleUnloadMs: number
-}
+let lastRequestedModel: string | null = null
 
-let proc: Bun.Subprocess | null = null
-let liveModel: string | null = null
-let loadPromise: Promise<LlamaHandle> | null = null
-let loadPromiseModel: string | null = null
-let idleTimer: ReturnType<typeof setTimeout> | null = null
-const lifecycle = new ModelRuntimeLifecycle()
-
-const configuredIdleMs = Number(process.env.OMIL_MODEL_IDLE_MS ?? 900_000)
-const idleUnloadMs = Number.isFinite(configuredIdleMs) && configuredIdleMs >= 1_000
-  ? configuredIdleMs
-  : 900_000
-
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
-
-const clearIdleUnload = () => {
-  if (idleTimer) clearTimeout(idleTimer)
-  idleTimer = null
-  lifecycle.cancelUnload()
-}
-
-const terminateProcess = async (): Promise<void> => {
-  const target = proc
-  proc = null
-  liveModel = null
-  if (target && target.exitCode === null) {
-    try { target.kill() } catch { /* already gone */ }
-    await Promise.race([target.exited.catch(() => -1), sleep(5_000)])
-    if (target.exitCode === null) {
-      try { target.kill(9) } catch { /* already gone */ }
-    }
-  }
-  lifecycle.markUnloaded()
-}
-
-const requestUnload = async (): Promise<boolean> => {
-  if (!lifecycle.requestUnload()) return false
-  await terminateProcess()
-  return true
-}
-
-const scheduleIdleUnload = () => {
-  if (idleTimer) clearTimeout(idleTimer)
-  idleTimer = setTimeout(() => {
-    idleTimer = null
-    void requestUnload()
-  }, idleUnloadMs)
-  idleTimer.unref?.()
-}
-
-const startLlama = async (cfg: ServerConfig, selected: string): Promise<LlamaHandle> => {
-  clearIdleUnload()
-  const current = lifecycle.snapshot()
-  const baseUrl = `http://127.0.0.1:${cfg.llamaPort}`
-  if (liveModel === selected && proc && current.state !== "failed" && await Effect.runPromise(isHealthy(baseUrl))) {
-    lifecycle.cancelUnload()
-    return { baseUrl, modelId: selected }
-  }
-
-  if (loadPromise) {
-    if (loadPromiseModel === selected) return loadPromise
-    await loadPromise.catch(() => undefined)
-  }
-
-  const afterWait = lifecycle.snapshot()
-  if (afterWait.activeUses > 0 && afterWait.modelId !== selected) {
-    throw new ModelError(`cleanup model '${afterWait.modelId}' is busy; retry the model switch`)
-  }
-  if (proc) await terminateProcess()
-
-  const token = lifecycle.beginLoading(selected)
-  const pending = (async () => {
-    const model = await Effect.runPromise(ensureModel(cfg, selected))
-    console.log(`loading llama-server (${selected}) on :${cfg.llamaPort}`)
-    const child = Bun.spawn(
-      [cfg.llamaBin, "-m", model, "--port", String(cfg.llamaPort), "-c", "4096",
-        "--reasoning", "off", "--no-webui"],
-      { stdout: "ignore", stderr: "inherit" },
-    )
-    proc = child
-
-    for (let attempt = 0; attempt < 120; attempt += 1) {
-      await sleep(2_000)
-      if (child !== proc) throw new ModelError("cleanup model load was cancelled")
-      if (await Effect.runPromise(isHealthy(baseUrl))) {
-        if (!lifecycle.markReady(token)) {
-          try { child.kill() } catch { /* already gone */ }
-          throw new ModelError("cleanup model selection changed while loading")
-        }
-        liveModel = selected
-        console.log(`llama-server ready (${selected})`)
-        return { baseUrl, modelId: selected }
-      }
-      if (child.exitCode !== null) {
-        throw new ModelError(`llama-server exited early with status ${child.exitCode}; see the Omil server log`)
-      }
-    }
-    try { child.kill() } catch { /* already gone */ }
-    throw new ModelError("llama-server did not become ready in 240s")
-  })()
-
-  loadPromise = pending
-  loadPromiseModel = selected
-  try {
-    return await pending
-  } catch (error) {
-    const reason = error instanceof ModelError ? error.reason : String(error)
-    lifecycle.markFailed(token, reason)
-    if (proc?.exitCode !== null) proc = null
-    liveModel = null
-    throw error instanceof ModelError ? error : new ModelError(reason)
-  } finally {
-    if (loadPromise === pending) {
-      loadPromise = null
-      loadPromiseModel = null
-    }
-  }
-}
+/** One slot keeps the whole context for a single request and its prompt cache warm between requests. */
+const LLAMA_CONTEXT_TOKENS = 8192
 
 export const acquireLlama = (
   cfg: ServerConfig,
   modelId?: string,
-): Effect.Effect<LlamaLease, ModelError, never> =>
+): Effect.Effect<SidecarLease, ModelError, never> =>
   Effect.tryPromise({
-    try: async () => {
+    try: () => {
       const selected = modelId ?? cfg.llmModelId
-      const handle = await startLlama(cfg, selected)
-      clearIdleUnload()
-      if (!lifecycle.beginUse(selected)) {
-        throw new ModelError("cleanup model changed before inference could start")
-      }
-      let released = false
-      return {
-        handle,
-        release() {
-          if (released) return
-          released = true
-          const shouldUnload = lifecycle.endUse(selected)
-          if (shouldUnload) {
-            void terminateProcess()
-          } else if (lifecycle.snapshot().state === "ready") {
-            scheduleIdleUnload()
-          }
-        },
-      }
+      lastRequestedModel = selected
+      return llama.acquire(selected, async () => {
+        const model = await Effect.runPromise(ensureModel(cfg, selected))
+        return {
+          port: cfg.llamaPort,
+          argv: [cfg.llamaBin, "-m", model, "--port", String(cfg.llamaPort),
+            "-c", String(LLAMA_CONTEXT_TOKENS), "-np", "1", "-fa", "on", "-ngl", "99",
+            "--reasoning", "off", "--no-webui"],
+        }
+      })
     },
-    catch: (error) => error instanceof ModelError ? error : new ModelError(String(error)),
+    catch: toModelError,
   })
 
-/** Explicit unload. Active inference finishes first, then releases memory. */
-export const unloadLlama = (): Promise<boolean> => {
-  clearIdleUnload()
-  return requestUnload()
-}
+export const unloadLlama = (): Promise<boolean> => llama.unload()
 
-/** Process shutdown path. The operating system releases child memory. */
-export const stopLlama = (): void => {
-  if (idleTimer) clearTimeout(idleTimer)
-  idleTimer = null
-  if (proc) {
-    try { proc.kill() } catch { /* already gone */ }
-  }
-  proc = null
-  liveModel = null
-  loadPromise = null
-  loadPromiseModel = null
-  lifecycle.markUnloaded()
-}
+export const stopLlama = (): void => llama.stop()
 
-export const llamaRuntime = (): LlamaRuntimeSnapshot => ({
-  ...lifecycle.snapshot(),
-  idleUnloadMs,
-})
+export const llamaRuntime = (): SidecarSnapshot => llama.snapshot()
 
-export const liveLlmModel = (): string | null => liveModel
+export const liveLlmModel = (): string | null => llama.live()
 
-const isHealthy = (baseUrl: string): Effect.Effect<boolean, never, never> =>
-  Effect.promise(async () => {
-    try {
-      const response = await fetch(`${baseUrl}/health`, { signal: AbortSignal.timeout(3_000) })
-      if (!response.ok) return false
-      const body = (await response.json()) as { status?: string }
-      return body.status === "ok"
-    } catch {
-      return false
-    }
-  })
-
+/** The cleanup model the next request most likely uses: the loaded one, else the last requested. */
+export const likelyLlmModel = (): string | null => llama.live() ?? lastRequestedModel
 
 export interface ChatMessage { role: "system" | "user"; content: string }
+
+interface ChatCompletion {
+  choices?: Array<{ message?: { content?: string } }>
+  timings?: {
+    prompt_n?: number
+    prompt_ms?: number
+    cache_n?: number
+    predicted_n?: number
+    predicted_ms?: number
+  }
+}
+
+const logTimings = (timings: ChatCompletion["timings"]) => {
+  if (!timings) return
+  const ms = (value: number | undefined) => Math.round(value ?? 0)
+  console.log(`llama timings: prompt=${timings.prompt_n ?? 0} cached=${timings.cache_n ?? 0} ` +
+    `prompt_ms=${ms(timings.prompt_ms)} predicted=${timings.predicted_n ?? 0} predicted_ms=${ms(timings.predicted_ms)}`)
+}
 
 /** OpenAI-compatible chat completion returning the assistant's plain text. */
 export const chatText = (
@@ -230,17 +86,15 @@ export const chatText = (
           max_tokens: maxTokens,
         }),
         signal: AbortSignal.timeout(180_000),
-      }).catch((error) => ({ ok: false as const, error })),
+      }).catch((error: unknown) => error instanceof Error ? error : new Error(String(error))),
     )
-    if (typeof response !== "object" || response === null || !("ok" in response) || !response.ok) {
-      const detail = response && typeof response === "object" && "error" in response
-        ? String((response as { error: unknown }).error)
-        : `HTTP ${(response as Response).status}`
+    if (response instanceof Error || !response.ok) {
+      if (response instanceof Error) yield* Effect.promise(() => llama.verifyAfterFailure())
+      const detail = response instanceof Error ? String(response) : `HTTP ${response.status}`
       return yield* Effect.fail(new ModelError(`llama chat failed: ${detail}`))
     }
-    const json = (yield* Effect.promise(() => (response as Response).json())) as {
-      choices?: Array<{ message?: { content?: string } }>
-    }
+    const json = (yield* Effect.promise(() => response.json())) as ChatCompletion
+    logTimings(json.timings)
     const content = json.choices?.[0]?.message?.content?.trim()
     if (!content) return yield* Effect.fail(new ModelError("llama returned empty text"))
     return content

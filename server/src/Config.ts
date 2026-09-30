@@ -1,13 +1,13 @@
-import { Effect, Config as Cfg } from "effect"
+import { Effect } from "effect"
+import path from "node:path"
 
 /**
  * Server configuration. All actual inference work happens here; Swift apps
  * are thin clients (capture, display, local insertion).
  *
- * Trust model: this server runs on the USER'S OWN Mac on their LAN.
- * iPhone/iPad audio travels to it. That is a deliberate change from pure
- * on-device: no third-party server is ever involved, but the Mac must be
- * reachable and the LAN trusted.
+ * Trust model: this server runs on the user's own Mac. iPhone/iPad audio
+ * reaches it over the LAN only when the user enables sharing; no third-party
+ * server is involved.
  */
 
 export interface ModelSpec {
@@ -144,28 +144,37 @@ export interface ServerConfig {
   readonly port: number
   readonly dataDir: string
   readonly whisperBin: string
+  readonly whisperServerBin: string
   readonly llamaBin: string
   readonly llamaPort: number
+  readonly whisperPort: number
   readonly whisperModelId: string
   readonly llmModelId: string
 }
 
-export const loadConfig = Effect.gen(function* () {
+/** whisper-server ships next to whisper-cli in the same whisper.cpp install. */
+export const defaultWhisperServerBin = (whisperBin: string): string =>
+  whisperBin.includes(path.sep) ? path.join(path.dirname(whisperBin), "whisper-server") : "whisper-server"
+
+export const loadConfig = Effect.sync((): ServerConfig => {
   const dataDir =
     process.env.OMIL_DATA ?? `${process.cwd()}/data`
+  const whisperBin = process.env.OMIL_WHISPER_BIN ?? "whisper-cli"
+  const llamaPort = Number(process.env.OMIL_LLAMA_PORT ?? 3218)
   return {
     host: process.env.OMIL_HOST ?? "127.0.0.1",
     port: Number(process.env.OMIL_PORT ?? 3217),
     dataDir,
-    whisperBin: process.env.OMIL_WHISPER_BIN ?? "whisper-cli",
+    whisperBin,
+    whisperServerBin: process.env.OMIL_WHISPER_SERVER_BIN ?? defaultWhisperServerBin(whisperBin),
     llamaBin: process.env.OMIL_LLAMA_BIN ?? "llama-server",
-    llamaPort: Number(process.env.OMIL_LLAMA_PORT ?? 3218),
+    llamaPort,
+    // The Mac app reserves a dedicated port; standalone runs use the next one.
+    whisperPort: Number(process.env.OMIL_WHISPER_PORT ?? llamaPort + 1),
     whisperModelId: process.env.OMIL_WHISPER_MODEL ?? DEFAULT_WHISPER,
     llmModelId: process.env.OMIL_LLM_MODEL ?? DEFAULT_LLM,
-  } satisfies ServerConfig
+  }
 })
 
 export const modelSpec = (id: string): ModelSpec | undefined =>
   MODELS.find((m) => m.id === id)
-
-export { Cfg }

@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import SwiftUI
+import OmilDesign
 import OmilCore
 
 // MARK: - Floating dictation control
@@ -8,12 +9,12 @@ import OmilCore
 private enum PillLayout {
     static func size(for phase: DictationController.Phase) -> NSSize {
         switch phase {
-        case .idle: return NSSize(width: 78, height: 32)
-        case .preparing: return NSSize(width: 126, height: 38)
-        case .recording: return NSSize(width: 138, height: 40)
-        case .processing: return NSSize(width: 130, height: 38)
-        case .ready: return NSSize(width: 142, height: 36)
-        case .failed: return NSSize(width: 130, height: 38)
+        case .idle: return NSSize(width: 84, height: 34)
+        case .preparing: return NSSize(width: 134, height: 38)
+        case .recording: return NSSize(width: 144, height: 42)
+        case .processing: return NSSize(width: 148, height: 38)
+        case .ready: return NSSize(width: 148, height: 38)
+        case .failed: return NSSize(width: 144, height: 38)
         }
     }
 }
@@ -72,7 +73,7 @@ struct PillPosition {
 }
 
 @MainActor
-final class PillManager: NSObject, ObservableObject, NSWindowDelegate {
+final class PillManager: NSObject, NSWindowDelegate {
     static let shared = PillManager()
 
     private var panel: NSPanel?
@@ -82,15 +83,12 @@ final class PillManager: NSObject, ObservableObject, NSWindowDelegate {
     private var dismissTask: Task<Void, Never>?
     private var visibility = PillVisibility()
 
+    static let restingAlpha: CGFloat = 0.9
+
     private var position = PillPosition()
     private var placingPanel = false
 
     private override init() { super.init() }
-
-    func debugInfo() -> String {
-        guard let p = panel else { return "no panel" }
-        return "panel visible=\(p.isVisible)"
-    }
 
     func attach(_ controller: DictationController) {
         if panel != nil { return }
@@ -117,7 +115,7 @@ final class PillManager: NSObject, ObservableObject, NSWindowDelegate {
         p.hidesOnDeactivate = false
         p.animationBehavior = .utilityWindow
         p.isReleasedWhenClosed = false
-        p.alphaValue = 0.72
+        p.alphaValue = PillManager.restingAlpha
         self.panel = p
         resize(p, to: initialSize)
         p.delegate = self
@@ -202,8 +200,19 @@ final class PillManager: NSObject, ObservableObject, NSWindowDelegate {
         let frame = position.frame(size: size, fallback: fallback, screens: NSScreen.screens.map(\.visibleFrame))
         guard panel.frame != frame else { return }
         placingPanel = true
-        defer { placingPanel = false }
-        panel.setFrame(frame, display: true)
+        guard panel.isVisible else {
+            panel.setFrame(frame, display: true)
+            placingPanel = false
+            return
+        }
+        // Grow and shrink around the fixed bottom-center anchor instead of jumping.
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.18
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            panel.animator().setFrame(frame, display: true)
+        } completionHandler: { [weak self] in
+            Task { @MainActor in self?.placingPanel = false }
+        }
     }
 
     func windowDidMove(_ notification: Notification) {
@@ -220,7 +229,7 @@ final class PillManager: NSObject, ObservableObject, NSWindowDelegate {
     }
 
     func setHovered(_ hovered: Bool) {
-        panel?.alphaValue = hovered ? 1 : 0.72
+        panel?.animator().alphaValue = hovered ? 1 : Self.restingAlpha
     }
 
     func drag(with event: NSEvent) {
@@ -257,7 +266,6 @@ final class PillPresentation: ObservableObject {
     @Published private(set) var processingStage: DictationController.ProcessingStage
     @Published private(set) var lastCleaned: String
     @Published private(set) var statusMessage: String
-    @Published private(set) var audioLevels: [Double]
     @Published private(set) var pillAlwaysVisible: Bool
     @Published private(set) var pendingCount: Int
     @Published private(set) var pendingStage: DictationController.ProcessingStage?
@@ -273,7 +281,6 @@ final class PillPresentation: ObservableObject {
         processingStage = controller.processingStage
         lastCleaned = controller.lastCleaned
         statusMessage = controller.statusMessage
-        audioLevels = controller.audioMeter.levels
         pillAlwaysVisible = controller.pillAlwaysVisible
         pendingCount = controller.processingJobs.count
         pendingStage = controller.processingJobs.first?.stage
@@ -288,7 +295,6 @@ final class PillPresentation: ObservableObject {
         controller.$processingStage.sink { [weak self] in self?.processingStage = $0 }.store(in: &cancellables)
         controller.$lastCleaned.sink { [weak self] in self?.lastCleaned = $0 }.store(in: &cancellables)
         controller.$statusMessage.sink { [weak self] in self?.statusMessage = $0 }.store(in: &cancellables)
-        controller.audioMeter.$levels.sink { [weak self] in self?.audioLevels = $0 }.store(in: &cancellables)
         controller.$pillAlwaysVisible.sink { [weak self] in self?.pillAlwaysVisible = $0 }.store(in: &cancellables)
         controller.$processingJobs.sink { [weak self] jobs in
             guard let self else { return }
@@ -307,6 +313,9 @@ final class PillPresentation: ObservableObject {
         }.store(in: &cancellables)
     }
 
+    /// Only the waveform observes the meter, so level ticks redraw just it.
+    var audioMeter: AudioMeter? { controller?.audioMeter }
+
     func cancel() { controller?.cancel() }
     func stop() { controller?.stop() }
     func start() { controller?.start(source: .pill) }
@@ -316,7 +325,42 @@ final class PillPresentation: ObservableObject {
 struct PillView: View {
     @ObservedObject fileprivate var presentation: PillPresentation
 
+    /// Changes whenever the pill shows different content, so each state
+    /// cross-fades instead of snapping.
+    private var contentKey: String {
+        "\(presentation.phase)-\(presentation.processingStage.rawValue)-\(presentation.pendingCount)-\(presentation.showCompletion)"
+    }
+
     var body: some View {
+        ZStack {
+            phaseContent
+                .id(contentKey)
+                .transition(.opacity.combined(with: .scale(scale: 0.92)))
+        }
+        .frame(
+            width: PillLayout.size(for: presentation.phase).width - 6,
+            height: PillLayout.size(for: presentation.phase).height - 6
+        )
+        .clipShape(Capsule())
+        .liquidGlass(in: Capsule(), tint: Color.black.opacity(GlassLook.isDark ? 0.55 : 0.84), fallbackFill: Color(hex: 0x141416).opacity(0.92))
+        .background(PillDragArea())
+        .animation(OmilMotion.standard, value: contentKey)
+        .contentShape(Capsule())
+        .contextMenu {
+            Button(presentation.pillAlwaysVisible ? "Hide Floating Pill" : "Hide Pill for This Recording") {
+                PillManager.shared.hideFromContextMenu()
+            }
+            Button("Open Omil") { AppContext.appDelegate?.showMainWindow() }
+        }
+        .padding(3)
+        .preferredColorScheme(.dark)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(accessibilityLabel)
+        .onHover { PillManager.shared.setHovered($0) }
+    }
+
+    @ViewBuilder
+    private var phaseContent: some View {
         Group {
             switch presentation.phase {
             case .recording:
@@ -352,31 +396,12 @@ struct PillView: View {
                 idleContent
             }
         }
-        .frame(
-            width: PillLayout.size(for: presentation.phase).width - 6,
-            height: PillLayout.size(for: presentation.phase).height - 6
-        )
-        .background(Color(hex: 0x080808), in: Capsule())
-        .background(PillDragArea())
-        .overlay(Capsule().stroke(Color.white.opacity(0.14), lineWidth: 0.75))
-        .contentShape(Capsule())
-        .contextMenu {
-            Button(presentation.pillAlwaysVisible ? "Hide floating pill" : "Hide pill for this recording") {
-                PillManager.shared.hideFromContextMenu()
-            }
-            Button("Open Omil") { AppContext.appDelegate?.showMainWindow() }
-        }
-        .padding(3)
-        .preferredColorScheme(.dark)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel(accessibilityLabel)
-        .onHover { PillManager.shared.setHovered($0) }
     }
 
     private var idleContent: some View {
         Button { presentation.start() } label: {
             Label("Start", systemImage: "mic.fill")
-                .font(.system(size: 11, weight: .semibold))
+                .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(.white)
         .frame(height: 24)
         }
@@ -392,7 +417,7 @@ struct PillView: View {
                 presentation.cancel()
             }
 
-            CompactWaveform(levels: presentation.audioLevels)
+            LiveCompactWaveform(meter: presentation.audioMeter)
                 .frame(width: 52, height: 24)
                 .overlay(PillDragArea())
                 .help("Drag to move")
@@ -401,7 +426,7 @@ struct PillView: View {
                 presentation.stop()
             } label: {
                 Image(systemName: "checkmark")
-                    .font(.system(size: 12, weight: .bold))
+                    .font(OmilFont.ui(12, weight: .bold))
                     .foregroundStyle(.black)
                     .frame(width: 28, height: 28)
                     .background(.white, in: Circle())
@@ -430,17 +455,18 @@ struct PillView: View {
                     .frame(width: 14, height: 18)
             } else {
                 Image(systemName: icon)
-                    .font(.system(size: 10, weight: .bold))
+                    .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.white)
                     .frame(width: 14, height: 18)
             }
 
             Text(title)
-                .font(.system(size: 9.5, weight: .semibold))
-                .foregroundStyle(.white)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.white.opacity(0.92))
                 .lineLimit(1)
                 .allowsTightening(true)
-                .minimumScaleFactor(0.8)
+                .minimumScaleFactor(0.85)
+                .contentTransition(.opacity)
                 .layoutPriority(1)
                 .overlay(PillDragArea())
                 .help("Drag to move")
@@ -466,10 +492,10 @@ struct PillView: View {
     ) -> some View {
         Button(action: action) {
             Image(systemName: icon)
-                .font(.system(size: 9, weight: .bold))
-                .foregroundStyle(Color.white.opacity(0.72))
-                .frame(width: 22, height: 22)
-                .background(Color.white.opacity(0.07), in: Circle())
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(Color.white.opacity(0.78))
+                .frame(width: 24, height: 24)
+                .background(Color.white.opacity(0.1), in: Circle())
         }
         .buttonStyle(.plain)
         .help(help)
@@ -485,6 +511,23 @@ struct PillView: View {
         case .ready: return presentation.lastCleaned.isEmpty ? "No speech detected" : presentation.statusMessage
         case .failed: return presentation.statusMessage
         }
+    }
+}
+
+private struct LiveCompactWaveform: View {
+    let meter: AudioMeter?
+
+    var body: some View {
+        if let meter {
+            MeterObserver(meter: meter)
+        } else {
+            CompactWaveform(levels: [])
+        }
+    }
+
+    private struct MeterObserver: View {
+        @ObservedObject var meter: AudioMeter
+        var body: some View { CompactWaveform(levels: meter.levels) }
     }
 }
 

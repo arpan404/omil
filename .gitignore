@@ -18,6 +18,7 @@ build/
 OmilMac.app/
 .env
 .env.release
+*.p8
 
 # Omil server runtime
 server/data/models/

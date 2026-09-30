@@ -1,6 +1,6 @@
 export type WritingStyle = "automatic" | "formal" | "casual" | "veryCasual" | "excited"
 
-export interface PersonalizationResult {
+interface PersonalizationResult {
   readonly text: string
   readonly appliedSnippetTriggers: readonly string[]
 }

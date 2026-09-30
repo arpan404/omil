@@ -1,7 +1,7 @@
 /** Mild filtering and level adjustment for Omil's 16 kHz mono PCM16 uploads. */
 import { AUDIO_PROFILES, type AudioSensitivity } from "./AudioSensitivity"
 
-export interface PreprocessedAudio {
+interface PreprocessedAudio {
   readonly wav: Buffer
   readonly silent: boolean
 }
@@ -41,6 +41,18 @@ const pcmRange = (wav: Buffer): PcmRange | null => {
   return data
 }
 
+const littleEndian = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1
+
+/** Samples as an Int16Array, viewing the upload in place when alignment and byte order allow. */
+const samplesOf = (wav: Buffer, range: PcmRange): Int16Array => {
+  const count = range.bytes / 2
+  const byteOffset = wav.byteOffset + range.offset
+  if (littleEndian && byteOffset % 2 === 0) return new Int16Array(wav.buffer, byteOffset, count)
+  const copy = new Int16Array(count)
+  for (let index = 0; index < count; index++) copy[index] = wav.readInt16LE(range.offset + index * 2)
+  return copy
+}
+
 export const preprocessWav = (wav: Buffer, sensitivity: AudioSensitivity = "balanced"): PreprocessedAudio => {
   const profile = AUDIO_PROFILES[sensitivity]
   const range = pcmRange(wav)
@@ -49,6 +61,7 @@ export const preprocessWav = (wav: Buffer, sensitivity: AudioSensitivity = "bala
   if (range.bytes > 16_000 * 2 * 600) return { wav, silent: false }
   const count = range.bytes / 2
   if (count === 0) return { wav, silent: true }
+  const samples = samplesOf(wav, range)
 
   const frameSize = 320 // 20 ms at 16 kHz
   const frameLevels: number[] = []
@@ -61,8 +74,7 @@ export const preprocessWav = (wav: Buffer, sensitivity: AudioSensitivity = "bala
   let filteredPeak = 0
 
   for (let index = 0; index < count; index++) {
-    const offset = range.offset + index * 2
-    const sample = wav.readInt16LE(offset)
+    const sample = samples[index]
     inputPeak = Math.max(inputPeak, Math.abs(sample))
     const input = sample / 32_768
     const filtered = alpha * (previousOutput + input - previousInput)
@@ -91,17 +103,25 @@ export const preprocessWav = (wav: Buffer, sensitivity: AudioSensitivity = "bala
     gain = Math.min(profile.maxGain, Math.max(1, 0.08 / high), 0.95 / filteredPeak)
   }
 
-  const result = Buffer.from(wav)
+  // A fresh ArrayBuffer keeps the output sample view aligned; chunk offsets are always even.
+  const result = Buffer.from(new ArrayBuffer(wav.length))
+  result.set(wav.subarray(0, range.offset), 0)
+  result.set(wav.subarray(range.offset + range.bytes), range.offset + range.bytes)
+  const output = new Int16Array(result.buffer, range.offset, count)
   previousInput = 0
   previousOutput = 0
   for (let index = 0; index < count; index++) {
-    const offset = range.offset + index * 2
-    const input = wav.readInt16LE(offset) / 32_768
+    const input = samples[index] / 32_768
     const filtered = alpha * (previousOutput + input - previousInput)
     previousInput = input
     previousOutput = filtered
     const adjusted = Math.round(filtered * gain * 32_768)
-    result.writeInt16LE(Math.max(-32_768, Math.min(32_767, adjusted)), offset)
+    output[index] = Math.max(-32_768, Math.min(32_767, adjusted))
+  }
+  if (!littleEndian) {
+    for (let index = 0; index < count; index++) {
+      result.writeInt16LE(output[index], range.offset + index * 2)
+    }
   }
   return { wav: result, silent: false }
 }

@@ -15,6 +15,21 @@ export interface CleanupContext {
   readonly after: string
 }
 
+/**
+ * Output budget for a copyedit of `text`: about one token per three
+ * characters of Latin-script text plus headroom. Other scripts often need a
+ * token or more per character, so they are counted more heavily.
+ */
+export function cleanupMaxTokens(text: string): number {
+  let latin = 0
+  let other = 0
+  for (const char of text) {
+    if (char.codePointAt(0)! < 0x0250) latin++
+    else other++
+  }
+  return Math.min(2048, Math.max(128, Math.ceil(latin / 3 + other * 1.5) + 64))
+}
+
 export function proposeProseCleanup(
   handle: LlamaHandle,
   text: string,
@@ -33,7 +48,7 @@ export function proposeProseCleanup(
     { role: "user", content: `Personal dictionary: ${JSON.stringify(dictionary)}\nText before cursor: ${JSON.stringify(context?.before ?? "")}\nText after cursor: ${JSON.stringify(context?.after ?? "")}\n\nTranscript to copyedit:\n${text}` },
   ]
   return Effect.gen(function* () {
-    const response = yield* chatText(handle, messages, Math.min(4096, Math.max(256, Math.ceil(text.length * 1.5))))
+    const response = yield* chatText(handle, messages, cleanupMaxTokens(text))
     return stripMarkdownFormatting(response)
   })
 }

@@ -5,58 +5,10 @@ import UIKit
 
 // MARK: - ModelAssets
 //
-// Explicit, versioned, integrity-checked model downloads owned by the app.
-// Weights are data consumed by shipped runtimes (never executable code).
-
-public struct ModelManifestEntry: Codable, Sendable {
-    public var id: String           // e.g. "whisperkit-small.en"
-    public var version: String
-    public var languages: [String]
-    public var downloadBytes: Int
-    public var installedBytes: Int?
-    public var minRAMClass: String  // e.g. "6GB"
-    public var estimatedPeakMB: Int?
-    public var license: String
-    public var licenseURL: String?
-    public var sourceURL: String
-    public var sha256: String?
-    public var benchmarkDevice: String?
-    public init(id: String, version: String, languages: [String], downloadBytes: Int, license: String, sourceURL: String, minRAMClass: String = "6GB") {
-        self.id = id
-        self.version = version
-        self.languages = languages
-        self.downloadBytes = downloadBytes
-        self.license = license
-        self.sourceURL = sourceURL
-        self.minRAMClass = minRAMClass
-    }
-}
-
-public enum ModelInstallState: String, Codable, Sendable {
-    case notInstalled
-    case downloading
-    case verifying
-    case installed
-    case failed
-}
-
-public struct ModelInstallRecord: Codable, Sendable {
-    public var entry: ModelManifestEntry
-    public var state: ModelInstallState
-    public var progress: Double
-    public var installedPath: String?
-    public var failureReason: String?
-    public init(entry: ModelManifestEntry) {
-        self.entry = entry
-        self.state = .notInstalled
-        self.progress = 0
-    }
-}
+// Integrity checks for model data (downloads themselves are owned by the server).
 
 public enum AssetError: Error {
     case integrityMismatch(expected: String, actual: String)
-    case downloadFailed(underlying: String)
-    case unsupportedPlatform
 }
 
 /// Integrity + bookkeeping helpers (network fetch lives in the app layer so
@@ -104,32 +56,10 @@ enum CryptoKitSHA256 {
 
 // MARK: - CapabilityMatrix
 
-/// Eligibility from measured evidence + runtime probes (never chip names).
-public struct DeviceCapability: Codable, Sendable {
-    public var deviceModel: String
-    public var osVersion: String
-    public var memoryGB: Int
-    public var backend: String
-    public var locale: String
-    public var executionState: String // foreground / background
-    public var supported: Bool
-    public var notes: String
-    public init(deviceModel: String, osVersion: String, memoryGB: Int, backend: String, locale: String, executionState: String, supported: Bool, notes: String) {
-        self.deviceModel = deviceModel
-        self.osVersion = osVersion
-        self.memoryGB = memoryGB
-        self.backend = backend
-        self.locale = locale
-        self.executionState = executionState
-        self.supported = supported
-        self.notes = notes
-    }
-}
-
 public struct CapabilityMatrix: Sendable {
     public init() {}
 
-    /// Starting policy to validate (product plan): runtime availability first.
+    /// Chooses an on-device speech backend from runtime availability.
     public func eligible(status: AppleSpeechStatus, memoryGB: Int, executionState: String) -> (supported: Bool, notes: String) {
         if status.speechTranscriberAvailable {
             return (true, "Apple SpeechTranscriber available; \(status.detail)")

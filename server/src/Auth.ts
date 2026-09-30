@@ -4,12 +4,13 @@ import { mkdir, readFile, writeFile, chmod } from "node:fs/promises"
 import path from "node:path"
 
 /**
- * LAN bearer-token auth. Token is generated on first run, stored 0600 in the
- * data dir, and must be entered once in each Swift client (Mac Settings,
- * iOS Settings). No accounts, no third parties.
+ * LAN bearer-token auth. The token lives 0600 in the data dir; the Mac app
+ * normally writes it before launching the server, and this creates one when
+ * run standalone. iPhone and iPad receive it through the Mac's pairing QR
+ * code. No accounts, no third parties.
  */
 
-export const TOKEN_FILE = "omil-token"
+const TOKEN_FILE = "omil-token"
 
 export const loadOrCreateToken = (dataDir: string): Effect.Effect<string, never, never> =>
   Effect.promise(async () => {

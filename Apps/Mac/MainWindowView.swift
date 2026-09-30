@@ -2,6 +2,7 @@ import AppKit
 import Combine
 import CoreImage
 import SwiftUI
+import OmilDesign
 import OmilCore
 
 // MARK: - Product shell
@@ -9,12 +10,26 @@ import OmilCore
 @MainActor
 final class AppAppearance: ObservableObject {
     static let shared = AppAppearance()
-    @Published private(set) var colorScheme: ColorScheme
-    @Published var themePreset: ThemePreset = .fog
+    @Published private(set) var colorScheme: ColorScheme {
+        didSet { palette = themePreset.palette(for: colorScheme) }
+    }
+    @Published var themePreset: ThemePreset = .graphite {
+        didSet { palette = themePreset.palette(for: colorScheme) }
+    }
+    /// The active palette, resolved once per theme or appearance change.
+    private(set) var palette: ThemePalette
+    /// 0 = fully opaque window, 1 = fully clear. Persisted per user.
+    @Published var windowTransparency: Double = UserDefaults.standard.object(forKey: "omil.windowTransparency") as? Double
+        ?? AppAppearance.defaultTransparency {
+        didSet { UserDefaults.standard.set(windowTransparency, forKey: "omil.windowTransparency") }
+    }
+    static let defaultTransparency = 0.4
     private var observation: NSKeyValueObservation?
 
     private init() {
-        colorScheme = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? .dark : .light
+        let scheme: ColorScheme = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? .dark : .light
+        colorScheme = scheme
+        palette = ThemePreset.graphite.palette(for: scheme)
         observation = NSApp.observe(\.effectiveAppearance, options: [.new]) { [weak self] _, change in
             let dark = change.newValue?.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
             Task { @MainActor [weak self] in self?.colorScheme = dark ? .dark : .light }
@@ -37,10 +52,10 @@ private struct AppAppearanceModifier: ViewModifier {
     @ObservedObject private var appearance = AppAppearance.shared
 
     func body(content: Content) -> some View {
-        let palette = appearance.themePreset.palette(for: appearance.colorScheme)
+        let palette = appearance.palette
         content.environment(\.colorScheme, appearance.colorScheme)
             .tint(Color(hex: palette.signal))
-            .background(Color(hex: palette.canvas).ignoresSafeArea())
+            .background(GlassBackdrop().ignoresSafeArea())
             .modifier(PointerAwareFocus())
             .background(WindowChrome(color: NSColor(hex: palette.canvas),
                                      appearance: appearance.colorScheme == .dark ? .darkAqua : .aqua,
@@ -55,14 +70,6 @@ extension View {
                                        hidesFullScreenToolbar: hidesFullScreenToolbar))
     }
 
-    @ViewBuilder
-    func omilFullScreenToolbar() -> some View {
-        if #available(macOS 15.0, *) {
-            windowToolbarFullScreenVisibility(.onHover)
-        } else {
-            self
-        }
-    }
 }
 
 private struct WindowChrome: NSViewRepresentable {
@@ -113,13 +120,16 @@ private final class WindowChromeView: NSView {
                 let observer = NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
                     Task { @MainActor [weak self] in
                         guard let self else { return }
-                        if name == NSWindow.willEnterFullScreenNotification {
-                            self.window?.toolbar?.isVisible = false
-                        } else if name == NSWindow.willExitFullScreenNotification {
-                            self.window?.toolbar?.isVisible = true
-                        } else {
-                            self.updateWindow()
+                        // Only windows that opt in hide their toolbar in full screen;
+                        // the main window keeps its title, search, and controls.
+                        if self.hidesFullScreenToolbar {
+                            if name == NSWindow.willEnterFullScreenNotification {
+                                self.window?.toolbar?.isVisible = false
+                            } else if name == NSWindow.willExitFullScreenNotification {
+                                self.window?.toolbar?.isVisible = true
+                            }
                         }
+                        self.updateWindow()
                     }
                 }
                 fullScreenObservers.append(observer)
@@ -141,8 +151,9 @@ private final class WindowChromeView: NSView {
         if fullSizeTitlebar && !window.styleMask.contains(.fullSizeContentView) {
             window.styleMask.insert(.fullSizeContentView)
         }
-        if !window.backgroundColor.isEqual(chromeColor) {
-            window.backgroundColor = chromeColor
+        if window.isOpaque { window.isOpaque = false }
+        if !window.backgroundColor.isEqual(NSColor.clear) {
+            window.backgroundColor = .clear
         }
         if window.appearance?.name != chromeAppearance {
             window.appearance = NSAppearance(named: chromeAppearance)
@@ -155,61 +166,6 @@ private final class WindowChromeView: NSView {
             let visible = !window.styleMask.contains(.fullScreen)
             if window.toolbar?.isVisible != visible { window.toolbar?.isVisible = visible }
         }
-    }
-}
-
-private struct FullScreenReader: NSViewRepresentable {
-    @Binding var isFullScreen: Bool
-
-    func makeNSView(context: Context) -> FullScreenReaderView {
-        let view = FullScreenReaderView()
-        view.onChange = { isFullScreen = $0 }
-        return view
-    }
-
-    func updateNSView(_ view: FullScreenReaderView, context: Context) {
-        view.onChange = { isFullScreen = $0 }
-    }
-}
-
-private final class FullScreenReaderView: NSView {
-    var onChange: ((Bool) -> Void)?
-    private var observers: [NSObjectProtocol] = []
-    private var lastReported: Bool?
-
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        observers.forEach(NotificationCenter.default.removeObserver)
-        observers.removeAll()
-        lastReported = nil
-        guard let window else { return }
-        for name in [NSWindow.willEnterFullScreenNotification, NSWindow.didEnterFullScreenNotification,
-                     NSWindow.willExitFullScreenNotification, NSWindow.didExitFullScreenNotification] {
-            observers.append(NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
-                Task { @MainActor [weak self] in
-                    self?.reportState(name == NSWindow.willEnterFullScreenNotification ||
-                                      name == NSWindow.didEnterFullScreenNotification)
-                }
-            })
-        }
-        DispatchQueue.main.async { [weak self] in
-            guard let self, let window = self.window else { return }
-            self.reportState(window.styleMask.contains(.fullScreen))
-        }
-    }
-
-    deinit {
-        MainActor.assumeIsolated {
-            observers.forEach(NotificationCenter.default.removeObserver)
-        }
-    }
-
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
-
-    private func reportState(_ isFullScreen: Bool) {
-        guard lastReported != isFullScreen else { return }
-        lastReported = isFullScreen
-        onChange?(isFullScreen)
     }
 }
 
@@ -288,10 +244,10 @@ enum MainSection: String, Hashable, CaseIterable {
     var icon: String {
         switch self {
         case .record: return "waveform"
-        case .history: return "clock.arrow.circlepath"
-        case .snippets: return "text.badge.plus"
-        case .dictionary: return "text.book.closed"
-        case .styles: return "slider.horizontal.3"
+        case .history: return "clock"
+        case .snippets: return "text.quote"
+        case .dictionary: return "character.book.closed"
+        case .styles: return "textformat"
         case .engine: return "cpu"
         }
     }
@@ -299,7 +255,6 @@ enum MainSection: String, Hashable, CaseIterable {
 
 struct RootView: View {
     let controller: DictationController
-    @ObservedObject private var settings = AppContext.settingsCoordinator
     @State private var onboarded: Bool
 
     init(controller: DictationController) {
@@ -307,140 +262,146 @@ struct RootView: View {
         _onboarded = State(initialValue: controller.onboarded)
     }
 
+    /// Debug-only visual QA: `--args -OmilOnboardingStep 2` previews a setup
+    /// page without changing the saved onboarding state.
+    private var previewStep: Int? {
+        #if DEBUG
+        let args = ProcessInfo.processInfo.arguments
+        if let i = args.firstIndex(of: "-OmilOnboardingStep"), i + 1 < args.count { return Int(args[i + 1]) }
+        #endif
+        return nil
+    }
+
     var body: some View {
         Group {
-            if onboarded {
+            if let previewStep {
+                OnboardingView(controller: controller, initialStep: previewStep)
+            } else if onboarded {
                 MainWindowView(controller: controller)
             } else {
                 OnboardingView(controller: controller)
             }
         }
+        .animation(.spring(response: 0.5, dampingFraction: 0.9), value: onboarded)
         .frame(minWidth: 760, minHeight: 540)
-        .omilAppearance(fullSizeTitlebar: true, hidesFullScreenToolbar: true)
-        .sheet(isPresented: $settings.isPresented) {
-            SettingsView(controller: controller)
-        }
+        .omilAppearance(fullSizeTitlebar: true)
         .onReceive(controller.$onboarded.removeDuplicates()) { onboarded = $0 }
     }
+}
+
+/// Which main-window section is showing. Shared so menus, intents, and
+/// Spotlight can route the window.
+@MainActor
+final class AppNavigation: ObservableObject {
+    static let shared = AppNavigation()
+    @Published var section: MainSection? = .record
 }
 
 struct MainWindowView: View {
     let controller: DictationController
     @ObservedObject private var appearance = AppAppearance.shared
-    @State private var section: MainSection? = .record
-    @State private var isFullScreen = false
-    @State private var fullScreenSidebarVisible = true
+    @ObservedObject private var navigation = AppNavigation.shared
+    @Namespace private var sidebarSelection
+
     var body: some View {
-        let toolbarCanvas = Color(hex: appearance.themePreset.palette(for: appearance.colorScheme).canvas)
-        Group {
-            if isFullScreen {
-                HStack(spacing: 0) {
-                    if fullScreenSidebarVisible {
-                        sidebar
-                            .frame(width: 228)
-                            .overlay(alignment: .trailing) { OmilTheme.line.frame(width: 1) }
-                    }
-                    detail
-                }
-                .overlay(alignment: .topLeading) {
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            fullScreenSidebarVisible.toggle()
-                        }
-                    } label: {
-                        Image(systemName: "sidebar.left")
-                            .font(.system(size: 15, weight: .medium))
-                            .frame(width: 30, height: 30)
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(OmilTheme.muted)
-                    .background(OmilTheme.panelLifted, in: RoundedRectangle(cornerRadius: 8))
-                    .padding(.leading, fullScreenSidebarVisible ? 182 : 12)
-                    .padding(.top, 12)
-                    .help(fullScreenSidebarVisible ? "Hide Sidebar" : "Show Sidebar")
-                }
-            } else {
-                NavigationSplitView {
-                    sidebar
-                } detail: {
-                    detail
-                }
-                .navigationSplitViewStyle(.balanced)
+        NavigationSplitView {
+            sidebar
+        } detail: {
+            detail
+                .navigationTitle((navigation.section ?? .record).title)
+                .toastHost(bottomPadding: (navigation.section ?? .record) == .record ? 76 : 20)
+        }
+        .navigationSplitViewStyle(.balanced)
+        .background {
+            // ⌘1–⌘6 switch sections, like tabs in Apple's apps.
+            ForEach(Array(MainSection.allCases.enumerated()), id: \.element) { index, item in
+                Button(item.title) { withAnimation(OmilMotion.standard) { navigation.section = item } }
+                    .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: .command)
+                    .hidden()
             }
         }
-        .background(toolbarCanvas.ignoresSafeArea())
-        .toolbarBackground(toolbarCanvas, for: .windowToolbar)
-        .toolbarBackground(.visible, for: .windowToolbar)
         .tint(OmilTheme.signal)
         .id("\(appearance.themePreset.id)-\(appearance.colorScheme)")
-        .background(FullScreenReader(isFullScreen: $isFullScreen))
+        #if DEBUG
+        .task {
+            // Visual QA hook: `open Omil.app --args -OmilPreviewToast -OmilSection engine`
+            let args = ProcessInfo.processInfo.arguments
+            if let i = args.firstIndex(of: "-OmilSection"), i + 1 < args.count,
+               let section = MainSection(rawValue: args[i + 1]) {
+                navigation.section = section
+            }
+            if args.contains("-OmilOpenSettings") {
+                AppContext.appDelegate?.showSettings()
+            }
+            if args.contains("-OmilPreviewToast") {
+                try? await Task.sleep(for: .seconds(1))
+                ToastCenter.shared.show("Correction Deleted", symbol: "trash.fill") {}
+            }
+        }
+        #endif
     }
 
     private var detail: some View {
         ZStack {
-            OmilTheme.canvas.ignoresSafeArea()
-            Group {
-                switch section ?? .record {
-                case .record: RecorderView(controller: controller)
-                case .history: HistoryView(controller: controller)
-                case .snippets: SnippetsView(controller: controller)
-                case .dictionary: DictionaryView(controller: controller)
-                case .styles: StylesView(controller: controller)
-                case .engine: EngineView(controller: controller)
-                }
-            }
-            .frame(maxWidth: 1280)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            page(navigation.section ?? .record)
+                .id(navigation.section ?? .record)
+                .transition(.asymmetric(
+                    insertion: .opacity.combined(with: .offset(y: 8)),
+                    removal: .opacity
+                ))
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
-    private var sidebar: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 11) {
-                OmilMark(size: 36)
-                Text("Omil")
-                    .font(OmilType.display(18))
-                Spacer()
-            }
-            .padding(.horizontal, 18)
-            .padding(.top, 20)
-            .padding(.bottom, 24)
 
-            ScrollView {
-                VStack(spacing: 3) {
-                    ForEach(MainSection.allCases, id: \.self) { item in
-                        Button {
-                            section = item
-                        } label: {
-                            Label(item.title, systemImage: item.icon)
-                                .font(.system(size: 13, weight: section == item ? .semibold : .medium))
-                                .symbolVariant(section == item ? .fill : .none)
-                                .foregroundStyle(section == item ? OmilTheme.ink : OmilTheme.muted)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.horizontal, 11)
-                                .frame(height: 38)
-                                .background(section == item ? OmilTheme.panelLifted : .clear, in: RoundedRectangle(cornerRadius: 9))
-                        }
-                        .buttonStyle(HoverButtonStyle(cornerRadius: 9))
-                    }
-                }
-                .padding(.horizontal, 10)
+    @ViewBuilder
+    private func page(_ section: MainSection) -> some View {
+        Group {
+            switch section {
+            case .record: RecorderView(controller: controller, openEngine: { withAnimation(OmilMotion.standard) { navigation.section = .engine } })
+            case .history: HistoryView(controller: controller)
+            case .snippets: SnippetsView(controller: controller)
+            case .dictionary: DictionaryView(controller: controller)
+            case .styles: StylesView(controller: controller)
+            case .engine: EngineView(controller: controller)
             }
-
-            VStack(spacing: 12) {
-                Divider().overlay(OmilTheme.line)
-                EngineStatusRow(controller: controller)
-                Button {
-                    AppContext.appDelegate?.showSettings()
-                } label: {
-                    Label("Settings", systemImage: "gearshape")
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .buttonStyle(SidebarButtonStyle())
-            }
-            .padding(16)
         }
-        .background(OmilTheme.sidebar)
-        .navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 245)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// A native source list, grouped the way Apple's own apps group their sidebars.
+    private var sidebar: some View {
+        List {
+            Section {
+                sidebarRow(.record)
+                sidebarRow(.history)
+            }
+            Section("Personalize") {
+                sidebarRow(.snippets)
+                sidebarRow(.dictionary)
+                sidebarRow(.styles)
+            }
+            Section("System") {
+                sidebarRow(.engine)
+            }
+        }
+        .listStyle(.sidebar)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            SidebarEngineNotice(controller: controller) { navigation.section = .engine }
+        }
+        .navigationSplitViewColumnWidth(min: 180, ideal: 210, max: 260)
+    }
+
+    private func sidebarRow(_ item: MainSection) -> some View {
+        let selected = (navigation.section ?? .record) == item
+        return ThemedSidebarRow(title: item.title, selected: selected, namespace: sidebarSelection) {
+            Image(systemName: item.icon)
+                .symbolRenderingMode(.hierarchical)
+                .symbolVariant(selected ? .fill : .none)
+                .foregroundStyle(selected ? OmilTheme.signal : OmilTheme.muted)
+        } action: {
+            withAnimation(OmilMotion.standard) { navigation.section = item }
+        }
+        .listRowInsets(EdgeInsets(top: 1, leading: 0, bottom: 1, trailing: 0))
     }
 }
 
@@ -449,6 +410,7 @@ struct MainWindowView: View {
 struct RecorderView: View {
     @ObservedObject var controller: DictationController
     var showsHeader = true
+    var openEngine: (() -> Void)? = nil
     @State private var resultTab: ResultTab = .clean
     @State private var startedAt: Date?
 
@@ -461,19 +423,37 @@ struct RecorderView: View {
     var body: some View {
         GeometryReader { geometry in
             ScrollView {
-                VStack(alignment: .leading, spacing: 22) {
-                    if showsHeader { RecorderHeader(controller: controller) }
-
-                    if controller.micPermission != .granted {
-                        PermissionStrip(controller: controller)
+                VStack(alignment: .leading, spacing: OmilSpace.lg) {
+                    RecorderStage(controller: controller, startedAt: startedAt, openEngine: openEngine)
+                        .frame(minHeight: stageHeight(in: geometry.size.height))
+                    if !controller.processingJobs.isEmpty {
+                        PendingTranscriptionsCard(jobs: controller.processingJobs)
+                            .transition(.opacity)
                     }
-
-                    if !hasContent { Spacer(minLength: 24) }
-                    recorderColumn
-                    if !hasContent { Spacer(minLength: 24) }
+                    if hasResult {
+                        ResultCard(controller: controller, selectedTab: $resultTab)
+                            .transition(.opacity.combined(with: .move(edge: .bottom)))
+                    }
                 }
-                .frame(minHeight: max(0, geometry.size.height - (showsHeader ? 60 : 0)))
-                .padding(showsHeader ? 30 : 0)
+                .frame(maxWidth: 720)
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, showsHeader ? OmilSpace.xl : 0)
+                .padding(.top, showsHeader ? 28 : 0)
+                .padding(.bottom, showsHeader ? 96 : 0)
+                .animation(OmilMotion.standard, value: hasResult)
+                .animation(OmilMotion.standard, value: controller.processingJobs.count)
+            }
+            .scrollIndicators(.automatic)
+            .overlay(alignment: .bottom) {
+                if showsHeader {
+                    ShortcutDock()
+                        .padding(.bottom, 20)
+                }
+            }
+        }
+        .toolbar {
+            if showsHeader {
+                ToolbarItem(placement: .primaryAction) { ModePicker(controller: controller) }
             }
         }
         .onChange(of: controller.phase) { _, phase in
@@ -483,27 +463,39 @@ struct RecorderView: View {
         }
     }
 
+    /// Center the orb in the window until there's a result to show beneath it.
+    private func stageHeight(in available: CGFloat) -> CGFloat {
+        guard showsHeader else { return 320 }
+        if hasResult || !controller.processingJobs.isEmpty { return 340 }
+        return max(360, available - 140)
+    }
+
     private var hasResult: Bool {
         !controller.lastCleaned.isEmpty || !controller.lastRaw.isEmpty || !controller.lastDiff.isEmpty
     }
+}
 
-    private var hasContent: Bool {
-        hasResult || !controller.processingJobs.isEmpty || !controller.history.isEmpty
-    }
+/// A section header plus a filled group, matching Form's grouped sections so
+/// Dictate reads as part of the same system as every other page.
+private struct GroupedBox<Trailing: View, Content: View>: View {
+    let title: String
+    @ViewBuilder let trailing: () -> Trailing
+    @ViewBuilder let content: () -> Content
 
-    private var recorderColumn: some View {
-        VStack(spacing: 18) {
-            RecorderStage(controller: controller, startedAt: startedAt)
-            if !controller.processingJobs.isEmpty { PendingTranscriptionsCard(jobs: controller.processingJobs) }
-            if hasResult {
-                ResultCard(controller: controller, selectedTab: $resultTab)
-                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .center) {
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(OmilTheme.ink)
+                Spacer()
+                trailing()
             }
-            if controller.historyEnabled && !controller.history.isEmpty {
-                RecentTranscriptionsCard(entries: Array(controller.history.prefix(12)))
-            }
+            .padding(.horizontal, 10)
+            VStack(alignment: .leading, spacing: 0) { content() }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(OmilTheme.groupFill, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
-        .frame(maxWidth: .infinity)
     }
 }
 
@@ -511,313 +503,264 @@ private struct PendingTranscriptionsCard: View {
     let jobs: [DictationController.ProcessingJob]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text(jobs.count == 1 ? "IN PROGRESS" : "\(jobs.count) IN PROGRESS")
-                    .font(OmilType.utility(10, weight: .bold))
-                    .tracking(1)
-                    .foregroundStyle(OmilTheme.muted)
-                Spacer()
-                Text("You can record again")
-                    .font(OmilType.utility(10))
-                    .foregroundStyle(OmilTheme.faint)
-            }
+        GroupedBox(title: jobs.count == 1 ? "In Progress" : "\(jobs.count) In Progress") {
+            Text("You can record again")
+                .font(OmilFont.caption)
+                .foregroundStyle(.secondary)
+        } content: {
             ForEach(Array(jobs.enumerated()), id: \.element.id) { index, job in
-                HStack(spacing: 10) {
-                    ProgressView().controlSize(.small)
-                    if jobs.count > 1 {
-                        Text("\(index + 1)")
-                            .font(OmilType.utility(11, weight: .bold))
-                            .foregroundStyle(OmilTheme.signal)
-                            .frame(width: 20, alignment: .leading)
-                    }
-                    Image(systemName: job.stage.icon)
-                        .font(.system(size: 11))
-                        .foregroundStyle(OmilTheme.muted)
-                    Text(job.stage.title)
-                        .font(.system(size: 12, weight: .medium))
+                if index > 0 { Divider().padding(.leading, 40) }
+                HStack(spacing: 12) {
+                    ProgressView().controlSize(.small).frame(width: 18)
+                    Text(jobs.count > 1 ? "Recording \(index + 1)" : "Recording")
+                        .font(OmilFont.body)
                         .foregroundStyle(OmilTheme.ink)
                     Spacer()
+                    Label(job.stage.title, systemImage: job.stage.icon)
+                        .font(OmilFont.callout)
+                        .foregroundStyle(.secondary)
+                        .contentTransition(.opacity)
+                        .animation(OmilMotion.standard, value: job.stage)
                 }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .transition(.move(edge: .top).combined(with: .opacity))
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel(jobs.count == 1 ? job.stage.title : "Recording \(index + 1), \(job.stage.title)")
             }
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(OmilTheme.panel, in: RoundedRectangle(cornerRadius: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(OmilTheme.line))
-    }
-}
-
-private struct RecentTranscriptionsCard: View {
-    let entries: [DictationController.HistoryEntry]
-    @State private var expandedIDs: Set<UUID> = []
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("RECENT TRANSCRIPTIONS")
-                    .font(OmilType.utility(10, weight: .bold))
-                    .tracking(1)
-                    .foregroundStyle(OmilTheme.muted)
-                Spacer()
-                Text("Latest \(entries.count)")
-                    .font(OmilType.utility(10))
-                    .foregroundStyle(OmilTheme.faint)
-            }
-            ForEach(entries) { entry in
-                VStack(alignment: .leading, spacing: 6) {
-                    Button {
-                        if !expandedIDs.insert(entry.id).inserted { expandedIDs.remove(entry.id) }
-                    } label: {
-                        HStack(alignment: .top, spacing: 10) {
-                            Image(systemName: expandedIDs.contains(entry.id) ? "chevron.down" : "chevron.right")
-                                .font(.system(size: 10, weight: .semibold))
-                                .frame(width: 12)
-                            Text(entry.cleaned)
-                                .lineLimit(expandedIDs.contains(entry.id) ? nil : 2)
-                                .multilineTextAlignment(.leading)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            Text(entry.date.formatted(date: .omitted, time: .shortened))
-                                .font(OmilType.utility(10))
-                                .foregroundStyle(OmilTheme.faint)
-                                .fixedSize()
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 12))
-                    .foregroundStyle(OmilTheme.ink)
-                    if expandedIDs.contains(entry.id) {
-                        Button("Copy transcript") {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(entry.cleaned, forType: .string)
-                        }
-                        .buttonStyle(.plain)
-                        .font(OmilType.utility(10, weight: .medium))
-                        .foregroundStyle(OmilTheme.signal)
-                        .padding(.leading, 22)
-                    }
-                }
-                .padding(12)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(OmilTheme.panel, in: RoundedRectangle(cornerRadius: 11))
-                .overlay(RoundedRectangle(cornerRadius: 11).stroke(OmilTheme.line))
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-private struct RecorderHeader: View {
-    @ObservedObject var controller: DictationController
-
-    var body: some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text("Dictate")
-                .font(OmilType.display(30))
-                .foregroundStyle(OmilTheme.ink)
-            Spacer()
-        }
-    }
-}
-
-private struct PermissionStrip: View {
-    @ObservedObject var controller: DictationController
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "mic.slash.fill")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(OmilTheme.warning)
-                .frame(width: 32, height: 32)
-                .background(OmilTheme.warning.opacity(0.12), in: Circle())
-            VStack(alignment: .leading, spacing: 2) {
-                Text(controller.micPermission == .denied ? "Microphone access is off" : "Allow microphone access")
-                    .font(.system(size: 13, weight: .semibold))
-                Text(controller.micPermission == .denied ? "Open System Settings to enable recording." : "Omil needs it to record your voice.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(OmilTheme.muted)
-            }
-            Spacer()
-            Button(controller.micPermission == .denied ? "Open Settings" : "Allow") { controller.requestMic() }
-                .buttonStyle(QuietButtonStyle())
-        }
-        .padding(14)
-        .background(OmilTheme.warning.opacity(0.06), in: RoundedRectangle(cornerRadius: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(OmilTheme.warning.opacity(0.22)))
+        .animation(OmilMotion.standard, value: jobs.map(\.id))
     }
 }
 
 private struct RecorderStage: View {
     @ObservedObject var controller: DictationController
     let startedAt: Date?
+    let openEngine: (() -> Void)?
 
-    var active: Bool { controller.phase == .recording }
-    var busy: Bool { controller.phase == .preparing || controller.phase == .processing }
+    private var active: Bool { controller.phase == .recording }
+    private var busy: Bool { controller.phase == .preparing || controller.phase == .processing }
+    private var micReady: Bool { controller.micPermission == .granted }
+    private var canRecord: Bool { micReady && controller.serverIsReady }
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                StatusLabel(
-                    phase: controller.phase,
-                    environmentReady: controller.micPermission == .granted && controller.serverIsReady
-                )
-                if active || controller.phase == .preparing {
-                    Button("Cancel") { controller.cancel() }
-                        .buttonStyle(.plain)
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(OmilTheme.muted)
-                }
-                Spacer()
-                ModePicker(controller: controller)
+        VStack(spacing: 20) {
+            StatusLabel(phase: controller.phase, environmentReady: canRecord)
+
+            MeterReactive(meter: controller.audioMeter, enabled: active) { level in
+                RecordButton(active: active, busy: busy, enabled: controller.serverIsReady && !busy, action: toggle)
+                    .scaleEffect(1 + level * 0.08)
+                    .animation(.interactiveSpring(response: 0.18, dampingFraction: 0.7), value: level)
             }
-            .padding(.horizontal, 24)
-            .padding(.top, 22)
 
-            Spacer(minLength: 34)
-
-            Group {
-                if active {
-                    LiveSignalRail(meter: controller.audioMeter)
-                } else if controller.phase == .processing {
-                    ProcessingTrack(stage: controller.processingStage)
-                } else {
-                    EmptyView()
-                }
-            }
-            .frame(height: active || controller.phase == .processing ? 52 : 0)
-            .padding(.horizontal, 56)
-
-            if controller.phase == .preparing || controller.phase == .processing {
-                ZStack {
-                    Circle()
-                        .fill(OmilTheme.signal.opacity(0.1))
-                        .frame(width: 76, height: 76)
-                    Circle()
-                        .fill(OmilTheme.panelLifted)
-                        .frame(width: 56, height: 56)
-                    ProgressView()
-                        .controlSize(.small)
-                        .tint(OmilTheme.signal)
-                }
-            } else {
-                Button(action: toggle) {
-                    ZStack {
-                        Circle()
-                            .fill((active ? OmilTheme.coral : OmilTheme.signal).opacity(0.07))
-                            .frame(width: 128, height: 128)
-                        Circle()
-                            .stroke(active ? OmilTheme.coral.opacity(0.3) : OmilTheme.signal.opacity(0.3), lineWidth: 1)
-                            .frame(width: 88, height: 88)
-                        Circle()
-                            .fill(active ? OmilTheme.coral : OmilTheme.signal)
-                            .frame(width: 68, height: 68)
-                            .shadow(color: (active ? OmilTheme.coral : OmilTheme.signal).opacity(0.2), radius: 22, y: 8)
-                        Image(systemName: active ? "stop.fill" : "mic.fill")
-                            .font(.system(size: 23, weight: .semibold))
-                            .foregroundStyle(active ? Color.white : OmilTheme.signalInk)
+            VStack(spacing: 6) {
+                Group {
+                    // Only the recording clock needs a per-second tick.
+                    if active {
+                        TimelineView(.periodic(from: .now, by: 1)) { _ in statusTitle }
+                    } else {
+                        statusTitle
                     }
                 }
-                .buttonStyle(.plain)
-                .disabled(busy || !controller.serverIsReady)
-                .accessibilityLabel(active ? "Stop recording" : "Start recording")
+                Text(secondaryStatus)
+                    .font(OmilFont.body)
+                    .foregroundStyle(OmilTheme.muted)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .frame(maxWidth: 420)
             }
 
-            VStack(spacing: 8) {
-                TimelineView(.periodic(from: .now, by: 1)) { _ in
-                    Text(primaryStatus)
-                        .font(OmilType.display(23))
-                        .foregroundStyle(OmilTheme.ink)
-                        .contentTransition(.numericText())
-                }
-                if !secondaryStatus.isEmpty {
-                    Text(secondaryStatus)
-                        .font(.system(size: 13))
-                        .foregroundStyle(OmilTheme.muted)
-                        .multilineTextAlignment(.center)
-                        .lineLimit(2)
-                        .frame(maxWidth: 470)
+            ZStack {
+                if active {
+                    LiveSignalRail(meter: controller.audioMeter)
+                        .frame(width: 240, height: 28)
+                        .transition(.scale(scale: 0.6, anchor: .center).combined(with: .opacity))
+                } else if controller.phase == .processing {
+                    ProcessingTrack(stage: controller.processingStage)
+                        .frame(height: 28)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                } else if let setup = setupAction {
+                    Button(setup.title, action: setup.action)
+                        .omilButton(prominent: true)
+                        .transition(.opacity)
                 }
             }
-            .padding(.top, 12)
+            .frame(minHeight: 32)
 
-            Spacer(minLength: 34)
-
-            HStack(spacing: 12) {
-                HStack(spacing: 8) {
-                    KeyCap(text: shortcutKey)
-                    Text("hold to speak")
-                }
-                Rectangle()
-                    .fill(OmilTheme.lineStrong)
-                    .frame(width: 1, height: 18)
-                HStack(spacing: 8) {
-                    KeyCap(text: "⌃⌥O")
-                    Text("start / stop")
-                }
-                Text("Esc to cancel")
-                    .foregroundStyle(OmilTheme.faint)
+            if active || controller.phase == .preparing {
+                Button("Cancel") { controller.cancel() }
+                    .omilButton()
+                    .transition(.opacity.combined(with: .scale(scale: 0.9)))
+                    .keyboardShortcut(.cancelAction)
             }
-            .font(OmilType.utility(10, weight: .medium))
-            .tracking(0.2)
-            .foregroundStyle(OmilTheme.muted)
-            .padding(.horizontal, 24)
-            .frame(maxWidth: .infinity)
-            .frame(height: 54)
-            .background(OmilTheme.panelDeep.opacity(0.66))
         }
-        .frame(height: 390)
-        .background {
-            RoundedRectangle(cornerRadius: 20)
-                .fill(OmilTheme.panel)
-                .overlay {
-                    RadialGradient(colors: [OmilTheme.signal.opacity(0.09), .clear], center: .center, startRadius: 12, endRadius: 330)
-                        .clipShape(RoundedRectangle(cornerRadius: 20))
-                }
-        }
-        .overlay(RoundedRectangle(cornerRadius: 20).stroke(OmilTheme.line, lineWidth: 1))
-        .clipShape(RoundedRectangle(cornerRadius: 20))
+        .frame(maxWidth: .infinity)
+        .animation(OmilMotion.standard, value: controller.phase)
     }
 
-    private var shortcutKey: String {
-        HotkeyManager.shared.pushToTalkName
-            .replacingOccurrences(of: "Right ", with: "R ")
-            .uppercased()
+    private var statusTitle: some View {
+        Text(primaryStatus)
+            .omilDisplay(small: true)
+            .foregroundStyle(OmilTheme.ink)
+            .monospacedDigit()
+            .contentTransition(.numericText())
+    }
+
+    private var setupAction: (title: String, action: () -> Void)? {
+        guard controller.phase == .idle || controller.phase == .failed || controller.phase == .ready else { return nil }
+        if !micReady {
+            return (controller.micPermission == .denied ? "Open Microphone Settings" : "Allow Microphone", { controller.requestMic() })
+        }
+        if !controller.serverIsReady, let openEngine {
+            return ("Open Engine", openEngine)
+        }
+        return nil
     }
 
     private var primaryStatus: String {
         switch controller.phase {
         case .idle:
-            if controller.micPermission != .granted { return "Allow microphone" }
-            if !controller.serverIsReady { return "Set up transcription" }
-            return "Ready"
+            if !micReady { return "Microphone access needed" }
+            if !controller.serverIsReady { return "Speech setup needed" }
+            return "Ready when you are"
         case .preparing: return "Getting ready"
         case .recording:
             guard let startedAt else { return "Listening" }
-            let seconds = max(0, Int(Date().timeIntervalSince(startedAt)))
-            return String(format: "%d:%02d", seconds / 60, seconds % 60)
+            return clockLabel(Date().timeIntervalSince(startedAt))
         case .processing: return controller.processingStage.title
         case .ready:
             if controller.processingJobs.count == 1 { return controller.processingJobs[0].stage.title }
             if controller.processingJobs.count > 1 { return "\(controller.processingJobs.count) processing" }
-            return controller.lastCleaned.isEmpty ? "Nothing heard" : "Ready"
-        case .failed: return "Needs attention"
+            return controller.lastCleaned.isEmpty ? "Nothing heard" : "Done"
+        case .failed: return "Something went wrong"
         }
     }
 
     private var secondaryStatus: String {
         switch controller.phase {
-        case .idle: return controller.micPermission != .granted ? "Allow microphone access to start transcribing." : controller.serverIsReady ? "Click the microphone to dictate into your last text field, or use the shortcut without switching apps." : "Open Engine to check your speech models."
-        case .recording: return controller.draftText.isEmpty ? "Listening for your voice" : controller.draftText
+        case .idle:
+            if !micReady { return "Omil only listens while you dictate." }
+            if !controller.serverIsReady { return "Download or start a speech model to begin." }
+            return "Click to dictate into the app you were using, or use a shortcut from anywhere."
+        case .recording:
+            return controller.draftText.isEmpty ? "Listening for your voice" : controller.draftText
         case .ready where !controller.processingJobs.isEmpty:
             return "Ready for another recording while these finish."
-        default: return controller.statusMessage
+        default:
+            return controller.statusMessage
         }
     }
 
     private func toggle() {
+        if !micReady { controller.requestMic(); return }
         active ? controller.stop() : controller.start()
+    }
+}
+
+private struct RecordButton: View {
+    let active: Bool
+    let busy: Bool
+    let enabled: Bool
+    let action: () -> Void
+    @State private var hovered = false
+    @State private var pulse = false
+
+    private var tint: Color { active ? OmilTheme.coral : OmilTheme.signal }
+    private var iconColor: Color { active ? .white : OmilTheme.signalInk }
+    /// A soft glow suits dark mode; in light mode only a live recording glows.
+    private var glowOpacity: Double {
+        if active { return 0.4 }
+        return GlassLook.isDark ? (hovered ? 0.35 : 0.24) : 0
+    }
+
+    var body: some View {
+        Button(action: action) {
+            ZStack {
+                // Ambient light the orb casts onto the glass behind it.
+                // A radial gradient reads the same as a blurred circle at a
+                // fraction of the per-frame cost.
+                Circle()
+                    .fill(RadialGradient(colors: [tint.opacity(glowOpacity), .clear],
+                                         center: .center, startRadius: 30, endRadius: 80))
+                    .frame(width: 160, height: 160)
+                    .scaleEffect(active && pulse ? 1.18 : 1)
+
+                Circle()
+                    .fill(.clear)
+                    .frame(width: 88, height: 88)
+                    .liquidGlass(in: Circle(), tint: tint, interactive: true)
+
+                if busy {
+                    ProgressView()
+                        .controlSize(.regular)
+                        .tint(iconColor)
+                } else {
+                    Image(systemName: active ? "stop.fill" : "mic.fill")
+                        .font(.system(size: 28, weight: .semibold))
+                        .foregroundStyle(iconColor)
+                        .contentTransition(.symbolEffect(.replace))
+                }
+            }
+            .frame(width: 128, height: 128)
+            .scaleEffect(hovered && enabled ? 1.04 : 1)
+            .opacity(enabled || active ? 1 : 0.5)
+            .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!(enabled || active))
+        .onHover { hovered = $0 }
+        .animation(OmilMotion.standard, value: hovered)
+        .animation(OmilMotion.standard, value: active)
+        .onChange(of: active) { _, isActive in
+            pulse = false
+            guard isActive else { return }
+            withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) { pulse = true }
+        }
+        .accessibilityLabel(active ? "Stop recording" : "Start recording")
+    }
+}
+
+/// Feeds the latest microphone level to its content while enabled, so only this
+/// small subtree redraws on every meter tick.
+private struct MeterReactive<Content: View>: View {
+    @ObservedObject var meter: AudioMeter
+    let enabled: Bool
+    @ViewBuilder let content: (Double) -> Content
+
+    var body: some View {
+        content(enabled ? min(1, max(0, meter.levels.last ?? 0)) : 0)
+    }
+}
+
+/// Keyboard shortcuts, docked as a floating glass capsule.
+private struct ShortcutDock: View {
+    @ObservedObject private var hotkeys = HotkeyManager.shared
+
+    var body: some View {
+        HStack(spacing: 18) {
+            ShortcutHint(key: hotkeys.pushToTalkName, label: "Hold to talk")
+            if hotkeys.toggleEnabled {
+                ShortcutHint(key: HotkeyManager.toggleShortcutSymbol, label: "Start or stop")
+            }
+            ShortcutHint(key: "esc", label: "Cancel")
+        }
+        .padding(.horizontal, 16)
+        .frame(height: 40)
+        .liquidGlass(in: Capsule())
+    }
+}
+
+private struct ShortcutHint: View {
+    let key: String
+    let label: String
+
+    var body: some View {
+        HStack(spacing: 7) {
+            KeyCap(text: key)
+            Text(label)
+                .font(OmilFont.callout)
+                .foregroundStyle(OmilTheme.muted)
+        }
     }
 }
 
@@ -826,52 +769,53 @@ private struct ResultCard: View {
     @Binding var selectedTab: RecorderView.ResultTab
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                HStack(spacing: 4) {
-                    ForEach(RecorderView.ResultTab.allCases, id: \.self) { tab in
-                        Button(tab.rawValue) { selectedTab = tab }
-                            .buttonStyle(SegmentButtonStyle(selected: selectedTab == tab))
-                            .accessibilityAddTraits(selectedTab == tab ? .isSelected : [])
-                    }
-                }
-                Spacer()
-                if !controller.lastCleaned.isEmpty {
-                    HStack(spacing: 5) {
-                        IconAction(icon: "doc.on.doc", label: "Copy") { controller.copyLast() }
-                        IconAction(icon: "arrow.uturn.backward", label: "Undo", disabled: !controller.canUndo) { controller.undoLast() }
-                    }
-                }
-            }
-            .padding(14)
-
-            Divider().overlay(OmilTheme.line)
-
+        GroupedBox(title: "Last Transcript") {
+            SegmentedTabs(
+                options: RecorderView.ResultTab.allCases,
+                selection: $selectedTab,
+                label: { $0.rawValue }
+            )
+        } content: {
             ScrollView {
                 Text(resultText)
-                    .font(selectedTab == .changes ? OmilType.utility(13) : .system(size: 15))
+                    .font(selectedTab == .changes ? OmilFont.mono : OmilFont.reading)
+                    .lineSpacing(4)
                     .foregroundStyle(isEmpty ? OmilTheme.faint : OmilTheme.ink)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .topLeading)
-                    .padding(18)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 14)
+                    .contentTransition(.opacity)
+                    .animation(OmilMotion.standard, value: resultText)
             }
-            .frame(minHeight: 132, maxHeight: 190)
+            .frame(minHeight: 96, maxHeight: 220)
 
-            if !controller.lastDeliveryMethod.isEmpty {
-                HStack(spacing: 6) {
+            Divider().padding(.horizontal, 12)
+
+            HStack(spacing: 6) {
+                if !controller.lastDeliveryMethod.isEmpty {
                     Image(systemName: deliverySucceeded ? "checkmark.circle.fill" : "info.circle.fill")
                         .foregroundStyle(deliverySucceeded ? OmilTheme.mint : OmilTheme.warning)
                     Text(controller.lastDeliveryMethod)
-                    Spacer()
+                        .lineLimit(1)
                 }
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(OmilTheme.muted)
-                .padding(.horizontal, 18)
-                .padding(.bottom, 14)
+                Spacer()
+                if !controller.lastCleaned.isEmpty {
+                    IconAction(icon: "arrow.uturn.backward", label: "Undo Insertion", disabled: !controller.canUndo) {
+                        controller.undoLast()
+                    }
+                    IconAction(icon: "doc.on.doc", label: "Copy") {
+                        controller.copyLast()
+                        ToastCenter.shared.show("Copied to Clipboard", symbol: "doc.on.doc.fill")
+                    }
+                }
             }
+            .font(OmilFont.caption)
+            .foregroundStyle(.secondary)
+            .padding(.leading, 14)
+            .padding(.trailing, 8)
+            .padding(.vertical, 6)
         }
-        .background(OmilTheme.panel, in: RoundedRectangle(cornerRadius: 18))
-        .overlay(RoundedRectangle(cornerRadius: 18).stroke(OmilTheme.line))
     }
 
     private var isEmpty: Bool {
@@ -893,6 +837,88 @@ private struct ResultCard: View {
         case .raw: return controller.lastRaw.isEmpty ? "The unedited transcript will appear here." : controller.lastRaw
         case .changes: return controller.lastDiff.isEmpty ? "Edits to your original transcript will appear here." : controller.lastDiff
         }
+    }
+}
+
+// MARK: - Page layout
+//
+// Every secondary page is a native grouped Form. The system owns insets, row
+// height, section spacing, and alignment, so all pages line up with each other
+// and with Settings. Titles live in the toolbar; counts go in the subtitle.
+
+extension View {
+    func omilPage(subtitle: String? = nil) -> some View {
+        formStyle(.grouped)
+            .scrollContentBackground(.hidden)
+            .navigationSubtitle(subtitle ?? "")
+    }
+}
+
+/// Title + secondary line, the standard two-line row label.
+private struct RowLabel: View {
+    let title: String
+    var subtitle: String? = nil
+    var symbol: String? = nil
+
+    var body: some View {
+        if let symbol {
+            Label {
+                labelText
+            } icon: {
+                Image(systemName: symbol)
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(.secondary)
+            }
+        } else {
+            labelText
+        }
+    }
+
+    @ViewBuilder private var labelText: some View {
+        Text(title)
+        if let subtitle, !subtitle.isEmpty { Text(subtitle) }
+    }
+}
+
+/// A borderless icon button used for trailing row actions.
+/// The trailing "more" menu used by every list row.
+private struct RowMenu<Items: View>: View {
+    @ViewBuilder let items: () -> Items
+    @State private var hovered = false
+
+    var body: some View {
+        Menu { items() } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(hovered ? OmilTheme.ink : OmilTheme.muted)
+                .frame(width: 28, height: 28)
+                .background(Circle().fill(hovered ? OmilTheme.ink.opacity(0.08) : .clear))
+                .contentShape(Circle())
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .onHover { hovered = $0 }
+        .animation(OmilMotion.quick, value: hovered)
+        .help("More")
+        .accessibilityLabel("More actions")
+    }
+}
+
+private struct RowAction: View {
+    let symbol: String
+    let label: String
+    var role: ButtonRole? = nil
+    let action: () -> Void
+
+    var body: some View {
+        Button(role: role, action: action) {
+            Image(systemName: symbol)
+        }
+        .buttonStyle(IconButtonStyle(destructive: role == .destructive))
+        .help(label)
+        .accessibilityLabel(label)
     }
 }
 
@@ -941,6 +967,27 @@ enum HistoryListRow: Identifiable {
     }
 }
 
+/// Rows grouped under their header so each group renders as one Form section.
+private struct HistorySection: Identifiable {
+    let id: String
+    let header: HistoryListRow
+    var rows: [HistoryListRow]
+
+    static func group(_ rows: [HistoryListRow]) -> [HistorySection] {
+        var sections: [HistorySection] = []
+        for row in rows {
+            switch row {
+            case .savedHeader, .dayHeader:
+                sections.append(HistorySection(id: row.id, header: row, rows: []))
+            case .recording, .transcript:
+                if sections.isEmpty { sections.append(HistorySection(id: "orphan", header: .savedHeader, rows: [])) }
+                sections[sections.count - 1].rows.append(row)
+            }
+        }
+        return sections
+    }
+}
+
 struct HistoryView: View {
     @ObservedObject var controller: DictationController
     @State private var search = ""
@@ -948,6 +995,7 @@ struct HistoryView: View {
     @State private var confirmDelete: DictationController.HistoryEntry?
     @State private var confirmRecoveryDelete: RecoveryRecording?
     @State private var selectedTranscript: HistoryTranscript?
+    @State private var searchGeneration = 0
 
     init(controller: DictationController) {
         self.controller = controller
@@ -958,63 +1006,63 @@ struct HistoryView: View {
         ))
     }
 
+    private var isBusy: Bool {
+        controller.phase == .recording || controller.phase == .preparing || controller.phase == .processing
+    }
+
+    private var itemCountLabel: String {
+        let count = rows.filter {
+            switch $0 { case .recording, .transcript: return true; default: return false }
+        }.count
+        return count == 1 ? "1 item" : "\(count) items"
+    }
+
     var body: some View {
-        VStack(spacing: 0) {
-            PageHeader(
-                title: "History",
-                detail: "Listen to recordings and find your past transcripts."
-            ) {
-                Toggle("Keep history", isOn: Binding(
-                    get: { controller.historyEnabled },
-                    set: { controller.setHistoryEnabled($0) }
-                ))
-                .toggleStyle(.switch)
-                .controlSize(.small)
-            }
-
-            HStack(spacing: 10) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(OmilTheme.faint)
-                TextField("Search your dictations", text: $search)
-                    .textFieldStyle(.plain)
-                if !search.isEmpty {
-                    Button { search = "" } label: { Image(systemName: "xmark.circle.fill") }
-                        .accessibilityLabel("Clear search")
-                        .buttonStyle(.plain)
-                        .foregroundStyle(OmilTheme.faint)
-                }
-            }
-            .padding(.horizontal, 14)
-            .frame(height: 42)
-            .background(OmilTheme.panel, in: RoundedRectangle(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(OmilTheme.line))
-            .padding(.horizontal, 30)
-            .padding(.bottom, 18)
-
+        Group {
             if controller.history.isEmpty && controller.recoveryRecordings.isEmpty {
                 EmptyState(
                     icon: "waveform.badge.mic",
-                    title: "No history yet",
+                    title: "No History Yet",
                     detail: "Your transcripts and saved recordings will appear here."
                 )
+            } else if rows.isEmpty {
+                EmptyState(icon: "magnifyingglass", title: "No Results", detail: "Try a shorter word or phrase.")
             } else {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 10) {
-                        if rows.isEmpty && !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            EmptyState(icon: "magnifyingglass", title: "Nothing matched", detail: "Try a shorter word or phrase.")
-                        }
-                        ForEach(rows) { row in
-                            historyRow(row)
+                Form {
+                    ForEach(HistorySection.group(rows)) { section in
+                        Section {
+                            ForEach(section.rows) { row in historyRow(row) }
+                        } header: {
+                            sectionHeader(section.header)
                         }
                     }
-                    .padding(.horizontal, 30)
-                    .padding(.bottom, 30)
                 }
+                .omilPage(subtitle: itemCountLabel)
             }
         }
-        .onChange(of: search) { _, _ in refreshRows() }
-        .onReceive(controller.$history) { history in refreshRows(history: history) }
-        .onReceive(controller.$recoveryRecordings) { recordings in refreshRows(recordings: recordings) }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Menu {
+                    Toggle("Keep History", isOn: Binding(
+                        get: { controller.historyEnabled },
+                        set: { controller.setHistoryEnabled($0) }
+                    ))
+                } label: {
+                    Label("History Options", systemImage: "ellipsis.circle")
+                }
+                .help("History options")
+            }
+        }
+        .searchable(text: $search, placement: .toolbar, prompt: "Search Dictations")
+        .onChange(of: search) { _, _ in searchGeneration += 1 }
+        .task(id: searchGeneration) {
+            guard searchGeneration > 0 else { return }
+            try? await Task.sleep(for: .milliseconds(150))
+            guard !Task.isCancelled else { return }
+            refreshRows()
+        }
+        .onReceive(controller.$history.dropFirst()) { history in refreshRows(history: history) }
+        .onReceive(controller.$recoveryRecordings.dropFirst()) { recordings in refreshRows(recordings: recordings) }
         .onDisappear { controller.recoveryPlayback.stop() }
         .sheet(item: $selectedTranscript) { transcript in
             HistoryTranscriptSheet(transcript: transcript)
@@ -1027,7 +1075,10 @@ struct HistoryView: View {
             )
         ) {
             Button("Delete", role: .destructive) {
-                if let entry = confirmDelete { controller.deleteHistoryEntry(entry) }
+                if let entry = confirmDelete {
+                    withAnimation(OmilMotion.standard) { controller.deleteHistoryEntry(entry) }
+                    ToastCenter.shared.show("Dictation Deleted", symbol: "trash.fill")
+                }
                 confirmDelete = nil
             }
             Button("Cancel", role: .cancel) { confirmDelete = nil }
@@ -1042,7 +1093,10 @@ struct HistoryView: View {
             )
         ) {
             Button("Delete Recording", role: .destructive) {
-                if let recording = confirmRecoveryDelete { controller.deleteRecovery(recording) }
+                if let recording = confirmRecoveryDelete {
+                    withAnimation(OmilMotion.standard) { controller.deleteRecovery(recording) }
+                    ToastCenter.shared.show("Recording Deleted", symbol: "trash.fill")
+                }
                 confirmRecoveryDelete = nil
             }
             Button("Cancel", role: .cancel) { confirmRecoveryDelete = nil }
@@ -1052,44 +1106,48 @@ struct HistoryView: View {
     }
 
     @ViewBuilder
-    private func historyRow(_ row: HistoryListRow) -> some View {
-        switch row {
-        case .savedHeader:
-            HStack(alignment: .firstTextBaseline) {
-                Text("Saved recordings")
-                    .font(OmilType.utility(10, weight: .bold))
-                    .tracking(1)
-                    .foregroundStyle(OmilTheme.muted)
+    private func sectionHeader(_ header: HistoryListRow) -> some View {
+        switch header {
+        case .dayHeader(let day):
+            Text(controller.dayLabel(for: day))
+        default:
+            HStack {
+                Text("Saved Recordings")
                 Spacer()
                 Text(controller.audioRetentionDays == 1 ? "Kept for 1 day" : "Kept for \(controller.audioRetentionDays) days")
-                    .font(OmilType.utility(10))
-                    .foregroundStyle(OmilTheme.faint)
+                    .fontWeight(.regular)
+                    .foregroundStyle(.secondary)
             }
+        }
+    }
+
+    @ViewBuilder
+    private func historyRow(_ row: HistoryListRow) -> some View {
+        switch row {
         case .recording(let recording):
-            RecoveryRecordingCard(
+            RecoveryRecordingRow(
                 recording: recording,
                 playback: controller.recoveryPlayback,
-                isBusy: controller.phase == .recording || controller.phase == .preparing || controller.phase == .processing,
+                isBusy: isBusy,
                 play: { controller.playRecovery(recording) },
                 seek: { controller.seekRecovery(recording, to: $0) },
-                retry: { controller.retryRecovery(recording) },
+                retry: {
+                    controller.retryRecovery(recording)
+                    ToastCenter.shared.show("Transcribing Again", symbol: "arrow.clockwise.circle.fill")
+                },
                 copy: { copy(recording.transcript ?? "") },
                 viewTranscript: { selectedTranscript = transcript(for: recording) },
                 delete: { confirmRecoveryDelete = recording }
             )
-        case .dayHeader(let day):
-            Text(controller.dayLabel(for: day).uppercased())
-                .font(OmilType.utility(10, weight: .bold))
-                .tracking(1)
-                .foregroundStyle(OmilTheme.muted)
-                .padding(.top, 12)
         case .transcript(let entry):
-            HistoryCard(
+            HistoryRow(
                 entry: entry,
                 copy: { copy(entry.cleaned) },
                 viewTranscript: { selectedTranscript = HistoryTranscript(entry: entry) },
                 delete: { confirmDelete = entry }
             )
+        case .savedHeader, .dayHeader:
+            EmptyView()
         }
     }
 
@@ -1105,8 +1163,7 @@ struct HistoryView: View {
     }
 
     private func copy(_ text: String) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
+        ToastCenter.shared.copy(text)
     }
 
     private func transcript(for recording: RecoveryRecording) -> HistoryTranscript {
@@ -1143,70 +1200,75 @@ private struct HistoryTranscriptSheet: View {
     let transcript: HistoryTranscript
     @Environment(\.dismiss) private var dismiss
     @State private var tab = 2
+    @State private var copied = false
+    @State private var diff: String?
 
     private var displayedText: String {
         switch tab {
-        case 0: return transcript.raw ?? "Raw transcript unavailable for this older recording."
-        case 1: return transcript.raw.map { DiffUtil.diff(raw: $0, cleaned: transcript.clean) }
-            ?? "Changes unavailable for this older recording."
+        case 0: return transcript.raw ?? "The original transcript isn't available for this older recording."
+        case 1:
+            guard transcript.raw != nil else { return "Changes aren't available for this older recording." }
+            return diff ?? ""
         default: return transcript.clean
         }
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Transcript").font(OmilType.display(22))
-                    Text(transcript.title).font(OmilType.utility(10)).foregroundStyle(OmilTheme.muted)
-                }
-                Spacer()
-                Button("Done") { dismiss() }
-            }
-            Picker("Transcript version", selection: $tab) {
-                Text("Raw").tag(0)
-                Text("Changes").tag(1)
-                Text("Clean").tag(2)
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            if tab == 1 && transcript.raw != nil {
-                Text("[-removed]  [+added]")
-                    .font(OmilType.utility(10))
-                    .foregroundStyle(OmilTheme.muted)
-            }
+        NavigationStack {
             ScrollView {
                 Text(displayedText)
-                    .font(.system(size: 13))
+                    .font(tab == 1 ? OmilFont.mono : OmilFont.reading)
+                    .lineSpacing(4)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(14)
+                    .padding(20)
             }
-            .background(OmilTheme.panel, in: RoundedRectangle(cornerRadius: 10))
-            HStack {
-                Spacer()
-                Button("Copy") {
-                    guard tab == 2 || transcript.raw != nil else { return }
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(displayedText, forType: .string)
+            .navigationTitle("Transcript")
+            .navigationSubtitle(transcript.title)
+            .task(id: tab) {
+                guard tab == 1, diff == nil, let raw = transcript.raw else { return }
+                let clean = transcript.clean
+                diff = await Task.detached(priority: .userInitiated) { DiffUtil.diff(raw: raw, cleaned: clean) }.value
+            }
+            .toolbar {
+                ToolbarItem(placement: .principal) {
+                    Picker("Version", selection: $tab) {
+                        Text("Clean").tag(2)
+                        Text("Original").tag(0)
+                        Text("Changes").tag(1)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .fixedSize()
                 }
-                .disabled(tab != 2 && transcript.raw == nil)
+                ToolbarItem(placement: .primaryAction) {
+                    Button(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(displayedText, forType: .string)
+                        withAnimation(OmilMotion.quick) { copied = true }
+                        Task { @MainActor in
+                            try? await Task.sleep(for: .seconds(1.5))
+                            withAnimation(OmilMotion.quick) { copied = false }
+                        }
+                    }
+                    .contentTransition(.symbolEffect(.replace))
+                    .disabled(tab != 2 && transcript.raw == nil)
+                }
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { dismiss() }
+                }
             }
         }
-        .padding(24)
-        .frame(width: 600, height: 470)
+        .frame(width: 620, height: 480)
         .omilAppearance()
     }
 }
 
-private struct RecoveryRecordingCard: View {
+private struct RecoveryRecordingRow: View {
     let recording: RecoveryRecording
-    @ObservedObject var playback: RecoveryPlayback
-    @State private var showsControls = false
-    @State private var showsTranscript = false
-
-    private var isSelected: Bool { playback.recordingID == recording.id }
-    private var isPlaying: Bool { isSelected && playback.isPlaying }
+    /// Not observed here: only the play button and the controls of the
+    /// playing row subscribe, so playback progress doesn't redraw every row.
+    let playback: RecoveryPlayback
     let isBusy: Bool
     let play: () -> Void
     let seek: (TimeInterval) -> Void
@@ -1223,173 +1285,122 @@ private struct RecoveryRecordingCard: View {
         }
     }
 
-    private var stateColor: Color {
-        switch recording.state {
-        case .pending: return OmilTheme.warning
-        case .ready: return OmilTheme.mint
-        case .failed: return OmilTheme.warning
-        }
-    }
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 10) {
-                ZStack {
-                    Circle().fill(OmilTheme.signal.opacity(0.12))
-                    Image(systemName: "waveform")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(OmilTheme.signal)
-                }
-                .frame(width: 30, height: 30)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 12) {
+                RecoveryPlayButton(playback: playback, recordingID: recording.id, isBusy: isBusy, action: play)
 
-                VStack(alignment: .leading, spacing: 3) {
+                VStack(alignment: .leading, spacing: 2) {
                     Text(recording.createdAt.formatted(date: .abbreviated, time: .shortened))
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(OmilTheme.ink)
-                    HStack(spacing: 6) {
-                        Text(durationLabel)
-                        Text("·")
-                        Circle().fill(stateColor).frame(width: 6, height: 6)
-                        Text(stateLabel)
-                    }
-                    .font(OmilType.utility(10))
-                    .foregroundStyle(OmilTheme.faint)
+                    Text("\(clockLabel(recording.duration)) · \(stateLabel)")
+                        .font(OmilFont.caption)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
                 }
                 Spacer()
-                Button(action: play) {
-                    Label(isPlaying ? "Pause" : "Play", systemImage: isPlaying ? "pause.fill" : "play.fill")
-                }
-                .buttonStyle(QuietButtonStyle())
-                .disabled(isBusy)
-                Button(action: retry) { Label("Transcribe again", systemImage: "arrow.clockwise") }
-                    .buttonStyle(QuietButtonStyle())
-                    .disabled(isBusy)
-                Menu {
-                    if recording.transcript?.isEmpty == false {
-                        Button("View transcript", systemImage: "text.alignleft", action: viewTranscript)
-                        Button("Copy transcript", systemImage: "doc.on.doc", action: copy)
-                    }
-                    Button("Delete recording", role: .destructive, action: delete)
-                } label: {
-                    Image(systemName: "ellipsis")
-                        .frame(width: 26, height: 24)
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
+                menu
             }
 
-            Button {
-                showsControls.toggle()
-            } label: {
-                Label(showsControls ? "Hide controls" : "Show controls", systemImage: showsControls ? "chevron.up" : "slider.horizontal.3")
-                    .font(.system(size: 11, weight: .medium))
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(OmilTheme.muted)
-
-            if showsControls {
-                if isSelected, let error = playback.errorMessage {
-                    Text(error)
-                        .font(.system(size: 12))
-                        .foregroundStyle(OmilTheme.warning)
-                } else {
-                    VStack(spacing: 10) {
-                        HStack(spacing: 10) {
-                            Text(timeLabel(isSelected ? playback.position : 0))
-                                .monospacedDigit()
-                                .frame(width: 40, alignment: .leading)
-                            Slider(value: Binding(
-                                get: { isSelected ? playback.position : 0 },
-                                set: { seek($0) }
-                            ), in: 0...max(isSelected ? playback.duration : recording.duration, 0.01))
-                            .accessibilityLabel("Playback position")
-                            .accessibilityValue("\(timeLabel(isSelected ? playback.position : 0)) of \(timeLabel(isSelected ? playback.duration : recording.duration))")
-                            Text(timeLabel(isSelected ? playback.duration : recording.duration))
-                                .monospacedDigit()
-                                .frame(width: 40, alignment: .trailing)
-                        }
-                        HStack(spacing: 14) {
-                            Button { seek((isSelected ? playback.position : 0) - 10) } label: {
-                                Image(systemName: "gobackward.10")
-                            }
-                            .help("Back 10 seconds")
-                            .accessibilityLabel("Back 10 seconds")
-                            Button { seek((isSelected ? playback.position : 0) + 10) } label: {
-                                Image(systemName: "goforward.10")
-                            }
-                            .help("Forward 10 seconds")
-                            .accessibilityLabel("Forward 10 seconds")
-                            Button("Stop") { playback.stop() }
-                                .disabled(!isSelected)
-                            Spacer(minLength: 8)
-                            OmilPickerField(
-                                title: "Playback speed",
-                                selection: $playback.rate,
-                                options: [Float(0.75), 1, 1.25, 1.5, 2],
-                                label: { "\($0.formatted())×" }
-                            )
-                            .frame(width: 80)
-                            Image(systemName: playback.volume == 0 ? "speaker.slash" : "speaker.wave.2")
-                                .accessibilityHidden(true)
-                            Slider(value: $playback.volume, in: 0...1)
-                                .frame(width: 80)
-                                .accessibilityLabel("Playback volume")
-                        }
-                        .buttonStyle(.borderless)
-                    }
-                    .font(.system(size: 12))
-                    .foregroundStyle(OmilTheme.muted)
-                    .padding(.vertical, 6)
-                }
-            }
+            RecoveryPlaybackControls(playback: playback, recordingID: recording.id, seek: seek)
 
             if let transcript = recording.transcript, !transcript.isEmpty {
-                Button {
-                    showsTranscript.toggle()
-                } label: {
-                    HStack(alignment: .top, spacing: 8) {
-                        Image(systemName: showsTranscript ? "chevron.down" : "chevron.right")
-                            .font(.system(size: 10, weight: .semibold))
-                        Text(transcript)
-                            .lineLimit(showsTranscript ? nil : 2)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .multilineTextAlignment(.leading)
-                    }
-                }
-                .buttonStyle(.plain)
-                .font(.system(size: 12))
-                .foregroundStyle(OmilTheme.muted)
-                if showsTranscript {
-                    Button("Copy transcript", action: copy)
-                        .buttonStyle(.plain)
-                        .font(OmilType.utility(10, weight: .medium))
-                        .foregroundStyle(OmilTheme.signal)
-                        .padding(.leading, 18)
-                }
+                Text(transcript)
+                    .lineLimit(2)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
             } else if let failure = recording.failureReason, !failure.isEmpty {
                 Text(failure)
-                    .font(.system(size: 11))
-                    .foregroundStyle(OmilTheme.muted)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .font(OmilFont.callout)
+                    .foregroundStyle(.secondary)
             }
         }
-        .padding(14)
-        .background(OmilTheme.panel, in: RoundedRectangle(cornerRadius: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(OmilTheme.line))
-        .onChange(of: isPlaying) { _, playing in
-            if playing { showsControls = true }
-        }
+        .padding(.vertical, 4)
+        .contextMenu { menuItems }
     }
 
-    private var durationLabel: String { timeLabel(recording.duration) }
+    private var menu: some View {
+        RowMenu { menuItems }
+    }
 
-    private func timeLabel(_ time: TimeInterval) -> String {
-        let seconds = max(0, Int(time))
-        return String(format: "%d:%02d", seconds / 60, seconds % 60)
+    @ViewBuilder private var menuItems: some View {
+        Button("Transcribe Again", systemImage: "arrow.clockwise", action: retry)
+            .disabled(isBusy)
+        if recording.transcript?.isEmpty == false {
+            Button("View Transcript", systemImage: "text.alignleft", action: viewTranscript)
+            Button("Copy Transcript", systemImage: "doc.on.doc", action: copy)
+        }
+        Divider()
+        Button("Delete Recording", systemImage: "trash", role: .destructive, action: delete)
     }
 }
 
-private struct HistoryCard: View {
+private struct RecoveryPlayButton: View {
+    @ObservedObject var playback: RecoveryPlayback
+    let recordingID: UUID
+    let isBusy: Bool
+    let action: () -> Void
+
+    private var isPlaying: Bool { playback.recordingID == recordingID && playback.isPlaying }
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                .font(.system(size: 11, weight: .semibold))
+                .contentTransition(.symbolEffect(.replace))
+                .frame(width: 28, height: 28)
+                .contentShape(Circle())
+                .liquidGlass(in: Circle(), interactive: !isBusy)
+        }
+        .buttonStyle(.plain)
+        .disabled(isBusy)
+        .help(isPlaying ? "Pause" : "Play")
+        .accessibilityLabel(isPlaying ? "Pause" : "Play")
+    }
+}
+
+private struct RecoveryPlaybackControls: View {
+    @ObservedObject var playback: RecoveryPlayback
+    let recordingID: UUID
+    let seek: (TimeInterval) -> Void
+
+    var body: some View {
+        if playback.recordingID == recordingID {
+            if let error = playback.errorMessage {
+                Text(error)
+                    .font(OmilFont.callout)
+                    .foregroundStyle(OmilTheme.warning)
+            } else {
+                HStack(spacing: 10) {
+                    Text(clockLabel(playback.position)).monospacedDigit()
+                    Slider(value: Binding(get: { playback.position }, set: { seek($0) }),
+                           in: 0...max(playback.duration, 0.01))
+                        .controlSize(.small)
+                        .accessibilityLabel("Playback position")
+                    Text(clockLabel(playback.duration)).monospacedDigit()
+                    Menu("\(playback.rate.formatted())×") {
+                        ForEach([Float(0.75), 1, 1.25, 1.5, 2], id: \.self) { rate in
+                            Button("\(rate.formatted())×") { playback.rate = rate }
+                        }
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .help("Playback speed")
+                }
+                .font(OmilFont.caption)
+                .foregroundStyle(.secondary)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+    }
+}
+
+/// "m:ss" for durations and playback positions.
+func clockLabel(_ time: TimeInterval) -> String {
+    let seconds = max(0, Int(time))
+    return String(format: "%d:%02d", seconds / 60, seconds % 60)
+}
+
+private struct HistoryRow: View {
     let entry: DictationController.HistoryEntry
     let copy: () -> Void
     let viewTranscript: () -> Void
@@ -1397,60 +1408,32 @@ private struct HistoryCard: View {
     @State private var expanded = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 13) {
-            HStack {
-                Text(entry.date.formatted(date: .omitted, time: .shortened))
-                    .font(OmilType.utility(10, weight: .semibold))
-                    .foregroundStyle(OmilTheme.faint)
-                Text("·")
-                    .foregroundStyle(OmilTheme.faint)
-                Text("\(entry.wordCount) words")
-                    .font(OmilType.utility(10))
-                    .foregroundStyle(OmilTheme.faint)
-                Spacer()
-                Button(action: copy) { Label("Copy", systemImage: "doc.on.doc") }
-                    .buttonStyle(QuietButtonStyle())
-                Menu {
-                    Button("View transcript", action: viewTranscript)
-                    Divider()
-                    Button("Delete", role: .destructive, action: delete)
-                } label: {
-                    Image(systemName: "ellipsis")
-                        .frame(width: 26, height: 24)
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(entry.cleaned)
+                    .lineLimit(expanded ? nil : 2)
+                    .textSelection(.enabled)
+                Text("\(entry.date.formatted(date: .omitted, time: .shortened)) · \(entry.wordCount) words")
+                    .font(OmilFont.caption)
+                    .foregroundStyle(.secondary)
             }
-            Button { expanded.toggle() } label: {
-                HStack(alignment: .top, spacing: 9) {
-                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 10, weight: .semibold))
-                        .frame(width: 12)
-                    Text(entry.cleaned)
-                        .font(.system(size: 15))
-                        .lineLimit(expanded ? nil : 2)
-                        .multilineTextAlignment(.leading)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(OmilTheme.ink)
-            .accessibilityLabel(expanded ? "Collapse transcript" : "Expand transcript")
-            if expanded {
-                HStack(spacing: 12) {
-                    Button("View original and changes", action: viewTranscript)
-                    Button("Copy transcript", action: copy)
-                }
-                .buttonStyle(.plain)
-                .font(OmilType.utility(10, weight: .medium))
-                .foregroundStyle(OmilTheme.signal)
-                .padding(.leading, 21)
-            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .onTapGesture { withAnimation(OmilMotion.standard) { expanded.toggle() } }
 
+            RowAction(symbol: "doc.on.doc", label: "Copy", action: copy)
+            RowMenu { menuItems }
         }
-        .padding(16)
-        .background(OmilTheme.panel, in: RoundedRectangle(cornerRadius: 16))
-        .overlay(RoundedRectangle(cornerRadius: 16).stroke(OmilTheme.line))
+        .padding(.vertical, 4)
+        .contextMenu { menuItems }
+        .accessibilityAction(named: expanded ? "Collapse" : "Expand") { expanded.toggle() }
+    }
+
+    @ViewBuilder private var menuItems: some View {
+        Button("Copy", systemImage: "doc.on.doc", action: copy)
+        Button("View Original and Changes", systemImage: "text.alignleft", action: viewTranscript)
+        Divider()
+        Button("Delete", systemImage: "trash", role: .destructive, action: delete)
     }
 }
 
@@ -1461,106 +1444,97 @@ struct SnippetsView: View {
     @State private var trigger = ""
     @State private var expansion = ""
     @State private var validationMessage = ""
+    @FocusState private var triggerFocused: Bool
 
     var body: some View {
-        VStack(spacing: 0) {
-            PageHeader(
-                title: "Snippets",
-                detail: "Say a short phrase to insert text you use often."
-            ) { EmptyView() }
+        Form {
+            Section {
+                TextField("When I say", text: $trigger, prompt: Text("my intro"))
+                    .focused($triggerFocused)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Write this")
+                    TextField("Write this", text: $expansion, prompt: Text("The text Omil should insert"), axis: .vertical)
+                        .labelsHidden()
+                        .lineLimit(3...8)
+                        .multilineTextAlignment(.leading)
+                        .textFieldStyle(.plain)
+                        .padding(8)
+                        .background(OmilTheme.ink.opacity(0.04), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                }
+                .padding(.vertical, 2)
+            } header: {
+                Text("New Snippet")
+            } footer: {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(validationMessage.isEmpty ? "Say the phrase on its own or inside a sentence." : validationMessage)
+                        .foregroundStyle(validationMessage.isEmpty ? .secondary : OmilTheme.warning)
+                    Spacer()
+                    Button("Add Snippet") { addSnippet() }
+                        .omilButton(prominent: true)
+                        .disabled(trigger.trimmed.isEmpty || expansion.trimmed.isEmpty || trigger.count > 60 || expansion.count > 4_000)
+                        .keyboardShortcut(.return, modifiers: .command)
+                }
+            }
 
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 18) {
-                    VStack(alignment: .leading, spacing: 14) {
-                        LabeledField(label: "When I say", placeholder: "my intro", text: $trigger)
-
-                        VStack(alignment: .leading, spacing: 7) {
-                            HStack {
-                                Text("Write this")
-                                Spacer()
-                                Text("\(expansion.count) / 4,000")
+            Section("Saved Snippets") {
+                if controller.snippets.isEmpty {
+                    Text("Save an address, sign-off, or introduction, then give it a short spoken phrase.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(controller.snippets) { snippet in
+                        HStack(alignment: .top, spacing: 12) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("“\(snippet.trigger)”")
+                                    .fontWeight(.medium)
+                                Text(snippet.expansion)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(3)
+                                    .textSelection(.enabled)
                             }
-                            .font(OmilType.utility(9, weight: .bold))
-                            .tracking(0.8)
-                            .foregroundStyle(OmilTheme.faint)
-
-                            TextEditor(text: $expansion)
-                                .accessibilityLabel("Snippet text")
-                                .font(.system(size: 13))
-                                .scrollContentBackground(.hidden)
-                                .padding(9)
-                                .frame(minHeight: 92)
-                                .background(OmilTheme.canvas, in: RoundedRectangle(cornerRadius: 10))
-                                .overlay(RoundedRectangle(cornerRadius: 10).stroke(OmilTheme.lineStrong))
-                        }
-
-                        HStack {
-                            Text(validationMessage.isEmpty ? "Works alone or inside a sentence." : validationMessage)
-                                .font(.system(size: 11))
-                                .foregroundStyle(validationMessage.isEmpty ? OmilTheme.muted : OmilTheme.warning)
-                            Spacer()
-                            Button("Add snippet") { addSnippet() }
-                                .buttonStyle(SignalButtonStyle())
-                                .disabled(trigger.trimmed.isEmpty || expansion.trimmed.isEmpty || trigger.count > 60 || expansion.count > 4_000)
-                        }
-                    }
-                    .padding(18)
-                    .background(OmilTheme.panel, in: RoundedRectangle(cornerRadius: 16))
-                    .overlay(RoundedRectangle(cornerRadius: 16).stroke(OmilTheme.line))
-
-                    Text("\(controller.snippets.count) saved snippets")
-                        .font(OmilType.utility(10, weight: .bold))
-                        .tracking(1)
-                        .foregroundStyle(OmilTheme.muted)
-
-                    if controller.snippets.isEmpty {
-                        EmptyState(
-                            icon: "text.badge.plus",
-                            title: "No snippets yet",
-                            detail: "Save an address, sign-off, or introduction, then give it a short spoken phrase."
-                        )
-                        .frame(minHeight: 240)
-                    } else {
-                        ForEach(controller.snippets) { snippet in
-                            HStack(alignment: .top, spacing: 14) {
-                                VStack(alignment: .leading, spacing: 6) {
-                                    Text("\"\(snippet.trigger)\"")
-                                        .font(.system(size: 13, weight: .semibold))
-                                        .foregroundStyle(OmilTheme.signal)
-                                    Text(snippet.expansion)
-                                        .font(.system(size: 12))
-                                        .foregroundStyle(OmilTheme.muted)
-                                        .lineLimit(4)
-                                        .textSelection(.enabled)
-                                }
-                                Spacer()
-                                Button(role: .destructive) { controller.deleteSnippet(snippet) } label: {
-                                    Image(systemName: "trash")
-                                }
-                                .buttonStyle(.plain)
-                                .foregroundStyle(OmilTheme.faint)
-                                .help("Delete snippet")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            RowAction(symbol: "trash", label: "Delete Snippet", role: .destructive) {
+                                delete(snippet)
                             }
-                            .padding(16)
-                            .background(OmilTheme.panel, in: RoundedRectangle(cornerRadius: 14))
-                            .overlay(RoundedRectangle(cornerRadius: 14).stroke(OmilTheme.line))
+                        }
+                        .padding(.vertical, 2)
+                        .contextMenu {
+                            Button("Copy Text", systemImage: "doc.on.doc") { ToastCenter.shared.copy(snippet.expansion) }
+                            Divider()
+                            Button("Delete Snippet", systemImage: "trash", role: .destructive) { delete(snippet) }
                         }
                     }
                 }
-                .padding(.horizontal, 30)
-                .padding(.bottom, 30)
             }
         }
+        .omilPage(subtitle: controller.snippets.count == 1 ? "1 snippet" : "\(controller.snippets.count) snippets")
     }
 
     private func addSnippet() {
-        if let error = controller.addSnippet(trigger: trigger, expansion: expansion) {
+        var error: String?
+        let newTrigger = trigger
+        let newExpansion = expansion
+        withAnimation(OmilMotion.standard) {
+            error = controller.addSnippet(trigger: newTrigger, expansion: newExpansion)
+        }
+        if let error {
             validationMessage = error
+            NSSound.beep()
             return
         }
         trigger = ""
         expansion = ""
         validationMessage = ""
+        ToastCenter.shared.show("Snippet Added")
+        triggerFocused = true
+    }
+
+    private func delete(_ snippet: DictationController.Snippet) {
+        let trigger = snippet.trigger
+        let expansion = snippet.expansion
+        withAnimation(OmilMotion.standard) { controller.deleteSnippet(snippet) }
+        ToastCenter.shared.show("Snippet Deleted", symbol: "trash.fill") { [controller] in
+            withAnimation(OmilMotion.standard) { _ = controller.addSnippet(trigger: trigger, expansion: expansion) }
+        }
     }
 }
 
@@ -1570,70 +1544,43 @@ struct StylesView: View {
     @ObservedObject var controller: DictationController
 
     var body: some View {
-        VStack(spacing: 0) {
-            PageHeader(
-                title: "Styles",
-                detail: "Choose how your words are formatted in each kind of app."
-            ) { EmptyView() }
-
-            ScrollView {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 280), spacing: 14)], spacing: 14) {
-                    ForEach(DictationController.AppCategory.allCases) { category in
-                        styleCard(category)
+        Form {
+            Section {
+                ForEach(DictationController.AppCategory.allCases) { category in
+                    Picker(selection: Binding(
+                        get: { controller.style(for: category) },
+                        set: { controller.setStyle($0, for: category) }
+                    )) {
+                        ForEach(styles(for: category), id: \.self) { style in
+                            Text(style.displayName).tag(style)
+                        }
+                    } label: {
+                        Label {
+                            Text(category.rawValue)
+                            Text(appExamples(for: category))
+                        } icon: {
+                            Image(systemName: category.icon)
+                                .symbolRenderingMode(.hierarchical)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
-                .padding(.horizontal, 30)
-                .padding(.bottom, 30)
+            } header: {
+                Text("Writing Style by App")
+            } footer: {
+                Text("Omil adjusts punctuation and capitalization to fit where you're writing.")
             }
-        }
-    }
 
-    private func styleCard(_ category: DictationController.AppCategory) -> some View {
-        let selection = controller.style(for: category)
-        return VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 10) {
-                Image(systemName: category.icon)
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(OmilTheme.signal)
-                    .frame(width: 34, height: 34)
-                    .background(OmilTheme.signal.opacity(0.1), in: Circle())
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(category.rawValue)
-                        .font(.system(size: 14, weight: .semibold))
-                    Text(appExamples(for: category))
-                        .font(.system(size: 11))
-                        .foregroundStyle(OmilTheme.muted)
+            Section("Preview") {
+                ForEach(DictationController.AppCategory.allCases) { category in
+                    LabeledContent(category.rawValue) {
+                        Text(preview(for: controller.style(for: category)))
+                            .foregroundStyle(.secondary)
+                    }
                 }
-                Spacer()
-            }
-
-            OmilPickerField(
-                title: "Writing style",
-                selection: Binding(
-                    get: { controller.style(for: category) },
-                    set: { controller.setStyle($0, for: category) }
-                ),
-                options: styles(for: category),
-                label: { $0.displayName }
-            )
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Example")
-                    .font(OmilType.utility(9, weight: .bold))
-                    .tracking(0.8)
-                    .foregroundStyle(OmilTheme.faint)
-                Text(preview(for: selection))
-                    .font(.system(size: 13))
-                    .foregroundStyle(OmilTheme.ink)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(12)
-                    .background(OmilTheme.canvas, in: RoundedRectangle(cornerRadius: 10))
             }
         }
-        .padding(18)
-        .frame(maxWidth: .infinity, minHeight: 224, alignment: .topLeading)
-        .background(OmilTheme.panel, in: RoundedRectangle(cornerRadius: 16))
-        .overlay(RoundedRectangle(cornerRadius: 16).stroke(OmilTheme.line))
+        .omilPage()
     }
 
     private func styles(for category: DictationController.AppCategory) -> [WritingStyle] {
@@ -1668,84 +1615,83 @@ struct DictionaryView: View {
     @ObservedObject var controller: DictationController
     @State private var spoken = ""
     @State private var written = ""
+    @FocusState private var focusedField: Field?
+
+    private enum Field { case spoken, written }
 
     var body: some View {
         let keys = controller.dictionaryEntries.keys.sorted()
-        VStack(spacing: 0) {
-            PageHeader(
-                title: "Dictionary",
-                detail: "Correct names and words that Omil mishears."
-            ) { EmptyView() }
+        Form {
+            Section {
+                TextField("When I say", text: $spoken, prompt: Text("oh mill"))
+                    .focused($focusedField, equals: .spoken)
+                    .onSubmit { focusedField = .written }
+                TextField("Write instead", text: $written, prompt: Text("Omil"))
+                    .focused($focusedField, equals: .written)
+                    .onSubmit(addWord)
+            } header: {
+                Text("New Correction")
+            } footer: {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Use this for names and words Omil mishears.")
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Add Correction") { addWord() }
+                        .omilButton(prominent: true)
+                        .disabled(spoken.trimmed.isEmpty || written.trimmed.isEmpty)
+                        .keyboardShortcut(.return, modifiers: .command)
+                }
+            }
 
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 18) {
-                    HStack(alignment: .bottom, spacing: 12) {
-                        LabeledField(label: "When I say", placeholder: "oh mill", text: $spoken)
-                        Image(systemName: "arrow.right")
-                            .foregroundStyle(OmilTheme.faint)
-                            .padding(.bottom, 12)
-                        LabeledField(label: "Write instead", placeholder: "Omil", text: $written)
-                        Button("Add word") { addWord() }
-                            .buttonStyle(SignalButtonStyle())
-                            .disabled(spoken.trimmed.isEmpty || written.trimmed.isEmpty)
-                    }
-                    .padding(18)
-                    .background(OmilTheme.panel, in: RoundedRectangle(cornerRadius: 16))
-                    .overlay(RoundedRectangle(cornerRadius: 16).stroke(OmilTheme.line))
-
-                    Text("\(controller.dictionaryEntries.count) corrections")
-                        .font(OmilType.utility(10, weight: .bold))
-                        .tracking(1)
-                        .foregroundStyle(OmilTheme.muted)
-
-                    if keys.isEmpty {
-                        EmptyState(
-                            icon: "character.book.closed",
-                            title: "No corrections yet",
-                            detail: "Enter the word Omil gets wrong and how it should be spelled."
-                        )
-                        .frame(minHeight: 280)
-                    } else {
-                        ForEach(keys, id: \.self) { key in
-                            HStack(spacing: 18) {
-                                Text(key)
-                                    .foregroundStyle(OmilTheme.muted)
-                                Image(systemName: "arrow.right")
-                                    .font(.system(size: 10, weight: .semibold))
-                                    .foregroundStyle(OmilTheme.faint)
-                                Text(controller.dictionaryEntries[key] ?? "")
-                                    .fontWeight(.semibold)
-                                Spacer()
-                                Button(role: .destructive) {
-                                    controller.deleteDictionaryEntry(spoken: key)
-                                } label: {
-                                    Image(systemName: "trash")
-                                }
-                                .buttonStyle(.plain)
-                                .foregroundStyle(OmilTheme.faint)
-                                .help("Delete correction")
+            Section("Corrections") {
+                if keys.isEmpty {
+                    Text("No corrections yet.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(keys, id: \.self) { key in
+                        HStack(spacing: 10) {
+                            Text(key)
+                                .foregroundStyle(.secondary)
+                            Image(systemName: "arrow.right")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.tertiary)
+                            Text(controller.dictionaryEntries[key] ?? "")
+                                .fontWeight(.medium)
+                            Spacer()
+                            RowAction(symbol: "trash", label: "Delete Correction", role: .destructive) {
+                                delete(key)
                             }
-                            .font(.system(size: 13))
-                            .padding(.horizontal, 16)
-                            .frame(height: 48)
-                            .background(OmilTheme.panel, in: RoundedRectangle(cornerRadius: 12))
-                            .overlay(RoundedRectangle(cornerRadius: 12).stroke(OmilTheme.line))
+                        }
+                        .contextMenu {
+                            Button("Delete Correction", systemImage: "trash", role: .destructive) {
+                                delete(key)
+                            }
                         }
                     }
                 }
-                .padding(.horizontal, 30)
-                .padding(.bottom, 30)
             }
         }
+        .omilPage(subtitle: keys.count == 1 ? "1 correction" : "\(keys.count) corrections")
     }
 
     private func addWord() {
         let source = spoken.trimmed
         let replacement = written.trimmed
         guard !source.isEmpty, !replacement.isEmpty else { return }
-        controller.confirmDictionary(spoken: source, written: replacement)
+        focusedField = nil
         spoken = ""
         written = ""
+        withAnimation(OmilMotion.standard) { controller.confirmDictionary(spoken: source, written: replacement) }
+        ToastCenter.shared.show("Correction Added")
+        focusedField = .spoken
+    }
+
+    private func delete(_ key: String) {
+        let written = controller.dictionaryEntries[key] ?? ""
+        withAnimation(OmilMotion.standard) { controller.deleteDictionaryEntry(spoken: key) }
+        ToastCenter.shared.show("Correction Deleted", symbol: "trash.fill") { [controller] in
+            withAnimation(OmilMotion.standard) { controller.confirmDictionary(spoken: key, written: written) }
+        }
     }
 }
 
@@ -1777,201 +1723,168 @@ private let rewriteModelOptions = [
 
 struct EngineView: View {
     @ObservedObject var controller: DictationController
-    @State private var showAdvanced = false
     @State private var modelPendingDeletion: ModelOption?
     @State private var confirmTokenRotation = false
+    @State private var showsAllModels = false
+    @State private var showsOtherServer = false
+    @State private var checking = false
+
+    private var healthy: Bool { controller.serverIsReady }
+    private var preparing: Bool {
+        controller.modelsPreparing
+            || !controller.downloadingModelIDs.isEmpty
+            || controller.serverHealth.localizedCaseInsensitiveContains("starting")
+            || controller.serverHealth.localizedCaseInsensitiveContains("restarting")
+    }
 
     var body: some View {
-        VStack(spacing: 0) {
-            PageHeader(
-                title: "Speech engine",
-                detail: "Manage the models that transcribe and edit your speech."
-            ) {
-                EmptyView()
-            }
-
-            ScrollView {
-                VStack(spacing: 16) {
-                    EngineStatusBar(controller: controller)
-                    if !controller.usesCustomServer {
-                        switch controller.toolInstallState {
-                        case .idle, .ready:
-                            EmptyView()
-                        case .installing(let formulae):
-                            Label("Installing \(formulae.joined(separator: " and ")) with Homebrew. This may take a few minutes.", systemImage: "arrow.down.circle")
-                                .font(.system(size: 12))
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(14)
-                                .background(OmilTheme.panel, in: RoundedRectangle(cornerRadius: 12))
-                        case .failed(let message, let homebrewMissing):
-                            VStack(alignment: .leading, spacing: 10) {
-                                Label(message, systemImage: "exclamationmark.triangle")
-                                    .font(.system(size: 12, weight: .medium))
-                                if homebrewMissing {
-                                    Link("Install Homebrew", destination: URL(string: "https://brew.sh/")!)
-                                        .font(.system(size: 12, weight: .semibold))
-                                    Text("After installing Homebrew, run this command in Terminal:")
-                                        .font(.system(size: 11))
-                                } else {
-                                    Text("You can run this command in Terminal:")
-                                        .font(.system(size: 11))
-                                }
-                                HStack {
-                                    Text(LocalServerManager.manualInstallCommand)
-                                        .font(.system(.caption, design: .monospaced))
-                                        .textSelection(.enabled)
-                                    Spacer()
-                                    Button("Copy") {
-                                        NSPasteboard.general.clearContents()
-                                        NSPasteboard.general.setString(LocalServerManager.manualInstallCommand, forType: .string)
-                                    }
-                                    .buttonStyle(QuietButtonStyle())
-                                    Button("Retry") { controller.retryInferenceToolInstall() }
-                                        .buttonStyle(QuietButtonStyle())
-                                }
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(14)
-                            .background(OmilTheme.panel, in: RoundedRectangle(cornerRadius: 12))
-                        }
-                    }
-
-                    VStack(spacing: 0) {
-                        ModelPipelineRow(
-                            stage: "Transcription",
-                            detail: "Turns speech into text",
-                            icon: "waveform",
-                            selection: Binding(
-                                get: { controller.displayedWhisperFile },
-                                set: { controller.chooseWhisperModel(file: $0) }
-                            ),
-                            activeFile: controller.whisperFile,
-                            options: whisperModelOptions,
-                            downloaded: controller.modelIsDownloaded(file: controller.displayedWhisperFile),
-                            fileState: controller.modelInfo(file: controller.displayedWhisperFile)?.fileState,
-                            receivedBytes: controller.modelInfo(file: controller.displayedWhisperFile)?.receivedBytes,
-                            totalBytes: controller.modelInfo(file: controller.displayedWhisperFile)?.totalBytes,
-                            memoryState: controller.modelInfo(file: controller.displayedWhisperFile)?.memoryState,
-                            downloading: controller.modelIsDownloading(file: controller.displayedWhisperFile),
-                            interactionDisabled: controller.modelsPreparing,
-                            download: { controller.downloadModel(file: controller.displayedWhisperFile) }
-                        )
-                        Divider()
-                            .overlay(OmilTheme.line)
-                            .padding(.leading, 68)
-                        ModelPipelineRow(
-                            stage: "Cleanup",
-                            detail: "Removes filler words and fixes punctuation",
-                            icon: "wand.and.stars",
-                            selection: Binding(
-                                get: { controller.displayedLLMFile },
-                                set: { controller.chooseLLMModel(file: $0) }
-                            ),
-                            activeFile: controller.llmFile,
-                            options: rewriteModelOptions,
-                            downloaded: controller.modelIsDownloaded(file: controller.displayedLLMFile),
-                            fileState: controller.modelInfo(file: controller.displayedLLMFile)?.fileState,
-                            receivedBytes: controller.modelInfo(file: controller.displayedLLMFile)?.receivedBytes,
-                            totalBytes: controller.modelInfo(file: controller.displayedLLMFile)?.totalBytes,
-                            memoryState: controller.modelInfo(file: controller.displayedLLMFile)?.memoryState,
-                            downloading: controller.modelIsDownloading(file: controller.displayedLLMFile),
-                            interactionDisabled: controller.modelsPreparing,
-                            download: { controller.downloadModel(file: controller.displayedLLMFile) }
-                        )
-                    }
-                    .background(OmilTheme.panel, in: RoundedRectangle(cornerRadius: 14))
-                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(OmilTheme.line))
-
-                    ModelLibraryCard(controller: controller) { modelPendingDeletion = $0 }
-
-                    LANSharingCard(
-                        controller: controller,
-                        confirmTokenRotation: $confirmTokenRotation
-                    )
-
-                    DisclosureGroup(isExpanded: $showAdvanced) {
-                        VStack(alignment: .leading, spacing: 12) {
-                            Text("Use this only when this Mac should connect to a different Omil server.")
-                                .font(.system(size: 11))
-                                .foregroundStyle(OmilTheme.muted)
-                            HStack {
-                                LabeledField(label: "HOST", placeholder: "192.168.1.20", text: $controller.externalServerConfig.host)
-                                VStack(alignment: .leading, spacing: 7) {
-                                    Text("PORT")
-                                        .font(OmilType.utility(9, weight: .bold))
-                                        .tracking(0.8)
-                                        .foregroundStyle(OmilTheme.faint)
-                                    TextField("3217", value: $controller.externalServerConfig.port, format: .number)
-                                        .textFieldStyle(OmilTextFieldStyle())
-                                        .frame(width: 90)
-                                }
-                            }
-                            VStack(alignment: .leading, spacing: 7) {
-                                Text("SERVER TOKEN")
-                                    .font(OmilType.utility(9, weight: .bold))
-                                    .tracking(0.8)
-                                    .foregroundStyle(OmilTheme.faint)
-                                SecureField("Token from the other server", text: $controller.externalServerConfig.token)
-                                    .textFieldStyle(OmilTextFieldStyle())
-                            }
-                            HStack {
-                                Label("Audio and text go to this address", systemImage: "lock.shield")
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(OmilTheme.muted)
-                                Spacer()
-                                if controller.usesCustomServer {
-                                    Button("Use local server") { controller.useManagedServer() }
-                                        .buttonStyle(QuietButtonStyle())
-                                }
-                                Button(controller.usesCustomServer ? "Update server" : "Use this server") {
-                                    controller.saveServerConfig()
-                                }
-                                    .buttonStyle(SignalButtonStyle())
-                            }
-                        }
-                        .padding(.top, 14)
+        Form {
+            Section {
+                LabeledContent {
+                    Button {
+                        checkNow()
                     } label: {
-                        HStack(spacing: 12) {
-                            Image(systemName: controller.usesCustomServer ? "network" : "macbook")
-                                .foregroundStyle(OmilTheme.signal)
-                                .frame(width: 22)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Connect to another server")
-                                    .font(.system(size: 13, weight: .semibold))
-                                Text(controller.usesCustomServer ? "Active" : "Advanced")
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(OmilTheme.muted)
-                            }
-                            Spacer()
-                            Text(verbatim: "\(controller.serverConfig.host):\(controller.serverConfig.port)")
-                                .font(OmilType.utility(10, weight: .medium))
-                                .foregroundStyle(OmilTheme.faint)
+                        if checking {
+                            ProgressView().controlSize(.small).frame(width: 64)
+                        } else {
+                            Text("Check Now")
                         }
                     }
-                    .font(.system(size: 13, weight: .semibold))
-                    .padding(18)
-                    .background(OmilTheme.panelDeep, in: RoundedRectangle(cornerRadius: 14))
-                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(OmilTheme.line))
-
-                    if !controller.serverOpNote.isEmpty || !controller.serverNote.isEmpty {
-                        Label(
-                            controller.serverOpNote.isEmpty ? controller.serverNote : controller.serverOpNote,
-                            systemImage: "info.circle"
-                        )
-                        .font(.system(size: 11))
-                        .foregroundStyle(OmilTheme.muted)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    .omilButton()
+                    .disabled(checking)
+                } label: {
+                    Label {
+                        Text(healthy ? "Ready for Dictation" : preparing ? "Preparing Models" : "Setup Needed")
+                        Text(controller.speechSetupSummary)
+                    } icon: {
+                        Image(systemName: healthy ? "checkmark.circle.fill" : preparing ? "arrow.triangle.2.circlepath.circle.fill" : "exclamationmark.circle.fill")
+                            .symbolRenderingMode(.hierarchical)
+                            .foregroundStyle(healthy ? OmilTheme.mint : preparing ? Color.secondary : OmilTheme.warning)
                     }
                 }
-                .padding(.horizontal, 30)
-                .padding(.bottom, 30)
+                installStatus
+            }
+
+            Section {
+                ModelChoiceRow(
+                    stage: "Transcription",
+                    detail: "Turns speech into text",
+                    symbol: "waveform",
+                    selection: Binding(
+                        get: { controller.displayedWhisperFile },
+                        set: { controller.chooseWhisperModel(file: $0) }
+                    ),
+                    activeFile: controller.whisperFile,
+                    options: whisperModelOptions,
+                    controller: controller
+                )
+                ModelChoiceRow(
+                    stage: "Cleanup",
+                    detail: "Removes filler words and fixes punctuation",
+                    symbol: "wand.and.stars",
+                    selection: Binding(
+                        get: { controller.displayedLLMFile },
+                        set: { controller.chooseLLMModel(file: $0) }
+                    ),
+                    activeFile: controller.llmFile,
+                    options: rewriteModelOptions,
+                    controller: controller
+                )
+            } header: {
+                Text("Models in Use")
+            }
+
+            ModelLibrarySections(controller: controller, showsAll: showsAllModels) { modelPendingDeletion = $0 }
+
+            LANSharingSection(controller: controller, confirmTokenRotation: $confirmTokenRotation)
+
+            Section {
+                DisclosureGroup(isExpanded: $showsOtherServer) {
+                    TextField("Host", text: $controller.externalServerConfig.host, prompt: Text("192.168.1.20"))
+                    TextField("Port", value: $controller.externalServerConfig.port, format: .number.grouping(.never), prompt: Text("3217"))
+                    SecureField("Server Token", text: $controller.externalServerConfig.token, prompt: Text("Token from the other server"))
+                    HStack {
+                        Spacer()
+                        if controller.usesCustomServer {
+                            Button("Use This Mac") { controller.useManagedServer() }
+                                .omilButton()
+                        }
+                        Button(controller.usesCustomServer ? "Update Server" : "Use This Server") {
+                            controller.saveServerConfig()
+                            ToastCenter.shared.show("Connecting to Server", symbol: "network")
+                        }
+                        .omilButton(prominent: true)
+                    }
+                } label: {
+                    LabeledContent {
+                        Text(verbatim: "\(controller.serverConfig.host):\(controller.serverConfig.port)")
+                            .font(OmilFont.mono)
+                            .foregroundStyle(.secondary)
+                    } label: {
+                        RowLabel(
+                            title: "Connect to Another Server",
+                            subtitle: controller.usesCustomServer ? "Active" : "Audio and text go to the address you enter.",
+                            symbol: controller.usesCustomServer ? "network" : "macbook"
+                        )
+                    }
+                }
+            } header: {
+                Text("Advanced")
+            } footer: {
+                if !controller.serverOpNote.isEmpty || !controller.serverNote.isEmpty {
+                    Text(controller.serverOpNote.isEmpty ? controller.serverNote : controller.serverOpNote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .omilPage(subtitle: healthy ? "Ready" : preparing ? "Preparing" : "Setup needed")
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Picker("Show", selection: $showsAllModels) {
+                    Text("Installed").tag(false)
+                    Text("All Models").tag(true)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
+                .help("Show installed models or every available model")
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Menu {
+                    if ["loading", "ready", "inUse", "unloading"].contains(controller.selectedLLMMemoryState) {
+                        Button(controller.selectedLLMMemoryState == "inUse" ? "Release Memory After Use" : "Free Memory") {
+                            controller.unloadModels()
+                        }
+                        .disabled(controller.selectedLLMMemoryState == "unloading")
+                    }
+                    if controller.modelIsDownloaded(file: controller.llmFile) == true {
+                        Button(controller.reloadingLLM ? "Reloading Cleanup Model…" : "Reload Cleanup Model") {
+                            controller.reloadCleanupModel()
+                        }
+                        .disabled(controller.reloadingLLM || !controller.processingJobs.isEmpty ||
+                                  !controller.downloadingModelIDs.isEmpty)
+                    }
+                    if !controller.usesCustomServer {
+                        Divider()
+                        Button("Restart Engine") { controller.restartManagedServer() }
+                    }
+                } label: {
+                    Label("Engine Actions", systemImage: "ellipsis.circle")
+                }
+                .help("More engine actions")
             }
         }
         .task {
             while !Task.isCancelled {
-                await controller.fetchServerModels()
+                if NSApp.windows.contains(where: { $0.isVisible && $0.occlusionState.contains(.visible) }) {
+                    await controller.fetchServerModels()
+                }
+                // Fast updates only while something is changing.
+                let busy = controller.modelsPreparing || !controller.downloadingModelIDs.isEmpty
+                    || ["loading", "unloading"].contains(controller.selectedLLMMemoryState)
+                    || controller.serverModels.isEmpty
                 do {
-                    try await Task.sleep(for: .seconds(1))
+                    try await Task.sleep(for: .seconds(busy ? 1 : 10))
                 } catch {
                     break
                 }
@@ -1986,8 +1899,9 @@ struct EngineView: View {
             titleVisibility: .visible
         ) {
             if let model = modelPendingDeletion {
-                Button("Delete model", role: .destructive) {
+                Button("Delete Model", role: .destructive) {
                     controller.deleteModel(file: model.file)
+                    ToastCenter.shared.show("\(model.name) Deleted", symbol: "trash.fill")
                     modelPendingDeletion = nil
                 }
             }
@@ -2002,20 +1916,173 @@ struct EngineView: View {
             isPresented: $confirmTokenRotation,
             titleVisibility: .visible
         ) {
-            Button("Replace token", role: .destructive) {
+            Button("Replace Token", role: .destructive) {
                 controller.regenerateLANToken()
+                ToastCenter.shared.show("New Token Created", symbol: "key.fill")
             }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Devices using the current token will disconnect until you enter the new one.")
         }
     }
+
+    private func checkNow() {
+        checking = true
+        Task { @MainActor in
+            await controller.refreshServerHealth()
+            checking = false
+            ToastCenter.shared.show(
+                controller.serverIsReady ? "Engine Is Ready" : "Engine Needs Attention",
+                symbol: controller.serverIsReady ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var installStatus: some View {
+        if !controller.usesCustomServer {
+            switch controller.toolInstallState {
+            case .idle, .ready:
+                EmptyView()
+            case .installing(let formulae):
+                LabeledContent {
+                    ProgressView().controlSize(.small)
+                } label: {
+                    RowLabel(
+                        title: "Installing \(formulae.joined(separator: " and "))",
+                        subtitle: "Homebrew is installing the speech tools. This may take a few minutes.",
+                        symbol: "arrow.down.circle"
+                    )
+                }
+            case .failed(let message, let homebrewMissing):
+                LabeledContent {
+                    HStack {
+                        if homebrewMissing {
+                            Link("Install Homebrew", destination: URL(string: "https://brew.sh/")!)
+                        }
+                        Button("Retry") { controller.retryInferenceToolInstall() }
+                            .omilButton()
+                    }
+                } label: {
+                    RowLabel(title: message, subtitle: homebrewMissing
+                             ? "Install Homebrew, then run the command below in Terminal."
+                             : "You can also run the command below in Terminal.",
+                             symbol: "exclamationmark.triangle")
+                }
+                LabeledContent {
+                    Button("Copy") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(LocalServerManager.manualInstallCommand, forType: .string)
+                    }
+                    .omilButton()
+                } label: {
+                    Text(LocalServerManager.manualInstallCommand)
+                        .font(OmilFont.mono)
+                        .textSelection(.enabled)
+                }
+            }
+        }
+    }
 }
 
-private struct ModelLibraryCard: View {
+/// One stage of the pipeline: which model it uses and whether that model is ready.
+private struct ModelChoiceRow: View {
+    let stage: String
+    let detail: String
+    let symbol: String
+    @Binding var selection: String
+    let activeFile: String
+    let options: [ModelOption]
     @ObservedObject var controller: DictationController
+
+    private var info: DictationController.ServerModelInfo? { controller.modelInfo(file: selection) }
+    private var downloaded: Bool? { controller.modelIsDownloaded(file: selection) }
+    private var downloading: Bool { controller.modelIsDownloading(file: selection) }
+
+    var body: some View {
+        LabeledContent {
+            HStack(spacing: 12) {
+                status
+                Picker(stage, selection: $selection) {
+                    ForEach(options, id: \.file) { option in
+                        Text("\(option.name) — \(option.size)").tag(option.file)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .fixedSize()
+                .disabled(controller.modelsPreparing)
+            }
+        } label: {
+            RowLabel(
+                title: stage,
+                subtitle: selection != activeFile
+                    ? "Current: \(options.first(where: { $0.file == activeFile })?.name ?? activeFile)"
+                    : detail,
+                symbol: symbol
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var status: some View {
+        let fileState = info?.fileState
+        HStack(spacing: 6) {
+            if fileState == "downloading" || downloading {
+                ProgressView().controlSize(.small)
+                Text(percent.map { "\($0)%" } ?? "Downloading")
+            } else if fileState == "verifying" || fileState == "checking" {
+                ProgressView().controlSize(.small)
+                Text(fileState == "verifying" ? "Verifying" : "Checking")
+            } else if downloaded == true {
+                memoryStatus
+            } else if fileState == "failed" {
+                Button("Repair") { controller.downloadModel(file: selection) }
+                    .omilButton(prominent: true)
+                    .disabled(controller.modelsPreparing)
+            } else if downloaded == false {
+                Button("Download") { controller.downloadModel(file: selection) }
+                    .omilButton(prominent: true)
+                    .disabled(controller.modelsPreparing)
+            } else {
+                ProgressView().controlSize(.small)
+            }
+        }
+        .font(OmilFont.callout)
+        .foregroundStyle(.secondary)
+    }
+
+    private var percent: Int? {
+        guard let received = info?.receivedBytes, let total = info?.totalBytes, total > 0 else { return nil }
+        return min(100, max(0, Int(Double(received) / Double(total) * 100)))
+    }
+
+    @ViewBuilder
+    private var memoryStatus: some View {
+        switch info?.memoryState {
+        case "loading":
+            ProgressView().controlSize(.small)
+            Text("Loading")
+        case "ready":
+            Text("Loaded")
+        case "inUse":
+            Text("In use")
+        case "unloading":
+            ProgressView().controlSize(.small)
+            Text("Releasing")
+        case "failed":
+            Image(systemName: "exclamationmark.circle.fill").foregroundStyle(OmilTheme.warning)
+            Text("Load failed")
+        default:
+            Text("On demand")
+        }
+    }
+}
+
+private struct ModelLibrarySections: View {
+    @ObservedObject var controller: DictationController
+    let showsAll: Bool
     let requestDelete: (ModelOption) -> Void
-    @State private var showsAll = false
 
     private var actionsLocked: Bool {
         controller.phase == .recording || controller.phase == .preparing ||
@@ -2023,168 +2090,90 @@ private struct ModelLibraryCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .center, spacing: 14) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Model library")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(OmilTheme.ink)
-                    Text(controller.usesCustomServer ? "Models on the connected server" : "Models stored on this Mac")
-                        .font(.system(size: 11))
-                        .foregroundStyle(OmilTheme.muted)
-                }
-                Spacer()
-                HStack(spacing: 3) {
-                    Button("Installed") { showsAll = false }
-                        .buttonStyle(SegmentButtonStyle(selected: !showsAll))
-                    Button("All models") { showsAll = true }
-                        .buttonStyle(SegmentButtonStyle(selected: showsAll))
-                }
-            }
-            .padding(18)
-
-            Divider().overlay(OmilTheme.line)
-
-            if controller.serverModels.isEmpty {
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text("Checking available models")
-                        .font(.system(size: 12))
-                        .foregroundStyle(OmilTheme.muted)
-                }
-                .padding(18)
-            } else {
-                group(title: "Transcription", icon: "waveform", options: whisperModelOptions,
-                      activeFile: controller.whisperFile, isWhisper: true)
-                Divider().overlay(OmilTheme.line)
-                group(title: "Cleanup", icon: "wand.and.stars", options: rewriteModelOptions,
-                      activeFile: controller.llmFile, isWhisper: false)
-            }
+        Group {
+            section(title: "Transcription Models", options: whisperModelOptions,
+                    activeFile: controller.whisperFile, isWhisper: true)
+            section(title: "Cleanup Models", options: rewriteModelOptions,
+                    activeFile: controller.llmFile, isWhisper: false)
         }
-        .background(OmilTheme.panel, in: RoundedRectangle(cornerRadius: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(OmilTheme.line))
     }
 
-    private func group(title: String, icon: String, options: [ModelOption],
-                       activeFile: String, isWhisper: Bool) -> some View {
+    private func section(title: String, options: [ModelOption], activeFile: String, isWhisper: Bool) -> some View {
         let installed = options.filter { controller.modelIsDownloaded(file: $0.file) == true }
         let visible = showsAll ? options : options.filter {
-            controller.modelIsDownloaded(file: $0.file) == true ||
-            controller.modelInfo(file: $0.file)?.fileState == "failed" ||
-            controller.modelIsDownloading(file: $0.file) ||
-            controller.modelInfo(file: $0.file)?.fileState == "downloading" ||
-            controller.modelInfo(file: $0.file)?.fileState == "verifying"
+            let state = controller.modelInfo(file: $0.file)?.fileState
+            return controller.modelIsDownloaded(file: $0.file) == true || controller.modelIsDownloading(file: $0.file)
+                || state == "failed" || state == "downloading" || state == "verifying"
         }
-        return VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 8) {
-                Image(systemName: icon)
-                    .foregroundStyle(OmilTheme.signal)
-                    .frame(width: 18)
-                Text(title)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(OmilTheme.ink)
-                Spacer()
-                Text("\(installed.count) installed")
-                    .font(OmilType.utility(10))
-                    .foregroundStyle(OmilTheme.muted)
-            }
-            .padding(.horizontal, 18)
-            .padding(.vertical, 13)
-            .background(OmilTheme.panelDeep.opacity(0.5))
-
-            if visible.isEmpty {
-                Text("No \(title.lowercased()) models installed. Choose All models to download one.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(OmilTheme.muted)
-                    .padding(18)
+        return Section {
+            if controller.serverModels.isEmpty {
+                LabeledContent("Checking available models") { ProgressView().controlSize(.small) }
+            } else if visible.isEmpty {
+                Text("None installed. Choose All Models in the toolbar to download one.")
+                    .foregroundStyle(.secondary)
             } else {
                 ForEach(visible, id: \.file) { option in
-                    modelRow(option, activeFile: activeFile, isWhisper: isWhisper)
-                    if option.file != visible.last?.file {
-                        Divider().overlay(OmilTheme.line)
-                            .padding(.leading, 18)
-                    }
+                    row(option, activeFile: activeFile, isWhisper: isWhisper)
                 }
+            }
+        } header: {
+            HStack {
+                Text(title)
+                Spacer()
+                Text("\(installed.count) installed")
+                    .fontWeight(.regular)
+                    .foregroundStyle(.secondary)
             }
         }
     }
 
-    private func modelRow(_ option: ModelOption, activeFile: String, isWhisper: Bool) -> some View {
+    private func row(_ option: ModelOption, activeFile: String, isWhisper: Bool) -> some View {
         let info = controller.modelInfo(file: option.file)
         let isActive = option.file == activeFile
         let isDownloading = controller.modelIsDownloading(file: option.file) ||
             info?.fileState == "downloading" || info?.fileState == "verifying"
         let needsRepair = info?.fileState == "failed" && info?.downloaded != true
-        let isSelected = isActive && info?.downloaded == true
-        return HStack(spacing: 10) {
-            Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(isSelected ? OmilTheme.mint : .clear)
-                .frame(width: 18)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(option.name)
-                    .font(.system(size: 12, weight: isActive ? .semibold : .medium))
-                    .foregroundStyle(OmilTheme.ink)
-                    .lineLimit(1)
-                    .help(info?.description ?? option.name)
-                Text(status(for: info, isActive: isActive, isDownloading: isDownloading))
-                    .font(.system(size: 10))
-                    .foregroundStyle(needsRepair ? OmilTheme.warning : OmilTheme.muted)
-                    .lineLimit(2)
-            }
-            Spacer(minLength: 8)
-            Text(option.size)
-                .font(OmilType.utility(10))
-                .foregroundStyle(OmilTheme.faint)
-                .fixedSize()
-            if isDownloading {
-                ProgressView().controlSize(.small)
-                    .frame(width: 78)
-            } else if isSelected {
-                Text("In use")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(OmilTheme.mint)
-                    .frame(width: 78, alignment: .trailing)
-            } else if info?.downloaded == true {
-                Button("Select") {
-                    if isWhisper { controller.chooseWhisperModel(file: option.file) }
-                    else { controller.chooseLLMModel(file: option.file) }
+        let inUse = isActive && info?.downloaded == true
+        return LabeledContent {
+            HStack(spacing: 12) {
+                Text(option.size)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                if isDownloading {
+                    ProgressView().controlSize(.small)
+                } else if inUse {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(OmilTheme.mint)
+                        .help("In use")
+                } else if info?.downloaded == true {
+                    Button("Use") {
+                        if isWhisper { controller.chooseWhisperModel(file: option.file) }
+                        else { controller.chooseLLMModel(file: option.file) }
+                        ToastCenter.shared.show("Switching to \(option.name)", symbol: "arrow.triangle.2.circlepath.circle.fill")
+                    }
+                    .omilButton()
+                    .disabled(actionsLocked)
+                } else {
+                    Button(needsRepair ? "Repair" : "Download") {
+                        controller.downloadModel(file: option.file)
+                        ToastCenter.shared.show("Downloading \(option.name)", symbol: "arrow.down.circle.fill")
+                    }
+                        .omilButton()
+                        .disabled(actionsLocked || info == nil)
                 }
-                .buttonStyle(QuietButtonStyle())
-                .disabled(actionsLocked)
-                .frame(width: 78)
-            } else {
-                Button(needsRepair ? "Repair" : "Download") {
-                    controller.downloadModel(file: option.file)
+                if info?.downloaded == true && !isActive {
+                    RowAction(symbol: "trash", label: "Delete \(option.name)", role: .destructive) { requestDelete(option) }
+                        .disabled(actionsLocked)
                 }
-                .buttonStyle(QuietButtonStyle())
-                .disabled(actionsLocked || info == nil)
-                .frame(width: 78)
             }
-            if info?.downloaded == true && !isActive {
-                Button { requestDelete(option) } label: {
-                    Image(systemName: "trash")
-                        .font(.system(size: 11))
-                        .frame(width: 25, height: 25)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(OmilTheme.faint)
-                .disabled(actionsLocked)
-                .help("Delete \(option.name)")
-                .accessibilityLabel("Delete \(option.name)")
-            } else {
-                Color.clear.frame(width: 25, height: 25)
-                    .accessibilityHidden(true)
-            }
+        } label: {
+            Text(option.name)
+            Text(status(for: info, isActive: isActive, isDownloading: isDownloading))
+                .foregroundStyle(needsRepair ? OmilTheme.warning : .secondary)
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 10)
-        .background(isActive ? OmilTheme.mint.opacity(0.035) : .clear)
     }
 
-    private func status(for info: DictationController.ServerModelInfo?, isActive: Bool,
-                        isDownloading: Bool) -> String {
+    private func status(for info: DictationController.ServerModelInfo?, isActive: Bool, isDownloading: Bool) -> String {
         guard let info else { return "Checking availability" }
         if isDownloading {
             if let received = info.receivedBytes, let total = info.totalBytes, total > 0 {
@@ -2192,105 +2181,86 @@ private struct ModelLibraryCard: View {
             }
             return "Downloading"
         }
-        if info.fileState == "failed" { return info.fileError ?? "Model needs repair" }
-        if info.downloaded { return isActive ? "Selected for dictation" : "Installed and ready to select" }
+        if info.fileState == "failed" { return info.fileError ?? "Needs repair" }
+        if info.downloaded { return isActive ? "In use" : "Installed" }
         return "Available to download"
     }
 }
 
-private struct LANSharingCard: View {
+private struct LANSharingSection: View {
     @ObservedObject var controller: DictationController
     @Binding var confirmTokenRotation: Bool
     @State private var revealToken = false
     @State private var showPairingCode = false
 
     private var connectionLocked: Bool {
-        controller.phase == .recording
-            || controller.phase == .preparing
-            || controller.phase == .processing
+        controller.phase == .recording || controller.phase == .preparing || controller.phase == .processing
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 12) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 9)
-                        .fill(controller.lanSharingEnabled
-                              ? OmilTheme.mint.opacity(0.12)
-                              : OmilTheme.panelLifted)
-                    Image(systemName: controller.lanSharingEnabled ? "network" : "network.slash")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(controller.lanSharingEnabled ? OmilTheme.mint : OmilTheme.muted)
-                }
-                .frame(width: 34, height: 34)
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Share with your devices")
-                        .font(.system(size: 13, weight: .semibold))
-                    Text(controller.lanSharingEnabled
-                         ? "iPhone and iPad can use this Mac's engine"
-                         : "Only this Mac can use your speech models")
-                        .font(.system(size: 11))
-                        .foregroundStyle(OmilTheme.muted)
-                }
-                Spacer()
-                Toggle("Share on local network", isOn: Binding(
-                    get: { controller.lanSharingEnabled },
-                    set: { controller.setLANSharing($0) }
-                ))
-                .labelsHidden()
-                .toggleStyle(.switch)
-                .disabled(controller.usesCustomServer || connectionLocked)
-                .help("Allow authenticated devices on this local network to use Omil")
+        Section {
+            Toggle(isOn: Binding(
+                get: { controller.lanSharingEnabled },
+                set: { controller.setLANSharing($0) }
+            )) {
+                RowLabel(
+                    title: "Share with iPhone and iPad",
+                    subtitle: controller.usesCustomServer
+                        ? "Switch to this Mac's engine to share it."
+                        : controller.lanSharingEnabled
+                            ? "Your devices on this network can use this Mac's engine."
+                            : "Only this Mac uses your speech models.",
+                    symbol: "iphone.and.arrow.forward"
+                )
             }
+            .toggleStyle(.switch)
+            .disabled(controller.usesCustomServer || connectionLocked)
 
-            if controller.usesCustomServer {
-                Label("Switch to this Mac to share its engine.", systemImage: "info.circle")
-                    .font(.system(size: 11))
-                    .foregroundStyle(OmilTheme.muted)
-            } else if controller.lanSharingEnabled {
-                Divider().overlay(OmilTheme.line)
+            if controller.lanSharingEnabled && !controller.usesCustomServer {
                 if let credentials = controller.lanCredentials {
-                    VStack(spacing: 10) {
-                        CredentialRow(label: "ADDRESS", value: credentials.endpoint)
-                        CredentialRow(
-                            label: "TOKEN",
-                            value: revealToken ? credentials.token : String(repeating: "•", count: 24)
-                        )
+                    LabeledContent("Address") {
+                        Text(verbatim: credentials.endpoint)
+                            .font(OmilFont.mono)
+                            .textSelection(.enabled)
+                    }
+                    LabeledContent("Token") {
+                        HStack(spacing: 10) {
+                            Text(revealToken ? credentials.token : String(repeating: "•", count: 16))
+                                .font(OmilFont.mono)
+                                .textSelection(.enabled)
+                                .lineLimit(1)
+                            RowAction(symbol: revealToken ? "eye.slash" : "eye", label: revealToken ? "Hide Token" : "Show Token") {
+                                revealToken.toggle()
+                            }
+                        }
                     }
                     HStack {
-                        Label("Only share this token with devices you trust.", systemImage: "lock.shield")
-                            .font(.system(size: 11))
-                            .foregroundStyle(OmilTheme.muted)
-                        Spacer()
-                        Button(revealToken ? "Hide token" : "Show token") {
-                            revealToken.toggle()
-                        }
-                        .buttonStyle(QuietButtonStyle())
-                        Button("New token") { confirmTokenRotation = true }
-                            .buttonStyle(QuietButtonStyle())
+                        Button("New Token…") { confirmTokenRotation = true }
+                            .omilButton()
                             .disabled(connectionLocked)
-                        Button("Pair iPhone") { showPairingCode = true }
-                            .buttonStyle(QuietButtonStyle())
-                        Button("Copy setup") { controller.copyLANCredentials() }
-                            .buttonStyle(SignalButtonStyle())
+                        Spacer()
+                        Button("Copy Setup") {
+                            controller.copyLANCredentials()
+                            ToastCenter.shared.show("Connection Details Copied", symbol: "doc.on.doc.fill")
+                        }
+                            .omilButton()
+                        Button("Pair iPhone…") { showPairingCode = true }
+                            .omilButton(prominent: true)
                     }
                 } else {
-                    HStack(spacing: 9) {
+                    LabeledContent("Restarting the engine for network access") {
                         ProgressView().controlSize(.small)
-                        Text("Restarting the engine for local network access")
-                            .font(.system(size: 11))
-                            .foregroundStyle(OmilTheme.muted)
                     }
                 }
             }
+        } header: {
+            Text("Your Devices")
+        } footer: {
+            if controller.lanSharingEnabled {
+                Text("Only share the token with devices you trust.")
+                    .foregroundStyle(.secondary)
+            }
         }
-        .padding(18)
-        .background(OmilTheme.panelDeep, in: RoundedRectangle(cornerRadius: 14))
-        .overlay(
-            RoundedRectangle(cornerRadius: 14)
-                .stroke(controller.lanSharingEnabled ? OmilTheme.mint.opacity(0.35) : OmilTheme.line)
-        )
         .sheet(isPresented: $showPairingCode) {
             if let credentials = controller.lanCredentials {
                 LANPairingSheet(credentials: credentials)
@@ -2303,289 +2273,81 @@ private struct LANPairingSheet: View {
     @Environment(\.dismiss) private var dismiss
     let credentials: LANConnectionCredentials
 
-    private var code: NSImage? {
+    private let code: NSImage?
+
+    init(credentials: LANConnectionCredentials) {
+        self.credentials = credentials
+        code = Self.qrCode(for: credentials)
+    }
+
+    private static func qrCode(for credentials: LANConnectionCredentials) -> NSImage? {
         guard let url = ServerConfig(host: credentials.host, port: credentials.port, token: credentials.token).pairingURL,
               let filter = CIFilter(name: "CIQRCodeGenerator") else { return nil }
         filter.setValue(Data(url.absoluteString.utf8), forKey: "inputMessage")
         filter.setValue("M", forKey: "inputCorrectionLevel")
-        let context = CIContext()
         guard let output = filter.outputImage,
-              let cgImage = context.createCGImage(output, from: output.extent) else { return nil }
+              let cgImage = CIContext().createCGImage(output, from: output.extent) else { return nil }
         return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
     }
 
     var body: some View {
-        VStack(spacing: 16) {
-            Text("Connect your iPhone")
-                .font(OmilType.display(20))
-                .foregroundStyle(OmilTheme.ink)
-            Text("In Omil on iPhone, open Settings and tap Scan QR code.")
-                .font(.system(size: 12))
-                .foregroundStyle(OmilTheme.muted)
-            if let code {
-                Image(nsImage: code)
-                    .interpolation(.none)
-                    .resizable()
-                    .frame(width: 224, height: 224)
-                    .padding(16)
-                    .background(.white, in: RoundedRectangle(cornerRadius: 12))
-                    .accessibilityLabel("Omil server pairing QR code")
+        NavigationStack {
+            VStack(spacing: 18) {
+                if let code {
+                    Image(nsImage: code)
+                        .interpolation(.none)
+                        .resizable()
+                        .frame(width: 200, height: 200)
+                        .padding(14)
+                        .background(.white, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .accessibilityLabel("Omil server pairing QR code")
+                }
+                VStack(alignment: .leading, spacing: 10) {
+                    PairingStep(number: 1, text: "Open Omil on your iPhone.")
+                    PairingStep(number: 2, text: "Go to Settings → Your Mac and tap Scan QR Code.")
+                    PairingStep(number: 3, text: "Point the camera at this code.")
+                }
+                .frame(maxWidth: 280, alignment: .leading)
+                Label("This code includes your connection token. Only show it to devices you trust.", systemImage: "lock.fill")
+                    .font(OmilFont.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 300)
+                Text(verbatim: credentials.endpoint)
+                    .font(OmilFont.mono)
+                    .foregroundStyle(.tertiary)
+                    .textSelection(.enabled)
             }
-            Text(verbatim: credentials.endpoint)
-                .font(OmilType.utility(11))
-                .foregroundStyle(OmilTheme.faint)
-            Text("This code contains your server token. Show it only to devices you trust.")
-                .font(.system(size: 11))
-                .foregroundStyle(OmilTheme.muted)
-            Button("Done") { dismiss() }
-                .buttonStyle(QuietButtonStyle())
-                .keyboardShortcut(.defaultAction)
+            .padding(28)
+            .navigationTitle("Pair iPhone")
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                        .keyboardShortcut(.defaultAction)
+                }
+            }
         }
-        .padding(28)
-        .frame(width: 340)
+        .frame(width: 400)
         .omilAppearance()
     }
 }
 
-private struct CredentialRow: View {
-    let label: String
-    let value: String
+private struct PairingStep: View {
+    let number: Int
+    let text: String
 
     var body: some View {
-        HStack(spacing: 14) {
-            Text(label)
-                .font(OmilType.utility(9, weight: .bold))
-                .tracking(0.8)
-                .foregroundStyle(OmilTheme.faint)
-                .frame(width: 58, alignment: .leading)
-            Text(value)
-                .font(.system(size: 11, design: .monospaced))
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Text("\(number)")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(OmilTheme.signalInk)
+                .frame(width: 20, height: 20)
+                .background(OmilTheme.signal, in: Circle())
+            Text(text)
+                .font(OmilFont.body)
                 .foregroundStyle(OmilTheme.ink)
-                .lineLimit(1)
-                .textSelection(.enabled)
-            Spacer()
+                .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(.horizontal, 12)
-        .frame(height: 38)
-        .background(OmilTheme.canvas, in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(OmilTheme.line))
-    }
-}
-
-private struct EngineStatusBar: View {
-    @ObservedObject var controller: DictationController
-
-    private var healthy: Bool { controller.serverIsReady }
-    private var preparing: Bool {
-        controller.modelsPreparing
-            || !controller.downloadingModelIDs.isEmpty
-            || controller.serverHealth.localizedCaseInsensitiveContains("starting")
-            || controller.serverHealth.localizedCaseInsensitiveContains("restarting")
-    }
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Circle()
-                .fill(healthy ? OmilTheme.mint : preparing ? OmilTheme.signal : OmilTheme.warning)
-                .frame(width: 8, height: 8)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(healthy ? "Ready for dictation" : preparing ? "Preparing models" : "Setup needed")
-                    .font(.system(size: 14, weight: .semibold))
-                Text(controller.speechSetupSummary)
-                    .font(.system(size: 11))
-                    .foregroundStyle(OmilTheme.muted)
-            }
-            Spacer()
-            if ["loading", "ready", "inUse", "unloading"].contains(controller.selectedLLMMemoryState) {
-                Button(controller.selectedLLMMemoryState == "inUse" ? "Release after use" : "Free memory") {
-                    controller.unloadModels()
-                }
-                .buttonStyle(QuietButtonStyle())
-                .disabled(controller.selectedLLMMemoryState == "unloading")
-            }
-            if !controller.usesCustomServer {
-                Button("Restart") { controller.restartManagedServer() }
-                    .buttonStyle(QuietButtonStyle())
-            }
-            if controller.modelIsDownloaded(file: controller.llmFile) == true {
-                Button(controller.reloadingLLM ? "Reloading…" : "Reload cleanup") {
-                    controller.reloadCleanupModel()
-                }
-                .buttonStyle(QuietButtonStyle())
-                .disabled(controller.reloadingLLM || !controller.processingJobs.isEmpty ||
-                          !controller.downloadingModelIDs.isEmpty)
-                .help("Restart the selected cleanup model on the server")
-            }
-            Button("Check now") { Task { await controller.refreshServerHealth() } }
-                .buttonStyle(QuietButtonStyle())
-        }
-        .padding(.horizontal, 4)
-        .padding(.vertical, 2)
-    }
-}
-
-private struct ModelPipelineRow: View {
-    let stage: String
-    let detail: String
-    let icon: String
-    @Binding var selection: String
-    let activeFile: String
-    let options: [ModelOption]
-    let downloaded: Bool?
-    let fileState: String?
-    let receivedBytes: Int?
-    let totalBytes: Int?
-    let memoryState: String?
-    let downloading: Bool
-    let interactionDisabled: Bool
-    let download: () -> Void
-
-    private var selectedOption: ModelOption? {
-        options.first(where: { $0.file == selection })
-    }
-
-    private var downloadPercent: Int? {
-        guard let receivedBytes, let totalBytes, totalBytes > 0 else { return nil }
-        return min(100, max(0, Int((Double(receivedBytes) / Double(totalBytes)) * 100)))
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 14) {
-                PipelineNode(icon: icon, ready: downloaded == true)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(stage)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(OmilTheme.ink)
-                    Text(detail)
-                        .font(.system(size: 11))
-                        .foregroundStyle(OmilTheme.muted)
-                }
-                Spacer(minLength: 12)
-                Text(selectedOption?.size ?? "")
-                    .font(OmilType.utility(10, weight: .medium))
-                    .foregroundStyle(OmilTheme.muted)
-            }
-            HStack(spacing: 14) {
-                OmilPickerField(
-                    title: stage + " model",
-                    selection: $selection,
-                    options: options.map(\.file),
-                    label: { file in options.first(where: { $0.file == file })?.name ?? file },
-                    markedSelection: activeFile
-                )
-                .disabled(interactionDisabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-                HStack(spacing: 7) {
-                    if fileState == "downloading" || downloading {
-                        ProgressView()
-                            .controlSize(.small)
-                        Text(downloadPercent.map { "\($0)%" } ?? "Downloading")
-                            .foregroundStyle(OmilTheme.muted)
-                    } else if fileState == "verifying" {
-                        ProgressView()
-                            .controlSize(.small)
-                        Text("Verifying")
-                            .foregroundStyle(OmilTheme.muted)
-                    } else if fileState == "checking" {
-                        ProgressView()
-                            .controlSize(.small)
-                        Text("Checking")
-                            .foregroundStyle(OmilTheme.muted)
-                    } else if downloaded == true {
-                        memoryStatus
-                    } else if fileState == "failed" {
-                        Button("Repair", action: download)
-                            .buttonStyle(SignalButtonStyle())
-                            .disabled(interactionDisabled)
-                    } else if downloaded == false {
-                        Button("Download", action: download)
-                            .buttonStyle(SignalButtonStyle())
-                            .disabled(interactionDisabled)
-                    } else {
-                        ProgressView()
-                            .controlSize(.small)
-                        Text("Checking")
-                            .foregroundStyle(OmilTheme.muted)
-                    }
-                }
-                .font(.system(size: 11, weight: .medium))
-                .frame(width: 124, alignment: .trailing)
-                .frame(minHeight: 34)
-            }
-            .padding(.leading, 48)
-            if selection != activeFile {
-                Text("Current: \(options.first(where: { $0.file == activeFile })?.name ?? activeFile)")
-                    .font(.system(size: 10))
-                    .foregroundStyle(OmilTheme.muted)
-                    .padding(.leading, 48)
-            }
-        }
-        .padding(16)
-    }
-
-    @ViewBuilder
-    private var memoryStatus: some View {
-        switch memoryState {
-        case "loading":
-            ProgressView().controlSize(.small)
-            Text("Loading").foregroundStyle(OmilTheme.muted)
-        case "ready":
-            Circle().fill(OmilTheme.mint).frame(width: 7, height: 7)
-            Text("Loaded").foregroundStyle(OmilTheme.muted)
-        case "inUse":
-            Circle().fill(OmilTheme.signal).frame(width: 7, height: 7)
-            Text("In use").foregroundStyle(OmilTheme.muted)
-        case "unloading":
-            ProgressView().controlSize(.small)
-            Text("Releasing").foregroundStyle(OmilTheme.muted)
-        case "failed":
-            Image(systemName: "exclamationmark.circle.fill").foregroundStyle(OmilTheme.warning)
-            Text("Load failed").foregroundStyle(OmilTheme.muted)
-        default:
-            Image(systemName: "checkmark.circle.fill").foregroundStyle(OmilTheme.mint)
-            Text("On demand").foregroundStyle(OmilTheme.muted)
-        }
-    }
-}
-
-private struct PipelineNode: View {
-    let icon: String
-    let ready: Bool
-
-    var body: some View {
-        Image(systemName: icon)
-            .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(ready ? OmilTheme.mint : OmilTheme.muted)
-            .frame(width: 34, height: 34)
-            .background(OmilTheme.line, in: RoundedRectangle(cornerRadius: 9))
-            .accessibilityHidden(true)
-    }
-}
-
-// MARK: - Reusable pieces
-
-private struct PageHeader<Accessory: View>: View {
-    let title: String
-    let detail: String
-    @ViewBuilder let accessory: () -> Accessory
-
-    var body: some View {
-        HStack(alignment: .bottom) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title)
-                    .font(OmilType.display(28))
-                Text(detail)
-                    .font(.system(size: 13))
-                    .foregroundStyle(OmilTheme.muted)
-            }
-            Spacer()
-            accessory()
-        }
-        .padding(.horizontal, 30)
-        .padding(.top, 28)
-        .padding(.bottom, 22)
     }
 }
 
@@ -2595,39 +2357,14 @@ private struct EmptyState: View {
     let detail: String
 
     var body: some View {
-        VStack(spacing: 11) {
-            Image(systemName: icon)
-                .font(.system(size: 28, weight: .medium))
-                .foregroundStyle(OmilTheme.signal)
-            Text(title)
-                .font(OmilType.display(18))
+        ContentUnavailableView {
+            Label(title, systemImage: icon)
+                .symbolRenderingMode(.hierarchical)
+        } description: {
             Text(detail)
-                .font(.system(size: 12))
-                .foregroundStyle(OmilTheme.muted)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 360)
         }
+        .foregroundStyle(OmilTheme.muted)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(40)
-    }
-}
-
-private struct LabeledField: View {
-    let label: String
-    let placeholder: String
-    @Binding var text: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Text(label)
-                .font(OmilType.utility(9, weight: .bold))
-                .tracking(0.8)
-                .foregroundStyle(OmilTheme.faint)
-            TextField(placeholder, text: $text)
-                .accessibilityLabel(label)
-                .textFieldStyle(OmilTextFieldStyle())
-        }
-        .frame(maxWidth: .infinity)
     }
 }
 
@@ -2636,16 +2373,18 @@ private struct StatusLabel: View {
     let environmentReady: Bool
 
     var body: some View {
-        HStack(spacing: 7) {
+        HStack(spacing: 6) {
             Circle()
                 .fill(color)
-                .frame(width: 7, height: 7)
-                .shadow(color: color.opacity(0.6), radius: 4)
+                .frame(width: 6, height: 6)
             Text(label)
-                .font(OmilType.utility(9, weight: .bold))
-                .tracking(1)
+                .font(OmilFont.caption.weight(.medium))
                 .foregroundStyle(OmilTheme.muted)
         }
+        .padding(.horizontal, 11)
+        .frame(height: 24)
+        .liquidGlass(in: Capsule())
+        .animation(OmilMotion.quick, value: label)
     }
 
     private var label: String {
@@ -2680,8 +2419,45 @@ private struct ModePicker: View {
         }
         .pickerStyle(.segmented)
         .labelsHidden()
-        .frame(width: 160)
-        .controlSize(.small)
+        .fixedSize()
+        .help("Clean removes filler words. Verbatim keeps every spoken word.")
+    }
+}
+
+/// A glass segmented control with a sliding thumb.
+struct SegmentedTabs<Value: Hashable>: View {
+    let options: [Value]
+    @Binding var selection: Value
+    let label: (Value) -> String
+    @Namespace private var thumb
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(options, id: \.self) { option in
+                let selected = selection == option
+                Button {
+                    withAnimation(OmilMotion.standard) { selection = option }
+                } label: {
+                    Text(label(option))
+                        .font(.system(size: 12, weight: selected ? .semibold : .medium))
+                        .foregroundStyle(selected ? OmilTheme.ink : OmilTheme.muted)
+                        .padding(.horizontal, 12)
+                        .frame(height: 26)
+                        .background {
+                            if selected {
+                                Capsule()
+                                    .fill(OmilTheme.ink.opacity(GlassLook.isDark ? 0.14 : 0.09))
+                                    .matchedGeometryEffect(id: "thumb", in: thumb)
+                            }
+                        }
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(selected ? .isSelected : [])
+            }
+        }
+        .padding(3)
+        .liquidGlass(in: Capsule())
     }
 }
 
@@ -2692,21 +2468,22 @@ private struct ProcessingTrack: View {
         HStack(spacing: 10) {
             ForEach(DictationController.ProcessingStage.allCases.filter { $0 != .queued }, id: \.rawValue) { item in
                 if item != .transcribing {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 8, weight: .bold))
-                        .foregroundStyle(OmilTheme.faint)
+                    Capsule()
+                        .fill(item.rawValue <= stage.rawValue ? OmilTheme.signal : OmilTheme.lineStrong)
+                        .frame(width: 18, height: 2)
                 }
-                HStack(spacing: 6) {
+                HStack(spacing: 5) {
                     Image(systemName: item.rawValue < stage.rawValue ? "checkmark.circle.fill" : item.icon)
-                        .font(.system(size: 11, weight: .semibold))
+                        .font(OmilFont.caption.weight(.semibold))
                         .foregroundStyle(item.rawValue <= stage.rawValue ? OmilTheme.signal : OmilTheme.faint)
                     Text(item.title)
-                        .font(.system(size: 11, weight: item == stage ? .semibold : .medium))
+                        .font(.system(size: 12, weight: item == stage ? .semibold : .regular))
                         .foregroundStyle(item == stage ? OmilTheme.ink : OmilTheme.muted)
                 }
-                .opacity(item.rawValue <= stage.rawValue ? 1 : 0.55)
+                .opacity(item.rawValue <= stage.rawValue ? 1 : 0.6)
             }
         }
+        .animation(OmilMotion.standard, value: stage)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Processing: \(stage.title)")
     }
@@ -2716,19 +2493,19 @@ struct LiveSignalRail: View {
     @ObservedObject var meter: AudioMeter
 
     var body: some View {
-        SignalRail(levels: meter.levels, active: true)
+        SignalRail(levels: meter.levels)
     }
 }
 
 struct SignalRail: View {
     let levels: [Double]
-    let active: Bool
 
     var body: some View {
-        Canvas { context, size in
+        let ink = OmilTheme.ink
+        return Canvas { context, size in
             let visible = levels.suffix(36)
             guard !visible.isEmpty else { return }
-            let spacing: CGFloat = 4
+            let spacing: CGFloat = 3
             let width = max(1, (size.width - CGFloat(visible.count - 1) * spacing) / CGFloat(visible.count))
             for (index, level) in visible.enumerated() {
                 let height = barHeight(level: level, available: size.height)
@@ -2736,7 +2513,7 @@ struct SignalRail: View {
                                   y: (size.height - height) / 2,
                                   width: width, height: height)
                 context.fill(Path(roundedRect: rect, cornerRadius: min(width, height) / 2),
-                             with: .color(barColor(level: level)))
+                             with: .color(ink.opacity(0.35 + min(1, max(0, level)) * 0.6)))
             }
         }
         .accessibilityHidden(true)
@@ -2747,10 +2524,6 @@ struct SignalRail: View {
         return max(3, 3 + available * 0.9 * value)
     }
 
-    private func barColor(level: Double) -> Color {
-        guard active else { return OmilTheme.lineStrong }
-        return OmilTheme.signal.opacity(0.42 + min(1, max(0, level)) * 0.58)
-    }
 }
 
 private struct KeyCap: View {
@@ -2758,29 +2531,86 @@ private struct KeyCap: View {
 
     var body: some View {
         Text(text)
-            .font(OmilType.utility(9, weight: .bold))
+            .font(OmilFont.caption.weight(.medium))
             .foregroundStyle(OmilTheme.ink)
-            .padding(.horizontal, 9)
-            .frame(height: 23)
-            .background(OmilTheme.panelLifted, in: RoundedRectangle(cornerRadius: 6))
-            .overlay(RoundedRectangle(cornerRadius: 6).stroke(OmilTheme.lineStrong))
+            .lineLimit(1)
+            .fixedSize()
+            .padding(.horizontal, 7)
+            .frame(minWidth: 22)
+            .frame(height: 22)
+            .background(OmilTheme.panelLifted, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+            .overlay(alignment: .bottom) {
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .stroke(OmilTheme.lineStrong, lineWidth: 1)
+            }
     }
 }
 
-private struct EngineStatusRow: View {
+/// Observes the controller directly so the notice appears and disappears live.
+private struct SidebarEngineNotice: View {
     @ObservedObject var controller: DictationController
-
-    private var healthy: Bool { controller.serverIsReady }
+    let action: () -> Void
 
     var body: some View {
-        HStack(spacing: 9) {
-            Circle().fill(healthy ? OmilTheme.mint : OmilTheme.warning).frame(width: 7, height: 7)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(healthy ? "Ready to transcribe" : "Check speech setup")
-                    .font(.system(size: 11, weight: .semibold))
+        Group {
+            if !controller.serverIsReady {
+                EngineStatusRow(controller: controller, action: action)
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 10)
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
-            Spacer()
         }
+        .animation(OmilMotion.standard, value: controller.serverIsReady)
+    }
+}
+
+/// Sidebar engine notice. Silent when healthy; a quiet "Starting" while models
+/// warm up; a warning only when something actually needs the user.
+private struct EngineStatusRow: View {
+    @ObservedObject var controller: DictationController
+    let action: () -> Void
+
+    private var starting: Bool {
+        controller.modelsPreparing
+            || !controller.downloadingModelIDs.isEmpty
+            || controller.serverHealth.localizedCaseInsensitiveContains("starting")
+            || controller.serverHealth.localizedCaseInsensitiveContains("restarting")
+            || controller.serverHealth.isEmpty
+    }
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                if starting {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .symbolRenderingMode(.hierarchical)
+                        .foregroundStyle(OmilTheme.warning)
+                }
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(starting ? "Starting Engine…" : "Engine Not Ready")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(OmilTheme.ink)
+                    Text(starting ? "Speech models are loading" : "Open Engine to fix")
+                        .font(OmilFont.caption)
+                        .foregroundStyle(OmilTheme.muted)
+                }
+                Spacer(minLength: 0)
+                if !starting {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(OmilTheme.muted)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background((starting ? OmilTheme.ink.opacity(0.05) : OmilTheme.warning.opacity(0.1)),
+                        in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Open Engine")
     }
 }
 
@@ -2806,128 +2636,35 @@ private struct IconAction: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: icon)
-                .frame(width: 27, height: 25)
         }
-        .buttonStyle(.plain)
-        .foregroundStyle(disabled ? OmilTheme.faint.opacity(0.5) : OmilTheme.muted)
+        .buttonStyle(IconButtonStyle())
         .disabled(disabled)
         .help(label)
         .accessibilityLabel(label)
     }
 }
 
-struct SignalButtonStyle: ButtonStyle {
-    @Environment(\.isEnabled) private var isEnabled
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.system(size: 12, weight: .semibold))
-            .foregroundStyle(OmilTheme.signalInk)
-            .padding(.horizontal, 15)
-            .frame(height: 34)
-            .background(OmilTheme.signal.opacity(configuration.isPressed ? 0.75 : 1), in: RoundedRectangle(cornerRadius: 9))
-            .opacity(isEnabled ? 1 : 0.4)
-    }
-}
-
-struct QuietButtonStyle: ButtonStyle {
-    @Environment(\.isEnabled) private var isEnabled
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(OmilTheme.ink)
-            .padding(.horizontal, 11)
-            .frame(height: 29)
-            .background(OmilTheme.panelLifted.opacity(configuration.isPressed ? 0.65 : 1), in: RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(OmilTheme.lineStrong))
-            .opacity(isEnabled ? 1 : 0.4)
-    }
-}
-
+/// Native menu picker; the system control reads as more trustworthy than a custom popover.
 struct OmilPickerField<Value: Hashable>: View {
     let title: String
     @Binding var selection: Value
     let options: [Value]
     let label: (Value) -> String
-    var markedSelection: Value? = nil
-    @State private var isPresented = false
-    @State private var attachmentPoint = UnitPoint(x: 0.5, y: 1)
-    @State private var pointerTapPending = false
 
     var body: some View {
-        GeometryReader { geometry in
-        Button {
-            // A keyboard press has no pointer location. The mouse gesture below
-            // updates the anchor before the deferred presentation runs.
-            DispatchQueue.main.async {
-                if !pointerTapPending {
-                    attachmentPoint = UnitPoint(x: 0.5, y: 1)
-                }
-                pointerTapPending = false
-                isPresented = true
+        Picker(title, selection: $selection) {
+            ForEach(options, id: \.self) { option in
+                Text(label(option)).tag(option)
             }
-        } label: {
-            HStack(spacing: 10) {
-                Text(label(selection))
-                    .lineLimit(1)
-                Spacer(minLength: 0)
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.system(size: 10, weight: .semibold))
-            }
-            .font(.system(size: 12, weight: .medium))
-            .foregroundStyle(OmilTheme.ink)
-            .padding(.horizontal, 11)
-            .frame(maxWidth: .infinity)
-            .frame(height: 32)
-            .background(OmilTheme.panelDeep, in: RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(OmilTheme.lineStrong))
         }
-        .buttonStyle(.plain)
-        .simultaneousGesture(SpatialTapGesture().onEnded { value in
-            let x = min(max(value.location.x / max(geometry.size.width, 1), 0), 1)
-            pointerTapPending = true
-            attachmentPoint = UnitPoint(x: x, y: 1)
-        })
-        .popover(isPresented: $isPresented, attachmentAnchor: .point(attachmentPoint), arrowEdge: .bottom) {
-            VStack(spacing: 2) {
-                ForEach(options, id: \.self) { option in
-                    Button {
-                        selection = option
-                        isPresented = false
-                    } label: {
-                        HStack(spacing: 12) {
-                            Text(label(option))
-                            Spacer(minLength: 12)
-                            if option == (markedSelection ?? selection) {
-                                Image(systemName: "checkmark")
-                                    .foregroundStyle(OmilTheme.signal)
-                            }
-                        }
-                        .font(.system(size: 12, weight: option == (markedSelection ?? selection) ? .semibold : .medium))
-                        .foregroundStyle(OmilTheme.ink)
-                        .padding(.horizontal, 11)
-                        .frame(height: 32)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(option == (markedSelection ?? selection) ? OmilTheme.panelLifted : .clear,
-                                    in: RoundedRectangle(cornerRadius: 7))
-                    }
-                    .buttonStyle(HoverButtonStyle(cornerRadius: 7))
-                }
-            }
-            .padding(7)
-            .frame(minWidth: 190)
-            .background(OmilTheme.panel, in: RoundedRectangle(cornerRadius: 11))
-            .overlay(RoundedRectangle(cornerRadius: 11).stroke(OmilTheme.lineStrong))
-            .shadow(color: .black.opacity(0.16), radius: 12, y: 5)
-        }
+        .pickerStyle(.menu)
+        .labelsHidden()
         .accessibilityLabel(title)
-        .accessibilityValue(label(selection))
-        }
-        .frame(height: 32)
     }
 }
 
 struct HoverButtonStyle: ButtonStyle {
-    var cornerRadius: CGFloat = 8
+    var cornerRadius: CGFloat = OmilRadius.control
 
     func makeBody(configuration: Configuration) -> some View {
         HoverButtonBody(configuration: configuration, cornerRadius: cornerRadius)
@@ -2943,219 +2680,40 @@ private struct HoverButtonBody: View {
     var body: some View {
         configuration.label
             .background(
-                isEnabled && (hovered || configuration.isPressed) ? OmilTheme.panelLifted : .clear,
-                in: RoundedRectangle(cornerRadius: cornerRadius)
+                isEnabled && (hovered || configuration.isPressed) ? OmilTheme.panelLifted.opacity(0.8) : .clear,
+                in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
             )
-            .contentShape(RoundedRectangle(cornerRadius: cornerRadius))
-            .opacity(isEnabled ? (configuration.isPressed ? 0.75 : 1) : 0.4)
+            .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .opacity(isEnabled ? (configuration.isPressed ? 0.8 : 1) : 0.4)
             .onHover { hovered = $0 }
+            .animation(OmilMotion.quick, value: hovered)
     }
 }
 
-private struct SidebarButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        SidebarButtonBody(configuration: configuration)
-    }
-}
-
-private struct SidebarButtonBody: View {
-    let configuration: ButtonStyleConfiguration
-    @State private var hovered = false
-
-    var body: some View {
-        configuration.label
-            .font(.system(size: 12, weight: .medium))
-            .foregroundStyle(hovered ? OmilTheme.ink : OmilTheme.muted)
-            .padding(.horizontal, 9)
-            .frame(height: 34)
-            .background(hovered || configuration.isPressed ? OmilTheme.panelLifted : .clear,
-                        in: RoundedRectangle(cornerRadius: 8))
-            .contentShape(RoundedRectangle(cornerRadius: 8))
-            .opacity(configuration.isPressed ? 0.8 : 1)
-            .onHover { hovered = $0 }
-    }
-}
-
-private struct SegmentButtonStyle: ButtonStyle {
-    let selected: Bool
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.system(size: 11, weight: selected ? .semibold : .medium))
-            .foregroundStyle(selected ? OmilTheme.ink : OmilTheme.muted)
-            .padding(.horizontal, 11)
-            .frame(height: 28)
-            .background(selected ? OmilTheme.panelLifted : .clear, in: RoundedRectangle(cornerRadius: 7))
-            .opacity(configuration.isPressed ? 0.7 : 1)
-    }
-}
-
-struct OmilTextFieldStyle: TextFieldStyle {
-    func _body(configuration: TextField<Self._Label>) -> some View {
-        let canvas = MainActor.assumeIsolated { OmilTheme.canvas }
-        let lineStrong = MainActor.assumeIsolated { OmilTheme.lineStrong }
-        return configuration
-            .textFieldStyle(.plain)
-            .font(.system(size: 13))
-            .padding(.horizontal, 11)
-            .frame(height: 36)
-            .background(canvas, in: RoundedRectangle(cornerRadius: 9))
-            .overlay(RoundedRectangle(cornerRadius: 9).stroke(lineStrong))
-    }
-}
-
-enum OmilType {
-    static func display(_ size: CGFloat) -> Font {
-        .system(size: size, weight: .semibold, design: .default)
-    }
-
-    static func utility(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
-        .system(size: size, weight: weight, design: .monospaced)
-    }
-}
-
+/// Mac-side access to the active palette. Views read these statics; the
+/// window tree is rebuilt when the preset or color scheme changes.
 @MainActor
 enum OmilTheme {
-    private static var palette: ThemePalette {
-        AppAppearance.shared.themePreset.palette(for: AppAppearance.shared.colorScheme)
-    }
+    private static var palette: ThemePalette { AppAppearance.shared.palette }
 
-    static var canvas: Color { Color(hex: palette.canvas) }
-    static var sidebar: Color { Color(hex: palette.sidebar) }
-    static var panel: Color { Color(hex: palette.panel) }
-    static var panelDeep: Color { Color(hex: palette.panelDeep) }
-    static var panelLifted: Color { Color(hex: palette.panelLifted) }
-    static var line: Color { Color(hex: palette.line) }
-    static var lineStrong: Color { Color(hex: palette.lineStrong) }
+    private static var dark: Bool { AppAppearance.shared.colorScheme == .dark }
+
+    // Translucent surfaces so they read over the blurred window backdrop.
+    static var panel: Color { Color(hex: palette.panel).opacity(dark ? 0.5 : 0.62) }
+    static var panelDeep: Color { ink.opacity(dark ? 0.05 : 0.035) }
+    static var panelLifted: Color { ink.opacity(dark ? 0.09 : 0.06) }
+    static var line: Color { ink.opacity(dark ? 0.09 : 0.08) }
+    static var lineStrong: Color { ink.opacity(dark ? 0.16 : 0.14) }
     static var ink: Color { Color(hex: palette.ink) }
     static var muted: Color { Color(hex: palette.muted) }
     static var faint: Color { Color(hex: palette.faint) }
     static var signal: Color { Color(hex: palette.signal) }
     static var signalInk: Color { Color(hex: palette.signalInk) }
-    static var violet: Color { signal }
-    static var coral: Color { adaptive(light: 0xB8474F, dark: 0xDB6469) }
-    static var mint: Color { adaptive(light: 0x287A59, dark: 0x72B392) }
-    static var warning: Color { adaptive(light: 0x94651E, dark: 0xD1A15A) }
-
-    private static func adaptive(light: UInt, dark: UInt) -> Color {
-        Color(hex: AppAppearance.shared.colorScheme == .dark ? dark : light)
-    }
-}
-
-struct ThemePalette {
-    let canvas: UInt
-    let sidebar: UInt
-    let panel: UInt
-    let panelDeep: UInt
-    let panelLifted: UInt
-    let line: UInt
-    let lineStrong: UInt
-    let ink: UInt
-    let muted: UInt
-    let faint: UInt
-    let signal: UInt
-    let signalInk: UInt
-}
-
-extension ThemePreset {
-    func palette(for scheme: ColorScheme) -> ThemePalette {
-        switch (self, scheme) {
-        case (.studio, .light):
-            return ThemePalette(canvas: 0xF5F5F3, sidebar: 0xECECEA, panel: 0xFFFFFF,
-                                panelDeep: 0xF0F0EE, panelLifted: 0xE7E7E4, line: 0xDDDDDA,
-                                lineStrong: 0xC6C6C2, ink: 0x1C1D1F, muted: 0x626367,
-                                faint: 0x6E7075, signal: 0x25272B, signalInk: 0xFFFFFF)
-        case (.studio, .dark):
-            return ThemePalette(canvas: 0x000000, sidebar: 0x050505, panel: 0x0A0A0A,
-                                panelDeep: 0x050505, panelLifted: 0x171717, line: 0x242424,
-                                lineStrong: 0x333333, ink: 0xEDEDED, muted: 0xA1A1A1,
-                                faint: 0x949494, signal: 0xEDEDED, signalInk: 0x17181A)
-        case (.fog, .light):
-            return ThemePalette(canvas: 0xF4F5F6, sidebar: 0xEAEDEF, panel: 0xFFFFFF,
-                                panelDeep: 0xF0F2F3, panelLifted: 0xE4E8EA, line: 0xD8DEE1,
-                                lineStrong: 0xB8C2C7, ink: 0x242A2E, muted: 0x566168,
-                                faint: 0x657077, signal: 0x3E5D6A, signalInk: 0xFFFFFF)
-        case (.fog, .dark):
-            return ThemePalette(canvas: 0x1B1E21, sidebar: 0x202428, panel: 0x262B2F,
-                                panelDeep: 0x21262A, panelLifted: 0x323A3F, line: 0x394248,
-                                lineStrong: 0x526069, ink: 0xF1F4F5, muted: 0xB5C0C5,
-                                faint: 0x9FADB3, signal: 0xA6D2DC, signalInk: 0x193039)
-        case (.slate, .light):
-            return ThemePalette(canvas: 0xF2F4F7, sidebar: 0xE7EBF1, panel: 0xFCFDFE,
-                                panelDeep: 0xEBEFF4, panelLifted: 0xDEE5EE, line: 0xD2DBE5,
-                                lineStrong: 0xB6C3D1, ink: 0x293443, muted: 0x5B6878,
-                                faint: 0x687587, signal: 0x4C617E, signalInk: 0xFFFFFF)
-        case (.slate, .dark):
-            return ThemePalette(canvas: 0x14171C, sidebar: 0x191E25, panel: 0x202731,
-                                panelDeep: 0x1A212A, panelLifted: 0x2C3743, line: 0x34414F,
-                                lineStrong: 0x4D6074, ink: 0xF0F4F8, muted: 0xB2BFCE,
-                                faint: 0x9AABBD, signal: 0xA4BEFF, signalInk: 0x18253E)
-        case (.linen, .light):
-            return ThemePalette(canvas: 0xF8F6F1, sidebar: 0xF0EDE6, panel: 0xFFFEFB,
-                                panelDeep: 0xF3F0E9, panelLifted: 0xEAE5DA, line: 0xDDD7CB,
-                                lineStrong: 0xC6BBAA, ink: 0x342F2A, muted: 0x696057,
-                                faint: 0x746B61, signal: 0x765D48, signalInk: 0xFFFFFF)
-        case (.linen, .dark):
-            return ThemePalette(canvas: 0x191817, sidebar: 0x201F1D, panel: 0x272522,
-                                panelDeep: 0x22201E, panelLifted: 0x35312C, line: 0x3F3A34,
-                                lineStrong: 0x5D554B, ink: 0xF5F1EB, muted: 0xC5BCB0,
-                                faint: 0xAEA396, signal: 0xE7BC8F, signalInk: 0x352516)
-        case (.tide, .light):
-            return ThemePalette(canvas: 0xF0F6F5, sidebar: 0xE5EFED, panel: 0xFCFFFE,
-                                panelDeep: 0xEAF3F1, panelLifted: 0xDDEBE8, line: 0xD1E1DE,
-                                lineStrong: 0xB0CBC5, ink: 0x263A3B, muted: 0x586D6D,
-                                faint: 0x657979, signal: 0x376E70, signalInk: 0xFFFFFF)
-        case (.tide, .dark):
-            return ThemePalette(canvas: 0x141B1D, sidebar: 0x1A2325, panel: 0x202C2F,
-                                panelDeep: 0x1B2528, panelLifted: 0x2C3B3E, line: 0x35474A,
-                                lineStrong: 0x4C6768, ink: 0xEDF5F3, muted: 0xB3CBC8,
-                                faint: 0x9AB7B3, signal: 0x8DDAD2, signalInk: 0x163734)
-        case (.clay, .light):
-            return ThemePalette(canvas: 0xF8F4F3, sidebar: 0xF1EAE8, panel: 0xFFFEFD,
-                                panelDeep: 0xF5EEEC, panelLifted: 0xEDE1DF, line: 0xE1D3D0,
-                                lineStrong: 0xCAB5B0, ink: 0x3D3032, muted: 0x705F62,
-                                faint: 0x7A696B, signal: 0x895A64, signalInk: 0xFFFFFF)
-        case (.clay, .dark):
-            return ThemePalette(canvas: 0x19171A, sidebar: 0x201D21, panel: 0x282329,
-                                panelDeep: 0x221E23, panelLifted: 0x352E35, line: 0x40363F,
-                                lineStrong: 0x604E59, ink: 0xF7F0F2, muted: 0xCEBCC4,
-                                faint: 0xB9A4AE, signal: 0xF0A9BE, signalInk: 0x3B1D2B)
-        case (.lilac, .light):
-            return ThemePalette(canvas: 0xF6F4F8, sidebar: 0xEEEBF2, panel: 0xFFFEFF,
-                                panelDeep: 0xF1EEF5, panelLifted: 0xE7E1EC, line: 0xDBD4E2,
-                                lineStrong: 0xC1B5CC, ink: 0x342F3C, muted: 0x665F70,
-                                faint: 0x746C7D, signal: 0x6C5B80, signalInk: 0xFFFFFF)
-        case (.lilac, .dark):
-            return ThemePalette(canvas: 0x17161C, sidebar: 0x1D1B23, panel: 0x25222D,
-                                panelDeep: 0x1F1D26, panelLifted: 0x322E3D, line: 0x3D374A,
-                                lineStrong: 0x5A4E6A, ink: 0xF5F1F8, muted: 0xC9BFD4,
-                                faint: 0xB2A4C3, signal: 0xCDB2FF, signalInk: 0x2A1944)
-        case (.moss, .light):
-            return ThemePalette(canvas: 0xF3F6F2, sidebar: 0xE9EFE7, panel: 0xFDFFFC,
-                                panelDeep: 0xEEF3EC, panelLifted: 0xE0EADD, line: 0xD3E0D0,
-                                lineStrong: 0xB6C9B2, ink: 0x2B392F, muted: 0x5E7061,
-                                faint: 0x6A7C6D, signal: 0x4D7154, signalInk: 0xFFFFFF)
-        case (.moss, .dark):
-            return ThemePalette(canvas: 0x151A17, sidebar: 0x1B221E, panel: 0x232C26,
-                                panelDeep: 0x1D251F, panelLifted: 0x303C33, line: 0x39483D,
-                                lineStrong: 0x536958, ink: 0xF0F6F0, muted: 0xBCD0C0,
-                                faint: 0xA3BBA8, signal: 0xA9DDB3, signalInk: 0x1D3925)
-        @unknown default:
-            return ThemePreset.studio.palette(for: .light)
-        }
-    }
-}
-
-extension Color {
-    init(hex: UInt, alpha: Double = 1) {
-        self.init(
-            .sRGB,
-            red: Double((hex >> 16) & 0xFF) / 255,
-            green: Double((hex >> 8) & 0xFF) / 255,
-            blue: Double(hex & 0xFF) / 255,
-            opacity: alpha
-        )
-    }
+    /// Fill for grouped content, matching Form's grouped sections.
+    static var groupFill: Color { ink.opacity(dark ? 0.07 : 0.045) }
+    static var coral: Color { Color(hex: palette.recording) }
+    static var mint: Color { Color(hex: palette.success) }
+    static var warning: Color { Color(hex: palette.warning) }
 }
 
 extension NSColor {

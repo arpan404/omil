@@ -13,30 +13,46 @@ struct LANConnectionCredentials: Equatable {
     }
 }
 
+/// The server's API port plus its two model sidecars, allocated as a block.
 struct LocalServerPorts: Equatable {
     let api: Int
-    let llama: Int
+    var llama: Int { api + 1 }
+    var whisper: Int { api + 2 }
 }
 
 enum LocalPortPicker {
     private static let defaultAPI = 3217
     private static let fallbackStart = 24_000
-    private static let fallbackPairCount = 1_024
+    private static let fallbackBlockCount = 1_024
 
     static func choose(identity: String, isFree: (Int) -> Bool) -> LocalServerPorts? {
-        if isFree(defaultAPI), isFree(defaultAPI + 1) {
-            return LocalServerPorts(api: defaultAPI, llama: defaultAPI + 1)
-        }
+        func blockIsFree(_ api: Int) -> Bool { (api...api + 2).allSatisfy(isFree) }
+        if blockIsFree(defaultAPI) { return LocalServerPorts(api: defaultAPI) }
 
-        let first = Int(stableHash(identity) % UInt64(fallbackPairCount))
-        for offset in 0..<fallbackPairCount {
-            let index = (first + offset) % fallbackPairCount
-            let api = fallbackStart + index * 2
-            if isFree(api), isFree(api + 1) {
-                return LocalServerPorts(api: api, llama: api + 1)
-            }
+        let first = Int(stableHash(identity) % UInt64(fallbackBlockCount))
+        for offset in 0..<fallbackBlockCount {
+            let api = fallbackStart + (first + offset) % fallbackBlockCount * 3
+            if blockIsFree(api) { return LocalServerPorts(api: api) }
         }
         return nil
+    }
+
+    /// True when nothing is listening on `port`. Binding a probe socket takes
+    /// microseconds, where the old `lsof` check launched a process per port.
+    nonisolated static func isFree(_ port: Int) -> Bool {
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = in_port_t(UInt16(port).bigEndian)
+        address.sin_addr = in_addr(s_addr: INADDR_ANY)
+        return withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) == 0
+            }
+        }
     }
 
     private static func stableHash(_ value: String) -> UInt64 {
@@ -155,10 +171,11 @@ final class LocalServerManager: ObservableObject {
         let root = try serverDirectory(fileManager: fileManager)
         try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
         let token = try loadOrCreateToken(in: root, fileManager: fileManager)
-        guard let ports = LocalPortPicker.choose(
-            identity: Bundle.main.bundleURL.resolvingSymlinksInPath().path,
-            isFree: { [self] in !hasListener(on: $0) }
-        ) else {
+        let identity = Bundle.main.bundleURL.resolvingSymlinksInPath().path
+        let chosen = await Task.detached(priority: .userInitiated) {
+            LocalPortPicker.choose(identity: identity, isFree: LocalPortPicker.isFree)
+        }.value
+        guard let ports = chosen else {
             let message = "Could not find a free local server port."
             state = .failed(message)
             throw LocalServerError.startupFailed(message)
@@ -181,6 +198,7 @@ final class LocalServerManager: ObservableObject {
         environment["OMIL_HOST"] = allowLANAccess ? "0.0.0.0" : "127.0.0.1"
         environment["OMIL_PORT"] = String(ports.api)
         environment["OMIL_LLAMA_PORT"] = String(ports.llama)
+        environment["OMIL_WHISPER_PORT"] = String(ports.whisper)
         environment["OMIL_DATA"] = root.path
         environment["OMIL_PARENT_PID"] = String(ProcessInfo.processInfo.processIdentifier)
         environment["PATH"] = mergedPath(environment["PATH"])
@@ -224,13 +242,12 @@ final class LocalServerManager: ObservableObject {
             }
             if await responds(at: config), child.isRunning {
                 state = .running(port: ports.api)
-                sharedCredentials = allowLANAccess
-                    ? LANConnectionCredentials(
-                        host: preferredLANHost(),
-                        port: ports.api,
-                        token: token
-                    )
-                    : nil
+                if allowLANAccess {
+                    let host = await Task.detached { Self.preferredLANHost() }.value
+                    sharedCredentials = LANConnectionCredentials(host: host, port: ports.api, token: token)
+                } else {
+                    sharedCredentials = nil
+                }
                 return config
             }
             try await Task.sleep(for: .milliseconds(200))
@@ -342,21 +359,6 @@ final class LocalServerManager: ObservableObject {
         return value
     }
 
-    private func hasListener(on port: Int) -> Bool {
-        let check = Process()
-        check.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
-        check.arguments = ["-nP", "-iTCP:\(port)", "-sTCP:LISTEN", "-t"]
-        check.standardOutput = Pipe()
-        check.standardError = Pipe()
-        do {
-            try check.run()
-            check.waitUntilExit()
-            return check.terminationStatus == 0
-        } catch {
-            return false
-        }
-    }
-
     private func mergedPath(_ current: String?) -> String {
         let required = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"]
         let existing = (current ?? "").split(separator: ":").map(String.init)
@@ -371,16 +373,31 @@ final class LocalServerManager: ObservableObject {
         return candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) })
     }
 
-    private func preferredLANHost() -> String {
-        if let address = Host.current().addresses.first(where: { candidate in
-            let parts = candidate.split(separator: ".")
-            return parts.count == 4
-                && candidate != "127.0.0.1"
-                && !candidate.hasPrefix("169.254.")
-        }) {
-            return address
+    /// First private IPv4 address on an active interface. Reads interfaces
+    /// directly; `Host.current()` can block on reverse DNS.
+    nonisolated private static func preferredLANHost() -> String {
+        var interfaces: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&interfaces) == 0, let first = interfaces else {
+            return ProcessInfo.processInfo.hostName
         }
-        return ProcessInfo.processInfo.hostName
+        defer { freeifaddrs(interfaces) }
+        var candidates: [(name: String, address: String)] = []
+        for pointer in sequence(first: first, next: { $0.pointee.ifa_next }) {
+            let entry = pointer.pointee
+            guard let addr = entry.ifa_addr, addr.pointee.sa_family == sa_family_t(AF_INET),
+                  entry.ifa_flags & UInt32(IFF_UP) != 0, entry.ifa_flags & UInt32(IFF_LOOPBACK) == 0 else { continue }
+            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            guard getnameinfo(addr, socklen_t(addr.pointee.sa_len), &host, socklen_t(host.count),
+                              nil, 0, NI_NUMERICHOST) == 0 else { continue }
+            let address = String(cString: host)
+            if !address.hasPrefix("169.254.") {
+                candidates.append((String(cString: entry.ifa_name), address))
+            }
+        }
+        // Prefer Wi-Fi/Ethernet (en*) over VPN and bridge interfaces.
+        return candidates.first(where: { $0.name.hasPrefix("en") })?.address
+            ?? candidates.first?.address
+            ?? ProcessInfo.processInfo.hostName
     }
 }
 

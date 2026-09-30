@@ -117,38 +117,7 @@ public struct PersonalDictionary: Codable, Sendable {
 
 // MARK: - Spoken formatting commands
 
-/// Explicit formatting operations. Only invoked when the command words appear
-/// as a standalone instruction, not when used literally (e.g. "Do not remove
-/// the word um." or "the words 'A B'").
-public struct FormattingCommands: Sendable {
+/// Version tag recorded on formatting-command edits.
+public enum FormattingCommands {
     public static let rulesVersion = "omil-fmt-1"
-
-    public enum Command: Sendable {
-        case newLine, newParagraph, bullet, numberedItem, comma, period,
-             questionMark, exclamation, colon, semicolon, quote
-    }
-
-    public init() {}
-
-    /// Detect a leading/trailing formatting command. Returns command + remaining range.
-    /// Conservative: "new line" at a clause boundary; single words like "comma"
-    /// only when clearly dictated as punctuation ("say comma" patterns are out of scope).
-    public func detect(tokens: [Token]) -> [(command: Command, range: Range<Int>)] {
-        var out: [(Command, Range<Int>)] = []
-        let n = tokens.map { $0.normalized }
-        var i = 0
-        while i < n.count {
-            if i + 1 < n.count && n[i] == "new" && n[i+1] == "line" {
-                out.append((.newLine, i..<i+2)); i += 2; continue
-            }
-            if i + 1 < n.count && n[i] == "new" && n[i+1] == "paragraph" {
-                out.append((.newParagraph, i..<i+2)); i += 2; continue
-            }
-            if i + 1 < n.count && n[i] == "bullet" && n[i+1] == "point" {
-                out.append((.bullet, i..<i+2)); i += 2; continue
-            }
-            i += 1
-        }
-        return out
-    }
 }

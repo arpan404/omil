@@ -2,6 +2,7 @@ import AppKit
 import AVFoundation
 import Combine
 import OmilCore
+import OmilDesign
 import ServiceManagement
 
 enum AppearancePreference: String, CaseIterable, Identifiable {
@@ -16,60 +17,6 @@ enum AppearancePreference: String, CaseIterable, Identifiable {
         case .system: return "System"
         case .light: return "Light"
         case .dark: return "Dark"
-        }
-    }
-}
-
-enum ThemePreset: String, CaseIterable, Identifiable {
-    case studio
-    case fog
-    case slate
-    case linen
-    case tide
-    case clay
-    case lilac
-    case moss
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .studio: return "Studio"
-        case .fog: return "Fog"
-        case .slate: return "Graphite"
-        case .linen: return "Sand"
-        case .tide: return "Current"
-        case .clay: return "Rose"
-        case .lilac: return "Violet"
-        case .moss: return "Fern"
-        }
-    }
-
-    var detail: String {
-        switch self {
-        case .studio: return "Quiet neutrals"
-        case .fog: return "Gray and white, soft charcoal"
-        case .slate: return "Deep graphite and blue"
-        case .linen: return "Warm white and amber"
-        case .tide: return "Dark teal and clear cyan"
-        case .clay: return "Cool charcoal and rose"
-        case .lilac: return "Midnight violet"
-        case .moss: return "Forest green accents"
-        }
-    }
-
-    static func restored(from rawValue: String) -> ThemePreset? {
-        if let preset = ThemePreset(rawValue: rawValue) { return preset }
-        // Preserve the nearest palette when upgrading from the first gallery.
-        switch rawValue {
-        case "copperplate": return .linen
-        case "nocturne": return .slate
-        case "canary": return .fog
-        case "seaglass": return .tide
-        case "cardinal": return .clay
-        case "wisteria": return .lilac
-        case "evergreen": return .moss
-        default: return nil
         }
     }
 }
@@ -133,7 +80,6 @@ final class DictationController: ObservableObject {
     enum RecordingSource { case app, shortcut, menuBar, pill }
     struct ProcessingJob: Identifiable {
         let id: SessionID
-        let number: Int
         var stage: ProcessingStage
     }
 
@@ -155,8 +101,6 @@ final class DictationController: ObservableObject {
     @Published var lastDiff = ""
     @Published var statusMessage = "Idle"
     @Published private(set) var processingStage: ProcessingStage = .transcribing
-    @Published var backendDescription = "Checking"
-    @Published var assetState = "Unknown"
     @Published var cleanupMode: CleanupMode = .clean {
         didSet { UserDefaults.standard.set(cleanupMode.rawValue, forKey: "omil.mode") }
     }
@@ -213,7 +157,7 @@ final class DictationController: ObservableObject {
             AppAppearance.shared.apply(appearance)
         }
     }
-    @Published var themePreset: ThemePreset = .fog {
+    @Published var themePreset: ThemePreset = .graphite {
         didSet {
             UserDefaults.standard.set(themePreset.rawValue, forKey: "omil.themePreset")
             AppAppearance.shared.themePreset = themePreset
@@ -275,9 +219,11 @@ final class DictationController: ObservableObject {
     }
 
     private var session: DictationSession?
-    private var capture = AudioCapture()
+    private let capture = AudioCapture()
+    /// CoreAudio start/stop can block for hundreds of milliseconds (longer with
+    /// Bluetooth mics), so the engine runs on its own queue, in call order.
+    private let captureQueue = DispatchQueue(label: "sh.arpan.omil.capture", qos: .userInitiated)
     private var audioForwarder: AudioChunkForwarder?
-    private var backend: (any TranscriptionBackend)?
     private var ax = AXInserter()
     private var lastReceiptAX: AXInserter?
     private struct PriorInsertion {
@@ -302,10 +248,11 @@ final class DictationController: ObservableObject {
     private var recoverySaveTail: Task<Void, Never>?
     private var eventTask: Task<Void, Never>?
     private var dictionary = PersonalDictionary()
-    private var lastMeterTimestamp: Double = -.infinity
     private let localServer: LocalServerManager
     private let recoveryStore = RecoveryAudioStore()
-    private let recoveryBuffer = RecoveryAudioBuffer()
+    /// A fresh buffer per recording, so audio that arrives while the engine
+    /// is still stopping can't leak into the next recording.
+    private var recoveryBuffer = RecoveryAudioBuffer()
     private var startAttempt = UUID()
     private var recoveryIDsBySession: [SessionID: UUID] = [:]
     let recoveryPlayback = RecoveryPlayback()
@@ -325,13 +272,9 @@ final class DictationController: ObservableObject {
            let saved = SpeechSensitivity(rawValue: raw) {
             speechSensitivity = saved
         }
-        dictionary = LocalHistory.loadDictionary()
-        snippets = LocalHistory.loadSnippets()
-        history = LocalHistory.loadHistory()
         historyEnabled = UserDefaults.standard.object(forKey: "omil.historyEnabled") as? Bool ?? true
-        if !historyEnabled { history = [] }
         audioRetentionDays = UserDefaults.standard.object(forKey: "omil.audioRetentionDays") as? Int ?? 7
-        recoveryRecordings = recoveryStore.load(retentionDays: audioRetentionDays)
+        loadSavedData()
         if let data = UserDefaults.standard.data(forKey: "omil.serverConfig"),
            let cfg = try? JSONDecoder().decode(ServerConfig.self, from: data) {
             externalServerConfig = cfg
@@ -372,7 +315,6 @@ final class DictationController: ObservableObject {
             guard let self, !self.usesCustomServer,
                   case .failed(let message) = state else { return }
             self.serverHealth = message
-            self.assetState = message
         }.store(in: &cancellables)
         localServer.$sharedCredentials.sink { [weak self] credentials in
             self?.lanCredentials = credentials
@@ -382,12 +324,41 @@ final class DictationController: ObservableObject {
         }.store(in: &cancellables)
     }
 
+    /// Reads history, dictionary, snippets and recovery audio off the main
+    /// thread so launch never waits on disk. Anything the user adds before the
+    /// load finishes is kept.
+    private func loadSavedData() {
+        let includeHistory = historyEnabled
+        let retentionDays = audioRetentionDays
+        let store = recoveryStore
+        Task { [weak self] in
+            let (dictionary, snippets, history, recordings) = await Task.detached(priority: .userInitiated) {
+                (LocalHistory.loadDictionary(),
+                 LocalHistory.loadSnippets(),
+                 includeHistory ? LocalHistory.loadHistory() : [],
+                 store.load(retentionDays: retentionDays))
+            }.value
+            guard let self else { return }
+            self.objectWillChange.send() // `dictionary` isn't @Published.
+            var merged = dictionary
+            merged.entries.merge(self.dictionary.entries) { _, new in new }
+            self.dictionary = merged
+            let addedSnippets = self.snippets.filter { new in !snippets.contains { $0.trigger == new.trigger } }
+            self.snippets = (snippets + addedSnippets)
+                .sorted { $0.trigger.localizedCaseInsensitiveCompare($1.trigger) == .orderedAscending }
+            if self.historyEnabled {
+                self.history = Array((self.history + history).prefix(200))
+            }
+            let addedRecordings = self.recoveryRecordings.filter { new in !recordings.contains { $0.id == new.id } }
+            self.recoveryRecordings = addedRecordings + recordings
+        }
+    }
+
     /// Post-launch startup: hotkeys plus either the app-owned local server or
     /// the user's explicit custom-server override.
     func startup() {
         AppAppearance.shared.apply(appearance)
         AppAppearance.shared.themePreset = themePreset
-        NSLog("Omil: startup")
         refreshMicPermission()
         // TCC can report an unsettled status immediately after a signed app
         // update. Recheck without prompting so the setup UI reflects access
@@ -412,7 +383,6 @@ final class DictationController: ObservableObject {
                 await activateManagedServer()
             }
         }
-        NSLog("Omil: startup done")
     }
 
     var axTrusted: Bool { ax.isTrusted }
@@ -470,8 +440,6 @@ final class DictationController: ObservableObject {
     // MARK: Status
 
     func refreshBackendStatus() async {
-        backendDescription = "Omil server · transcription + cleanup"
-        assetState = "Checking server"
         await refreshServerHealth()
     }
 
@@ -564,7 +532,6 @@ final class DictationController: ObservableObject {
 
     private func activateManagedServer(restart: Bool = false) async {
         serverHealth = restart ? "Restarting local engine" : "Starting local engine"
-        assetState = serverHealth
         serverOpNote = ""
         serverModels = []
         do {
@@ -573,16 +540,9 @@ final class DictationController: ObservableObject {
                 : localServer.start(allowLANAccess: lanSharingEnabled))
             serverConfig = config
             await localServer.ensureInferenceTools()
-            await refreshCurrentServerHealth()
-            await fetchServerModels()
-            if case .ready = localServer.toolInstallState,
-               !serverIsReady || modelIsDownloaded(file: llmFile) != true {
-                await prepareSelectedModels()
-            }
-            Task { await warmSelectedCleanupModel() }
+            await refreshAfterToolCheck()
         } catch {
             serverHealth = "Local engine failed: \(error.localizedDescription)"
-            assetState = serverHealth
         }
     }
 
@@ -591,22 +551,38 @@ final class DictationController: ObservableObject {
     func retryInferenceToolInstall() {
         Task {
             await localServer.ensureInferenceTools()
-            await refreshCurrentServerHealth()
-            await fetchServerModels()
-            if case .ready = localServer.toolInstallState,
-               !serverIsReady || modelIsDownloaded(file: llmFile) != true {
-                await prepareSelectedModels()
-            }
-            await warmSelectedCleanupModel()
+            await refreshAfterToolCheck()
         }
     }
 
+    private func refreshAfterToolCheck() async {
+        await refreshCurrentServerHealth()
+        await fetchServerModels()
+        if case .ready = localServer.toolInstallState,
+           !serverIsReady || modelIsDownloaded(file: llmFile) != true {
+            await prepareSelectedModels()
+        }
+        Task { await warmSelectedCleanupModel() }
+    }
+
+    /// Loads models while the user speaks, so anything idle-unloaded is warm by
+    /// the time the recording ends. The server answers immediately and is
+    /// idempotent when both models are already loaded.
+    private func prewarmModels() {
+        guard !usesCustomServer, let request = warmRequest(wait: false) else { return }
+        Task.detached(priority: .utility) { _ = try? await URLSession.shared.data(for: request) }
+    }
+
+    private func warmRequest(wait: Bool) -> URLRequest? {
+        var body: [String: Any] = ["wait": wait]
+        if let whisper = ServerCatalog.whisperIdForFile[whisperFile] { body["whisper"] = whisper }
+        if cleanupMode == .clean, modelIsDownloaded(file: llmFile) == true,
+           let llm = ServerCatalog.llmIdForFile[llmFile] { body["model"] = llm }
+        return serverRequest(path: "/v1/models/warm", method: "POST", jsonBody: body, timeout: wait ? 300 : 10)
+    }
+
     private func warmSelectedCleanupModel() async {
-        guard !usesCustomServer,
-              modelIsDownloaded(file: llmFile) == true,
-              let id = ServerCatalog.llmIdForFile[llmFile],
-              let request = serverRequest(path: "/v1/models/warm", method: "POST",
-                                          jsonBody: ["model": id], timeout: 300) else { return }
+        guard !usesCustomServer, let request = warmRequest(wait: true) else { return }
         _ = try? await URLSession.shared.data(for: request)
         await fetchServerModels()
     }
@@ -955,19 +931,15 @@ final class DictationController: ObservableObject {
     private func refreshCurrentServerHealth() async {
         let probe = ServerTranscriptionBackend(config: serverConfig)
         let health = await probe.serverHealth()
-        NSLog("Omil: server health %@ at %@:%d", health, serverConfig.host, serverConfig.port)
         serverHealth = health
-        assetState = health
         guard let request = serverRequest(path: "/v1/models") else { return }
         do {
             let (_, response) = try await URLSession.shared.data(for: request)
             if (response as? HTTPURLResponse)?.statusCode == 401 {
                 serverHealth = "Server rejected the token"
-                assetState = serverHealth
             }
         } catch {
             serverHealth = "Server became unreachable"
-            assetState = serverHealth
         }
     }
 
@@ -982,7 +954,6 @@ final class DictationController: ObservableObject {
         modelsPreparing = true
         defer { modelsPreparing = false }
         serverHealth = "Downloading selected models"
-        assetState = serverHealth
         serverOpNote = "Preparing speech and cleanup models. You can keep using the rest of the app."
         do {
             for modelID in modelIDs {
@@ -1011,8 +982,8 @@ final class DictationController: ObservableObject {
         }
     }
 
-    /// Qwen cleanup runs in the Effect/Bun service. A server failure retains
-    /// the transcript in Omil instead of silently switching to Swift cleanup.
+    /// Cleanup runs on the Omil server. If it fails, the raw transcript is kept
+    /// in Omil rather than inserted.
     func serverClean(
         rawText: String, requestId: String,
         mode: CleanupMode? = nil, client: ServerCleanupClient? = nil
@@ -1044,18 +1015,20 @@ final class DictationController: ObservableObject {
         )
     }
 
-    func makeBackend() -> (any TranscriptionBackend)? {
+    /// `start` already requires `serverIsReady`, so the per-recording health
+    /// and catalog round trips would only delay the microphone.
+    private func makeBackend() -> ServerTranscriptionBackend {
         ServerTranscriptionBackend(
             config: serverConfig,
             modelId: ServerCatalog.whisperIdForFile[whisperFile],
-            sensitivity: speechSensitivity
+            sensitivity: speechSensitivity,
+            verifiesBeforeRecording: false
         )
     }
 
     // MARK: Recording
 
     func toggle(source: RecordingSource = .app) {
-        NSLog("Omil: toggle pressed, phase=%@", phase.rawValue)
         switch phase {
         case .idle, .ready, .failed: start(source: source)
         case .recording: stop()
@@ -1064,7 +1037,6 @@ final class DictationController: ObservableObject {
     }
 
     func start(source: RecordingSource = .app) {
-        NSLog("Omil: start pressed, phase=%@", phase.rawValue)
         guard phase == .idle || phase == .ready || phase == .failed else { return }
         startAttempt = UUID()
         let attempt = startAttempt
@@ -1103,11 +1075,8 @@ final class DictationController: ObservableObject {
                 : "The local engine is still preparing. Open Engine to see its status."
             return
         }
-        guard let backend = makeBackend() else {
-            phase = .failed
-            statusMessage = "The Omil engine is unavailable. Open Engine to check its status."
-            return
-        }
+        let backend = makeBackend()
+        prewarmModels()
         let target = recentTargetApp.target(for: source)
         let targetPID = target?.processIdentifier
         let targetBundleID = target?.bundleIdentifier
@@ -1120,11 +1089,12 @@ final class DictationController: ObservableObject {
         Task {
             // A target app can take seconds to answer Accessibility queries.
             // Keep that work off the key event and Omil's main thread.
-            let axOk = await Task.detached(priority: .userInitiated) {
-                captureAX.captureTarget(pid: targetPID, bundleId: targetBundleID)
+            let (axOk, capturedPrecondition) = await Task.detached(priority: .userInitiated) {
+                let ok = captureAX.captureTarget(pid: targetPID, bundleId: targetBundleID)
+                return (ok, captureAX.capturePrecondition())
             }.value
             guard startAttempt == attempt, phase == .preparing else { return }
-            precondition = captureAX.capturePrecondition()
+            precondition = capturedPrecondition
             insertionSerialAtCapture = insertionSerial
             sessionSeq += 1
             let session = DictationSession(
@@ -1133,8 +1103,7 @@ final class DictationController: ObservableObject {
                 performsCleanup: false
             )
             self.session = session
-            self.backend = backend
-            recoveryBuffer.reset()
+            recoveryBuffer = RecoveryAudioBuffer()
             statusMessage = !axTrusted
                 ? "Accessibility access is needed to insert into other apps. The transcript will stay in Omil."
                 : axOk ? "Preparing microphone" : "No text field selected. Transcript stays in Omil."
@@ -1209,25 +1178,48 @@ final class DictationController: ObservableObject {
             await backend.appendAudio(chunk.pcm16, timestamp: chunk.timestamp)
         }
         audioForwarder = forwarder
-        do {
-            try capture.start(targetSampleRate: 16_000, targetChannels: 1) { chunk in
-                recoveryBuffer.append(chunk.pcm16)
-                let level = AudioLevelMeter.normalizedRMS(pcm16: chunk.pcm16)
-                Task { @MainActor [weak self] in
-                    self?.pushAudioLevel(level, timestamp: chunk.timestamp)
+        let meterGate = MeterGate(interval: 1.0 / 30.0)
+        let capture = self.capture
+        captureQueue.async {
+            do {
+                try capture.start(targetSampleRate: 16_000, targetChannels: 1) { chunk in
+                    recoveryBuffer.append(chunk.pcm16)
+                    // Rate-limit on the audio thread so skipped levels never wake the main thread.
+                    if meterGate.admit(chunk.timestamp) {
+                        let level = AudioLevelMeter.normalizedRMS(pcm16: chunk.pcm16)
+                        Task { @MainActor [weak self] in self?.pushAudioLevel(level) }
+                    }
+                    forwarder.append(chunk)
                 }
-                forwarder.append(chunk)
+            } catch {
+                forwarder.cancel()
+                Task { @MainActor [weak self] in
+                    guard let self, self.session?.sessionId == sessionID else { return }
+                    self.audioForwarder = nil
+                    self.phase = .failed
+                    self.statusMessage = "Microphone unavailable: \(error)"
+                    self.session = nil
+                    self.resetAudioMeter()
+                }
+                Task { await session.cancel() }
             }
-        } catch {
-            forwarder.cancel()
-            audioForwarder = nil
-            Task { @MainActor in
-                guard self.session?.sessionId == sessionID else { return }
-                self.phase = .failed
-                self.statusMessage = "Microphone unavailable: \(error)"
-                self.session = nil
+        }
+    }
+
+    /// Queues `work` on the capture queue now, preserving call order, and
+    /// returns a task that finishes once it has run.
+    @discardableResult
+    private func onCaptureQueue(_ work: @escaping @Sendable () -> Void) -> Task<Void, Never> {
+        let group = DispatchGroup()
+        group.enter()
+        captureQueue.async {
+            work()
+            group.leave()
+        }
+        return Task.detached {
+            await withCheckedContinuation { continuation in
+                group.notify(queue: .global(qos: .userInitiated)) { continuation.resume() }
             }
-            Task { await session.cancel() }
         }
     }
 
@@ -1245,22 +1237,23 @@ final class DictationController: ObservableObject {
             source: recordingSource, mode: cleanupMode,
             cleanupClient: makeCleanupClient(style: styleForCapturedTarget(), context: ax.capturedContext)
         )
-        capture.stop()
+        let capture = self.capture
+        let captureStopped = onCaptureQueue { capture.stop() }
         let forwarder = audioForwarder
         audioForwarder = nil
-        let recoverySave = saveRecoveryAudio(for: sessionID)
+        let recoverySave = saveRecoveryAudio(for: sessionID, from: recoveryBuffer, after: captureStopped)
         session = nil
-        backend = nil
         ax = AXInserter()
         precondition = nil
         eventTask?.cancel()
         eventTask = nil
         resetAudioMeter()
-        processingJobs.append(ProcessingJob(id: sessionID, number: jobNumber, stage: .transcribing))
+        processingJobs.append(ProcessingJob(id: sessionID, stage: .transcribing))
         phase = .ready
         statusMessage = "Transcribing in the background. Ready for another recording."
         let previousDelivery = deliveryTail
         deliveryTail = Task {
+            await captureStopped.value
             await forwarder?.finish()
             let result = await activeSession.stop()
             await recoverySave?.value
@@ -1286,10 +1279,10 @@ final class DictationController: ObservableObject {
         let activeSession = session
         startAttempt = UUID()
         session = nil
-        backend = nil
         eventTask?.cancel()
         eventTask = nil
-        capture.cancel()
+        let capture = self.capture
+        onCaptureQueue { capture.cancel() }
         audioForwarder?.cancel()
         audioForwarder = nil
         recoveryBuffer.reset()
@@ -1302,15 +1295,13 @@ final class DictationController: ObservableObject {
         }
     }
 
-    private func pushAudioLevel(_ level: Double, timestamp: Double) {
-        guard phase == .recording, timestamp - lastMeterTimestamp >= 1.0 / 30.0 else { return }
-        lastMeterTimestamp = timestamp
+    private func pushAudioLevel(_ level: Double) {
+        guard phase == .recording else { return }
         audioMeter.push(level)
     }
 
     private func resetAudioMeter() {
         audioMeter.reset()
-        lastMeterTimestamp = -.infinity
     }
 
     // MARK: Delivery
@@ -1327,7 +1318,7 @@ final class DictationController: ObservableObject {
         let note: String
         let usedRawFallback: Bool
         if committed.cleaned.text.isEmpty && committed.rawSnapshot.rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            // A10: never insert an empty result (would wipe the selection).
+            // Never insert an empty result; it would replace the selection.
             processingJobs.removeAll { $0.id == committed.sessionId }
             if phase != .recording && phase != .preparing { statusMessage = "No speech was detected" }
             updateRecovery(for: committed.sessionId, state: .ready, transcript: "", rawTranscript: "")
@@ -1475,8 +1466,7 @@ final class DictationController: ObservableObject {
     private func recordHistory(raw: String, cleaned: String, backend: String, duration: Double) {
         guard historyEnabled else { return }
         let entry = HistoryEntry(raw: raw, cleaned: cleaned, backend: backend, duration: duration)
-        history.insert(entry, at: 0)
-        history = Array(history.prefix(200))
+        history = [entry] + history.prefix(199)
         LocalHistory.saveHistory(history)
     }
 
@@ -1491,40 +1481,21 @@ final class DictationController: ObservableObject {
         }
     }
 
-    func clearHistory() {
-        history = []
-        LocalHistory.saveHistory([])
-        statusMessage = "History cleared from this Mac"
-    }
-
-    func insertRetainedResult() {
-        // Explicit insertion of the retained result after a destination change.
-        guard phase == .ready, !lastCleaned.isEmpty else { return }
-        _ = ax.captureTarget()
-        precondition = ax.capturePrecondition()
-        guard let sessionId = lastReceipt?.sessionId else { return }
-        sessionSeq += 1
-        if axTrusted, case .ok = ax.revalidate(precondition: precondition ?? SelectionPrecondition()) {
-            do {
-                let receipt = try ax.insert(text: lastCleaned, precondition: precondition ?? SelectionPrecondition(), sessionId: sessionId, sequence: sessionSeq)
-                lastReceipt = receipt
-                lastReceiptAX = ax
-                lastDeliveryMethod = "Inserted into focused field"
-                statusMessage = lastDeliveryMethod
-            } catch {
-                statusMessage = "Insertion failed: \(error)"
-            }
-        } else {
-            statusMessage = "The destination changed. Copy the saved result manually."
-        }
-    }
-
     func undoLast() {
-        guard let receipt = lastReceipt else { return }
-        if lastReceiptAX?.undo(receipt: receipt) == true {
-            statusMessage = "Undone (only Omil's insertion was reversed)"
-        } else {
-            statusMessage = "Undo stopped because the field changed after insertion."
+        guard let receipt = lastReceipt, let inserter = lastReceiptAX else { return }
+        // The target app answers Accessibility calls; a busy app mustn't stall Omil.
+        Task {
+            let undone = await Task.detached(priority: .userInitiated) {
+                inserter.undo(receipt: receipt)
+            }.value
+            statusMessage = undone
+                ? "Undone (only Omil's insertion was reversed)"
+                : "Undo stopped because the field changed after insertion."
+            if undone {
+                ToastCenter.shared.show("Insertion Undone", symbol: "arrow.uturn.backward.circle.fill")
+            } else {
+                ToastCenter.shared.show("Field Changed. Nothing Undone", symbol: "exclamationmark.circle.fill")
+            }
         }
     }
 
@@ -1532,32 +1503,6 @@ final class DictationController: ObservableObject {
         NSPasteboard.general.declareTypes([.string], owner: nil)
         NSPasteboard.general.setString(lastCleaned, forType: .string)
         statusMessage = "Copied to clipboard"
-    }
-
-    /// Paste last result at the cursor (menu action). Auto-paste needs
-    /// Accessibility trust for the key simulation; without it we copy and
-    /// say so honestly instead of claiming a paste happened.
-    func pasteLast() {
-        guard !lastCleaned.isEmpty else {
-            statusMessage = "Nothing to paste yet"
-            return
-        }
-        guard let prepared = clipboard.prepare(text: lastCleaned) else {
-            statusMessage = "Clipboard contents could not be preserved. Copy the transcript manually."
-            return
-        }
-        guard axTrusted else {
-            statusMessage = "Copied. Press ⌘V to paste."
-            return
-        }
-        clipboard.paste()
-        let inserter = clipboard
-        DispatchQueue.global().async {
-            let restored = inserter.restoreIfOwned(prepared: prepared)
-            Task { @MainActor in
-                self.statusMessage = restored ? "Pasted last result" : "Pasted last result (clipboard kept)"
-            }
-        }
     }
 
     func deleteHistoryEntry(_ entry: HistoryEntry) {
@@ -1573,7 +1518,12 @@ final class DictationController: ObservableObject {
         audioRetentionDays = value
         UserDefaults.standard.set(value, forKey: "omil.audioRetentionDays")
         recoveryPlayback.stop()
-        recoveryRecordings = recoveryStore.load(retentionDays: value)
+        let store = recoveryStore
+        Task {
+            recoveryRecordings = await Task.detached(priority: .utility) {
+                store.load(retentionDays: value)
+            }.value
+        }
         statusMessage = value == 0
             ? "Saved recovery audio removed"
             : "Recovery audio will be kept for \(value) day\(value == 1 ? "" : "s")"
@@ -1658,13 +1608,17 @@ final class DictationController: ObservableObject {
         }
     }
 
-    private func saveRecoveryAudio(for sessionID: SessionID) -> Task<Void, Never>? {
-        let pcm = recoveryBuffer.take()
-        guard audioRetentionDays > 0, !pcm.isEmpty else { return nil }
+    private func saveRecoveryAudio(
+        for sessionID: SessionID, from buffer: RecoveryAudioBuffer, after captureStopped: Task<Void, Never>
+    ) -> Task<Void, Never>? {
+        guard audioRetentionDays > 0 else { return nil }
         let previous = recoverySaveTail
         let store = recoveryStore
         let task = Task {
             await previous?.value
+            await captureStopped.value
+            let pcm = buffer.take()
+            guard !pcm.isEmpty else { return }
             do {
                 let recording = try await Task.detached(priority: .utility) {
                     try store.save(pcm16: pcm)
@@ -1709,47 +1663,24 @@ final class DictationController: ObservableObject {
         }
     }
 
-    // MARK: Onboarding + stats (Hub Home)
+    // MARK: Onboarding
 
     @Published var onboarded = UserDefaults.standard.bool(forKey: "omil.onboarded") {
         didSet { UserDefaults.standard.set(onboarded, forKey: "omil.onboarded") }
     }
 
-    var totalWords: Int { history.reduce(0) { $0 + $1.wordCount } }
-    var totalDictations: Int { history.count }
-
-    /// Consecutive days (including today or yesterday) with dictations.
-    var dayStreak: Int {
-        let days = Set(history.map { Calendar.current.startOfDay(for: $0.date) })
-        guard !days.isEmpty else { return 0 }
-        var streak = 0
-        var day = Calendar.current.startOfDay(for: Date())
-        if !days.contains(day) {
-            // Allow the streak to survive until end of "yesterday grace": only
-            // count back from yesterday if today is empty.
-            day = Calendar.current.date(byAdding: .day, value: -1, to: day)!
-            if !days.contains(day) { return 0 }
-        }
-        while days.contains(day) {
-            streak += 1
-            day = Calendar.current.date(byAdding: .day, value: -1, to: day)!
-        }
-        return streak
-    }
-
-    var historyByDay: [(day: Date, entries: [HistoryEntry])] {
-        let grouped = Dictionary(grouping: history) { Calendar.current.startOfDay(for: $0.date) }
-        return grouped.keys.sorted(by: >).map { ($0, grouped[$0]!.sorted(by: { $0.date > $1.date })) }
-    }
+    private static let dayFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .none
+        return formatter
+    }()
 
     func dayLabel(for day: Date) -> String {
         let cal = Calendar.current
         if cal.isDateInToday(day) { return "Today" }
         if cal.isDateInYesterday(day) { return "Yesterday" }
-        let fmt = DateFormatter()
-        fmt.dateStyle = .medium
-        fmt.timeStyle = .none
-        return fmt.string(from: day)
+        return Self.dayFormatter.string(from: day)
     }
 
     var launchAtLogin: Bool {
@@ -1763,28 +1694,6 @@ final class DictationController: ObservableObject {
             }
             objectWillChange.send()
         }
-    }
-
-    // MARK: Diagnostics (no transcript content — safe to paste)
-
-    func diagnostics() -> String {
-        let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
-        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
-        let os = ProcessInfo.processInfo.operatingSystemVersionString
-        let windows = NSApp.windows.map { "\($0.title.isEmpty ? "(untitled)" : $0.title):visible=\($0.isVisible)" }.joined(separator: ", ")
-        return """
-        Omil diagnostics (no transcript content):
-        - app: \(appVersion) (\(build)) on \(os)
-        - phase: \(phase.rawValue) — \(statusMessage)
-        - mic: \(micPermission.rawValue)
-        - backend: Effect/Bun server — \(backendDescription)
-        - assets: \(assetState)
-        - server: \(serverHealth) at \(serverConfig.host):\(serverConfig.port) (token set: \(serverConfig.token.isEmpty ? "no" : "yes"))
-        - whisper: \(whisperFile) — llm: \(llmFile)
-        - windows: [\(windows)]
-        - pill: \(PillManager.shared.debugInfo())
-        - last delivery: \(lastDeliveryMethod)
-        """
     }
 
     // MARK: Dictionary
@@ -1878,25 +1787,31 @@ enum DiffUtil {
         }
         // LCS-based minimal diff.
         let n = a.count, m = b.count
-        var dp = Array(repeating: Array(repeating: 0, count: m + 1), count: n + 1)
+        let width = m + 1
+        var dp = [Int](repeating: 0, count: (n + 1) * width)
         for i in stride(from: n - 1, through: 0, by: -1) {
             for j in stride(from: m - 1, through: 0, by: -1) {
-                dp[i][j] = a[i] == b[j] ? dp[i + 1][j + 1] + 1 : max(dp[i + 1][j], dp[i][j + 1])
+                dp[i * width + j] = a[i] == b[j]
+                    ? dp[(i + 1) * width + j + 1] + 1
+                    : max(dp[(i + 1) * width + j], dp[i * width + j + 1])
             }
         }
         var out: [String] = []
         var i = 0, j = 0
         while i < n || j < m {
             if i < n, j < m, a[i] == b[j] { out.append(a[i]); i += 1; j += 1 }
-            else if j < m, (i >= n || dp[i][j + 1] > dp[i + 1][j]) { out.append("[+\(b[j])]"); j += 1 }
+            else if j < m, (i >= n || dp[i * width + j + 1] > dp[(i + 1) * width + j]) { out.append("[+\(b[j])]"); j += 1 }
             else if i < n { out.append("[-\(a[i])]"); i += 1 }
         }
         return out.joined(separator: " ")
     }
 
+    private nonisolated(unsafe) static let tokenPattern = try? NSRegularExpression(
+        pattern: #"[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)*|[^\p{L}\p{N}\s]"#
+    )
+
     private static func tokens(_ text: String) -> [String] {
-        let pattern = #"[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)*|[^\p{L}\p{N}\s]"#
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [text] }
+        guard let regex = tokenPattern else { return [text] }
         let range = NSRange(text.startIndex..<text.endIndex, in: text)
         return regex.matches(in: text, range: range).compactMap { match in
             Range(match.range, in: text).map { String(text[$0]) }
@@ -1907,6 +1822,19 @@ enum DiffUtil {
 // MARK: - Local history persistence
 
 enum LocalHistory {
+    /// Writes run on one serial queue so saves never block the main thread
+    /// and always land in order.
+    private static let writer = DispatchQueue(label: "sh.arpan.omil.persistence", qos: .utility)
+
+    private static func write<T: Encodable & Sendable>(_ value: T, to name: String) {
+        writer.async {
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            if let data = try? JSONEncoder().encode(value) {
+                try? data.write(to: dir.appendingPathComponent(name), options: .atomic)
+            }
+        }
+    }
+
     static var dir: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Omil", isDirectory: true)
@@ -1918,10 +1846,7 @@ enum LocalHistory {
     }
 
     static func saveHistory(_ h: [DictationController.HistoryEntry]) {
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        if let data = try? JSONEncoder().encode(h) {
-            try? data.write(to: dir.appendingPathComponent("history.json"))
-        }
+        write(h, to: "history.json")
     }
 
     static func loadDictionary() -> PersonalDictionary {
@@ -1930,10 +1855,7 @@ enum LocalHistory {
     }
 
     static func saveDictionary(_ d: PersonalDictionary) {
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        if let data = try? JSONEncoder().encode(d) {
-            try? data.write(to: dir.appendingPathComponent("dictionary.json"))
-        }
+        write(d, to: "dictionary.json")
     }
 
     static func loadSnippets() -> [DictationController.Snippet] {
@@ -1942,10 +1864,24 @@ enum LocalHistory {
     }
 
     static func saveSnippets(_ snippets: [DictationController.Snippet]) {
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        if let data = try? JSONEncoder().encode(snippets) {
-            try? data.write(to: dir.appendingPathComponent("snippets.json"), options: .atomic)
-        }
+        write(snippets, to: "snippets.json")
+    }
+}
+
+/// Admits at most one event per `interval`; safe to call from the audio thread.
+private final class MeterGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private let interval: Double
+    private var last = -Double.infinity
+
+    init(interval: Double) { self.interval = interval }
+
+    func admit(_ timestamp: Double) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard timestamp - last >= interval else { return false }
+        last = timestamp
+        return true
     }
 }
 

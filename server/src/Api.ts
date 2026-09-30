@@ -2,19 +2,18 @@ import { Effect } from "effect"
 import {
   HttpRouter, HttpServerRequest, HttpServerResponse,
 } from "@effect/platform"
-import { mkdtemp, rm, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
-import path from "node:path"
 import type { ServerConfig } from "./Config"
 import { checkAuth } from "./Auth"
 import {
-  checkBinaries, checkModelReady, deleteModel, ensureModel, ModelError,
-  modelFileLifecycle, modelIntegrityIssue,
+  checkBinaries, checkModelReady, deleteModel, ensureModel,
+  modelFileLifecycle, modelIntegrityIssue, toModelError,
 } from "./Models"
-import { transcribeFile, whisperMemoryState } from "./Whisper"
+import {
+  likelyWhisperModel, transcribeAudio, unloadWhisper, warmWhisper, whisperMemoryState, whisperRuntime,
+} from "./Whisper"
 import { parseAudioSensitivity } from "./AudioSensitivity"
 import {
-  acquireLlama, llamaRuntime, liveLlmModel, stopLlama, unloadLlama,
+  acquireLlama, likelyLlmModel, llamaRuntime, liveLlmModel, unloadLlama,
 } from "./LlamaServer"
 import { cleanWithQwen } from "./QwenCleanup"
 import { MODELS, modelSpec } from "./Config"
@@ -40,6 +39,26 @@ const authed = (ctx: ApiContext, req: HttpServerRequest.HttpServerRequest) =>
 const transcriptionQueue = new InferenceQueue("transcription")
 const cleanupQueue = new InferenceQueue("cleanup")
 
+/** Lenient JSON body: a missing or malformed body reads as `{}`. */
+const optionalJsonBody = (req: HttpServerRequest.HttpServerRequest) =>
+  req.json.pipe(
+    Effect.map((value): Record<string, unknown> =>
+      value !== null && typeof value === "object" ? value as Record<string, unknown> : {}),
+    Effect.catchAll(() => Effect.succeed({} as Record<string, unknown>)),
+  )
+
+const logFailure = (label: string) => (error: unknown) => {
+  console.error(`${label}: ${toModelError(error).reason}`)
+}
+
+/** Loads a downloaded Whisper model into whisper-server without blocking the caller. */
+const warmWhisperInBackground = (ctx: ApiContext, modelId: string) =>
+  Effect.gen(function* () {
+    if (!(yield* checkModelReady(ctx.cfg, modelId))) return false
+    void warmWhisper(ctx.cfg, modelId).catch(logFailure(`whisper warm (${modelId})`))
+    return true
+  })
+
 const requestIdentity = (req: HttpServerRequest.HttpServerRequest): string => {
   const value = req.headers["x-omil-request-id"]
   const candidate = Array.isArray(value) ? value[0] : value
@@ -61,6 +80,7 @@ export const makeRouter = (ctx: ApiContext) =>
         llamaLive: runtime.state === "ready" || runtime.state === "inUse",
         liveLlmModel: liveLlmModel(),
         llmRuntime: runtime,
+        whisperRuntime: whisperRuntime(),
         whisperModel: ctx.selection.whisper, llmModel: ctx.selection.llm,
       })
     })),
@@ -69,6 +89,7 @@ export const makeRouter = (ctx: ApiContext) =>
       if (!authed(ctx, req)) return unauthorized
       const out = []
       const runtime = llamaRuntime()
+      const speechRuntime = whisperRuntime()
       for (const m of MODELS) {
         const downloaded = yield* checkModelReady(ctx.cfg, m.id)
         const file = modelFileLifecycle(ctx.cfg, m.id)
@@ -87,10 +108,12 @@ export const makeRouter = (ctx: ApiContext) =>
           memoryState: m.kind === "whisper"
             ? whisperMemoryState(m.id)
             : runtime.modelId === m.id ? runtime.state : "unloaded",
-          activeUses: m.kind === "llm" && runtime.modelId === m.id ? runtime.activeUses : 0,
+          activeUses: m.kind === "llm"
+            ? runtime.modelId === m.id ? runtime.activeUses : 0
+            : speechRuntime.modelId === m.id ? speechRuntime.activeUses : 0,
         })
       }
-      return yield* json({ models: out, selection: ctx.selection, llmRuntime: runtime })
+      return yield* json({ models: out, selection: ctx.selection, llmRuntime: runtime, whisperRuntime: speechRuntime })
     })),
     HttpRouter.get("/v1/queue", Effect.gen(function* () {
       const req = yield* HttpServerRequest.HttpServerRequest
@@ -128,10 +151,7 @@ export const makeRouter = (ctx: ApiContext) =>
     HttpRouter.post("/v1/models/prepare", Effect.gen(function* () {
       const req = yield* HttpServerRequest.HttpServerRequest
       if (!authed(ctx, req)) return unauthorized
-      const body = yield* req.json.pipe(
-        Effect.map((value) => value as { model?: unknown }),
-        Effect.catchAll(() => Effect.succeed({} as { model?: unknown })),
-      )
+      const body = yield* optionalJsonBody(req)
       if (body.model !== undefined) {
         if (typeof body.model !== "string") {
           return yield* json({ error: "model must be a string" }, 400)
@@ -163,10 +183,7 @@ export const makeRouter = (ctx: ApiContext) =>
     HttpRouter.post("/v1/models/repair", Effect.gen(function* () {
       const req = yield* HttpServerRequest.HttpServerRequest
       if (!authed(ctx, req)) return unauthorized
-      const body = yield* req.json.pipe(
-        Effect.map((value) => value as { model?: unknown }),
-        Effect.catchAll(() => Effect.succeed({} as { model?: unknown })),
-      )
+      const body = yield* optionalJsonBody(req)
       if (typeof body.model !== "string" || !modelSpec(body.model)) {
         return yield* json({ error: "choose a model to repair" }, 400)
       }
@@ -179,6 +196,9 @@ export const makeRouter = (ctx: ApiContext) =>
       if (spec.kind === "llm" && llamaRuntime().modelId === spec.id) {
         yield* Effect.promise(() => unloadLlama())
       }
+      if (spec.kind === "whisper" && whisperRuntime().modelId === spec.id) {
+        yield* Effect.promise(() => unloadWhisper())
+      }
       const removed = yield* Effect.either(deleteModel(ctx.cfg, spec.id))
       if (removed._tag === "Left") return yield* json({ error: removed.left.reason }, 409)
       const prepared = yield* Effect.either(ensureModel(ctx.cfg, spec.id))
@@ -188,10 +208,7 @@ export const makeRouter = (ctx: ApiContext) =>
     HttpRouter.post("/v1/models/reload", Effect.gen(function* () {
       const req = yield* HttpServerRequest.HttpServerRequest
       if (!authed(ctx, req)) return unauthorized
-      const body = yield* req.json.pipe(
-        Effect.map((value) => value as { model?: unknown }),
-        Effect.catchAll(() => Effect.succeed({} as { model?: unknown })),
-      )
+      const body = yield* optionalJsonBody(req)
       if (typeof body.model !== "string" || modelSpec(body.model)?.kind !== "llm") {
         return yield* json({ error: "choose a cleanup model to reload" }, 400)
       }
@@ -212,20 +229,44 @@ export const makeRouter = (ctx: ApiContext) =>
     HttpRouter.post("/v1/models/warm", Effect.gen(function* () {
       const req = yield* HttpServerRequest.HttpServerRequest
       if (!authed(ctx, req)) return unauthorized
-      const body = yield* req.json.pipe(
-        Effect.map((value) => value as { model?: unknown }),
-        Effect.catchAll(() => Effect.succeed({} as { model?: unknown })),
-      )
-      if (typeof body.model !== "string" || modelSpec(body.model)?.kind !== "llm") {
+      const body = yield* optionalJsonBody(req)
+      if (body.model !== undefined && (typeof body.model !== "string" || modelSpec(body.model)?.kind !== "llm")) {
         return yield* json({ error: "choose a cleanup model to warm" }, 400)
       }
-      if (!(yield* checkModelReady(ctx.cfg, body.model))) {
+      if (body.whisper !== undefined && (typeof body.whisper !== "string" || modelSpec(body.whisper)?.kind !== "whisper")) {
+        return yield* json({ error: "choose a transcription model to warm" }, 400)
+      }
+      const whisperModel = (body.whisper as string | undefined) ?? likelyWhisperModel() ?? ctx.selection.whisper
+      const whisperWarming = yield* warmWhisperInBackground(ctx, whisperModel)
+      const model = body.model as string | undefined
+      // Without a cleanup model, or with `wait: false`, respond at once and load in the background.
+      if (model === undefined || body.wait === false) {
+        const llmModel = model ?? likelyLlmModel() ?? ctx.selection.llm
+        const llmReady = yield* checkModelReady(ctx.cfg, llmModel)
+        if (llmReady) {
+          yield* Effect.forkDaemon(acquireLlama(ctx.cfg, llmModel).pipe(
+            Effect.tap((lease) => Effect.sync(() => lease.release())),
+            Effect.catchAll((error) => Effect.sync(() => logFailure(`cleanup warm (${llmModel})`)(error))),
+          ))
+        }
+        return yield* json({
+          warming: true,
+          model: llmReady ? llmModel : null,
+          whisper: whisperWarming ? whisperModel : null,
+          runtime: llamaRuntime(),
+          whisperRuntime: whisperRuntime(),
+        }, 202)
+      }
+      if (!(yield* checkModelReady(ctx.cfg, model))) {
         return yield* json({ error: "download the cleanup model first" }, 409)
       }
-      const loaded = yield* Effect.either(acquireLlama(ctx.cfg, body.model))
+      const loaded = yield* Effect.either(acquireLlama(ctx.cfg, model))
       if (loaded._tag === "Left") return yield* json({ error: loaded.left.reason }, 503)
       loaded.right.release()
-      return yield* json({ ready: true, model: body.model, runtime: llamaRuntime() })
+      return yield* json({
+        ready: true, model, runtime: llamaRuntime(),
+        whisper: whisperWarming ? whisperModel : null, whisperRuntime: whisperRuntime(),
+      })
     })),
     HttpRouter.post("/v1/models/delete", Effect.gen(function* () {
       const req = yield* HttpServerRequest.HttpServerRequest
@@ -243,6 +284,9 @@ export const makeRouter = (ctx: ApiContext) =>
       }
       if (spec.kind === "whisper" && whisperMemoryState(spec.id) === "inUse") {
         return yield* json({ error: "the transcription model is in use" }, 409)
+      }
+      if (spec.kind === "whisper" && whisperRuntime().modelId === spec.id) {
+        yield* Effect.promise(() => unloadWhisper())
       }
       if (spec.kind === "llm" && liveLlmModel() === spec.id) {
         const runtime = llamaRuntime()
@@ -290,42 +334,35 @@ export const makeRouter = (ctx: ApiContext) =>
       }
       const requestId = requestIdentity(req)
       // Body: WAV bytes (Content-Type: audio/wav, octet-stream).
-      const dir = yield* Effect.promise(() => mkdtemp(path.join(tmpdir(), "omil-up-")))
-      try {
-        const audioPath = path.join(dir, "audio.wav")
-        const buf = yield* req.arrayBuffer
-        if (buf.byteLength === 0) return yield* json({ error: "empty body" }, 400)
-        if (buf.byteLength > 200 * 1024 * 1024) return yield* json({ error: "audio too large (200MB cap)" }, 413)
-        yield* Effect.promise(() => writeFile(audioPath, Buffer.from(buf)))
-        const outcome = yield* Effect.either(Effect.tryPromise({
-          try: () => transcriptionQueue.enqueue(
-            requestId,
-            () => Effect.runPromise(transcribeFile(ctx.cfg, audioPath, language, model.id, sensitivity)),
-          ),
-          catch: (error) => error instanceof ModelError ? error : new ModelError(String(error)),
-        }))
-        if (outcome._tag === "Left") {
-          const msg = outcome.left.reason
-          const needsModels = /download|checksum|size|binary|exited/i.test(msg)
-          return yield* json({ error: msg }, needsModels ? 503 : 500)
-        }
-        const queued = outcome.right
-        const t = queued.value
-        return yield* json({
-          text: t.text,
-          segments: t.segments,
-          model: t.model,
-          requestId: queued.requestId,
-          queue: {
-            jobId: queued.jobId,
-            positionAtEnqueue: queued.positionAtEnqueue,
-            waitedMs: queued.waitedMs,
-          },
-          warning: "server-side inference on your own Mac; LAN transport, no third parties",
-        })
-      } finally {
-        yield* Effect.promise(() => rm(dir, { recursive: true, force: true }))
+      const buf = yield* req.arrayBuffer
+      if (buf.byteLength === 0) return yield* json({ error: "empty body" }, 400)
+      if (buf.byteLength > 200 * 1024 * 1024) return yield* json({ error: "audio too large (200MB cap)" }, 413)
+      const audio = Buffer.from(buf)
+      const outcome = yield* Effect.either(Effect.tryPromise({
+        try: () => transcriptionQueue.enqueue(
+          requestId,
+          () => Effect.runPromise(transcribeAudio(ctx.cfg, audio, language, model.id, sensitivity)),
+        ),
+        catch: toModelError,
+      }))
+      if (outcome._tag === "Left") {
+        const msg = outcome.left.reason
+        const needsModels = /download|checksum|size|binary|exited/i.test(msg)
+        return yield* json({ error: msg }, needsModels ? 503 : 500)
       }
+      const queued = outcome.right
+      const t = queued.value
+      return yield* json({
+        text: t.text,
+        segments: t.segments,
+        model: t.model,
+        requestId: queued.requestId,
+        queue: {
+          jobId: queued.jobId,
+          positionAtEnqueue: queued.positionAtEnqueue,
+          waitedMs: queued.waitedMs,
+        },
+      })
     })),
     HttpRouter.post("/v1/cleanup", Effect.gen(function* () {
       const req = yield* HttpServerRequest.HttpServerRequest
@@ -381,7 +418,7 @@ export const makeRouter = (ctx: ApiContext) =>
             Effect.ensuring(Effect.sync(() => lease?.release())),
           )
         }))),
-        catch: (error) => error instanceof ModelError ? error : new ModelError(String(error)),
+        catch: toModelError,
       }))
       if (outcome._tag === "Left") {
         return yield* json({ error: `cleanup model unavailable: ${outcome.left.reason}` }, 503)
@@ -399,5 +436,3 @@ export const makeRouter = (ctx: ApiContext) =>
       })
     })),
   )
-
-export { stopLlama }

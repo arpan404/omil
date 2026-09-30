@@ -15,12 +15,12 @@ packages:
 
 settings:
   base:
-    DEVELOPMENT_TEAM: BVT55BT25R
+    DEVELOPMENT_TEAM: 5J88TLUP2J
     CODE_SIGN_STYLE: Automatic
     SWIFT_VERSION: "6.0"
     SWIFT_STRICT_CONCURRENCY: complete
     MARKETING_VERSION: "0.1.0"
-    CURRENT_PROJECT_VERSION: "1"
+    CURRENT_PROJECT_VERSION: "2"
 
 targets:
   OmilMac:
@@ -34,10 +34,12 @@ targets:
         buildPhase: resources
     dependencies:
       - package: OmilCore
+      - package: OmilCore
+        product: OmilDesign
       - package: Sparkle
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.arpan404.omil
+        PRODUCT_BUNDLE_IDENTIFIER: sh.arpan.omil
         PRODUCT_NAME: Omil
         PRODUCT_MODULE_NAME: OmilMac
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
@@ -52,10 +54,12 @@ targets:
       - path: Apps/iOS
     dependencies:
       - package: OmilCore
+      - package: OmilCore
+        product: OmilDesign
       - target: OmilKeyboard
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.arpan404.omil.ios
+        PRODUCT_BUNDLE_IDENTIFIER: sh.arpan.omil.ios
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_FILE: Apps/iOS/Info.plist
         CODE_SIGN_ENTITLEMENTS: Apps/iOS/OmilIOS.entitlements
@@ -71,7 +75,7 @@ targets:
       - package: OmilCore
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.arpan404.omil.ios.keyboard
+        PRODUCT_BUNDLE_IDENTIFIER: sh.arpan.omil.ios.keyboard
         INFOPLIST_FILE: Apps/Keyboard/Info.plist
         CODE_SIGN_ENTITLEMENTS: Apps/Keyboard/OmilKeyboard.entitlements
 
@@ -86,7 +90,7 @@ targets:
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
-        PRODUCT_BUNDLE_IDENTIFIER: com.arpan404.omil.tests
+        PRODUCT_BUNDLE_IDENTIFIER: sh.arpan.omil.tests
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Omil.app/Contents/MacOS/Omil"
         BUNDLE_LOADER: "$(TEST_HOST)"
 

@@ -70,21 +70,103 @@ xcodegen generate
 git diff -- Omil.xcodeproj
 ```
 
-Set a release version and bump its build number:
+To create a downloadable Mac ZIP locally, fill in `.env` using `.env.release.example`
+as a reference. Keep your existing `.env` if you already have one. The local ZIP
+needs `APPLE_TEAM_ID`, `SPARKLE_PUBLIC_KEY`, and an App Store Connect team API
+key. It detects your Developer ID Application certificate automatically, or uses
+`DEVELOPER_ID_APPLICATION` if you set it. Password authentication is not used.
+
+Create a team API key in [App Store Connect](https://appstoreconnect.apple.com/)
+under Users and Access → Integrations → App Store Connect API → Team Keys. Save
+its Key ID and Issuer ID, and download the `.p8` private key. Apple allows that key
+to be downloaded only once. Store it outside the repository or under the ignored
+`.build/signing/` directory. Set these values in your local `.env`:
+
+```dotenv
+APPLE_API_KEY_PATH="/absolute/path/to/AuthKey_YOURKEYID.p8"
+APPLE_API_KEY_ID="YOURKEYID"
+APPLE_API_ISSUER_ID="your-team-issuer-uuid"
+```
+
+These must be credentials for a team API key, not an individual API key. The same
+API key authenticates Mac notarization and Xcode's iOS provisioning. Give the key
+access to the signing and provisioning resources required by your team. Read
+[Apple's API key setup](https://developer.apple.com/documentation/appstoreconnectapi/creating-api-keys-for-app-store-connect-api)
+for permissions and key creation. Private `.p8` files are ignored by git.
+
+```sh
+./scripts/distribute-mac.sh --check
+./scripts/distribute-mac.sh
+# Optional version and build number for this build:
+./scripts/distribute-mac.sh 0.2.0 2
+```
+
+The script builds your current working tree, including uncommitted changes, and
+creates a signed and notarized Apple silicon build for macOS 14 or later. It waits
+for Apple to accept the submission, staples the ticket, checks Gatekeeper, and
+verifies the app extracted from the final ZIP. The ZIP, SHA-256 checksum, and Apple
+diagnostics go into a new folder under `.build/distribution/`. It does not install
+the app or publish a release. Shell credentials override `.env`. The local ZIP
+does not need a GitHub token or Sparkle private key.
+
+To build iOS locally for manual App Store upload, configure the team API credentials
+above, install your Apple Distribution certificate, and run:
+
+```sh
+./scripts/distribute-ios.sh --check
+./scripts/distribute-ios.sh
+# Optional version and build number:
+./scripts/distribute-ios.sh 0.2.0 2
+```
+
+The default `IOS_EXPORT_METHOD=app-store-connect` creates a signed IPA and retains
+`OmilIOS.xcarchive` in a new folder under `.build/distribution/`. Upload the IPA
+manually using Transporter, or open the archive in Xcode Organizer. The script
+checks the app and keyboard signatures, profile expiry, bundle IDs, versions, and
+App Group entitlements. It does not upload or publish the iOS app. For registered
+test devices, you can explicitly set `IOS_EXPORT_METHOD=release-testing`.
+
+To publish the Mac app on GitHub, set a release version and bump its build number:
 
 ```sh
 ./scripts/release.sh prepare 0.2.0
 ```
 
-Commit and push that change. Copy [`.env.release.example`](.env.release.example) to `.env` and fill in the credentials. Shell credentials override `.env`.
+Commit and push the changes. Fill in the credentials listed in
+[`.env.release.example`](.env.release.example), keeping your existing `.env`.
+Publishing requires GitHub authentication, Mac notarization credentials, and both
+Sparkle keys. Shell credentials override `.env`.
 
 ```sh
-cp .env.release.example .env
 ./scripts/release.sh status
-./scripts/release.sh publish --notes-file RELEASE_NOTES.md
+./scripts/release.sh publish
+# Optional reviewed notes, or a draft for inspection:
+./scripts/release.sh publish --notes-file RELEASE_NOTES.md --draft
 ```
 
-`publish` writes `Omil-<version>.zip` and `appcast.xml`, signs the update with Sparkle's EdDSA key, and uploads both to a GitHub Release. The app reads `appcast.xml` from the latest release.
+`publish` requires a clean worktree whose commit is pushed to its upstream. It
+builds a notarized Mac ZIP, generates `CHANGELOG.md` from commits
+since the previous stable GitHub Release, and includes release notes, a commit
+manifest, and `SHA256SUMS`. All files and Apple diagnostics remain in
+`.build/distribution/GitHub-release.*` if a step fails.
+
+The Mac updater uses
+`https://github.com/arpan404/omil/releases/latest/download/appcast.xml`.
+The script generates that feed with the Sparkle private key, verifies the ZIP's
+Ed25519 signature against the public key embedded in the app, and checks the
+download URL and build number. Build numbers must increase above the previous
+feed so existing installations detect updates. Every asset uploads to a draft
+before a stable release becomes GitHub's latest release. `--draft` keeps it
+unpublished; `--prerelease` publishes without replacing the stable updater feed.
+
+GitHub releases contain only the Mac distribution and its release metadata.
+GitHub is the automatic update source for the Mac app. iOS builds stay local for
+manual upload to Apple.
+
+Run `/usr/bin/python3 scripts/tests/release-workflow.py` to check the release
+workflow. It uses temporary Git repositories and mocked Apple/GitHub operations,
+with real Ed25519 signature verification. It covers successful publication,
+a failed Mac build, an invalid updater signature, and prerelease handling.
 
 ## Limits
 

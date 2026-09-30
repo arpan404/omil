@@ -1,7 +1,4 @@
 import Foundation
-#if canImport(Speech)
-import Speech
-#endif
 
 // MARK: - ServerTranscriptionBackend (Whisper large via Omil server)
 //
@@ -33,6 +30,7 @@ public actor ServerTranscriptionBackend: TranscriptionBackend {
     private let config: ServerConfig
     private let modelId: String?
     private let sensitivity: SpeechSensitivity
+    private let verifiesBeforeRecording: Bool
     private var pcm = Data()
     private var sampleRate = 16_000.0
     private var events: AsyncStream<BackendEvent>.Continuation?
@@ -43,12 +41,14 @@ public actor ServerTranscriptionBackend: TranscriptionBackend {
         config: ServerConfig,
         locale: String = "en-US",
         modelId: String? = nil,
-        sensitivity: SpeechSensitivity = .balanced
+        sensitivity: SpeechSensitivity = .balanced,
+        verifiesBeforeRecording: Bool = true
     ) {
         self.config = config
         self.locale = locale
         self.modelId = modelId
         self.sensitivity = sensitivity
+        self.verifiesBeforeRecording = verifiesBeforeRecording
     }
 
     private func request(
@@ -72,7 +72,10 @@ public actor ServerTranscriptionBackend: TranscriptionBackend {
         return req
     }
 
+    /// Checks the server and model before the mic opens. Clients that already
+    /// track readiness (the Mac app) skip it so recording starts immediately.
     public func prepare() async throws {
+        guard verifiesBeforeRecording else { return }
         let req = try request(path: "/v1/health")
         let (data, response) = try await URLSession.shared.data(for: req)
         guard (response as? HTTPURLResponse)?.statusCode == 200 else {
@@ -147,7 +150,6 @@ public actor ServerTranscriptionBackend: TranscriptionBackend {
                 var llamaBin: Bool?
                 var whisperModelReady: Bool?
                 var llmModelReady: Bool?
-                var llamaLive: Bool?
             }
             let h = try JSONDecoder().decode(Health.self, from: data)
             var parts: [String] = []

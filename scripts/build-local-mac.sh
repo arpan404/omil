@@ -15,12 +15,13 @@ if [[ $# -ne 0 && $# -ne 2 ]]; then
   exit 1
 fi
 
-team_id=5J88TLUP2J
+team_id=${APPLE_TEAM_ID:-5J88TLUP2J}
 signing_identities=()
 while IFS= read -r identity; do
   signing_identities+=("$identity")
-done < <(security find-identity -v -p codesigning | awk -v team="$team_id" '
-  index($0, "\"Developer ID Application:") && index($0, "(" team ")\"") { print $2 }
+done < <(security find-identity -v -p codesigning | awk -v team="$team_id" -v identity="${DEVELOPER_ID_APPLICATION:-}" '
+  index($0, "\"Developer ID Application:") && index($0, "(" team ")\"") &&
+  (identity == "" || $2 == identity || index($0, "\"" identity "\"")) { print $2 }
 ')
 if [[ ${#signing_identities[@]} -ne 1 ]]; then
   echo "error: expected one valid Developer ID Application signing identity for team $team_id; found ${#signing_identities[@]}" >&2
@@ -35,6 +36,9 @@ build_settings=(
   CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO
   ENABLE_HARDENED_RUNTIME=YES
 )
+if [[ -n ${SPARKLE_PUBLIC_KEY:-} ]]; then
+  build_settings+=("SPARKLE_PUBLIC_ED_KEY=$SPARKLE_PUBLIC_KEY")
+fi
 
 if [[ $# -eq 2 ]]; then
   version=$1
@@ -63,6 +67,12 @@ xcodebuild -project Omil.xcodeproj -scheme OmilMac -configuration Release \
   "${build_settings[@]}" build
 
 app="$derived_data/Build/Products/Release/Omil.app"
+codesign --force --options runtime --timestamp \
+  --entitlements Apps/Mac/OmilServer.entitlements \
+  --sign "${signing_identities[0]}" "$app/Contents/Resources/omil-server"
+codesign --force --options runtime --timestamp \
+  --entitlements Apps/Mac/OmilMac.entitlements \
+  --sign "${signing_identities[0]}" "$app"
 codesign --verify --deep --strict "$app"
 signed_team=$(codesign -dv --verbose=4 "$app" 2>&1 | sed -n 's/^TeamIdentifier=//p')
 if [[ "$signed_team" != "$team_id" ]]; then
@@ -103,7 +113,7 @@ if [[ "$install_after_build" == true ]]; then
   codesign --verify --deep --strict "$staging_dir/Omil.app"
 
   if pgrep -f '^/Applications/Omil.app/Contents/MacOS/Omil$' >/dev/null; then
-    osascript -e 'tell application id "com.arpan404.omil" to quit'
+    osascript -e 'tell application id "sh.arpan.omil" to quit'
     for _ in {1..15}; do
       if ! pgrep -f '^/Applications/Omil.app/Contents/MacOS/Omil$' >/dev/null; then
         break

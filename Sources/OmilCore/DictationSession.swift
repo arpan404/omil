@@ -28,7 +28,6 @@ public enum SessionEvent: Sendable {
 public enum SessionError: Error, Sendable {
     case backendUnavailable(reason: String)
     case assetMissing(locale: String)
-    case audioFailure(underlying: String)
     case cancelled
     case superseded  // a newer session/commit replaced this one
 }
@@ -248,8 +247,4 @@ public actor DictationSession {
         return view
     }
 
-    public func updateMode(_ m: CleanupMode) { mode = m }
-    public func updateDictionary(_ d: PersonalDictionary) {
-        pipeline = CleanupPipeline(dictionary: d)
-    }
 }

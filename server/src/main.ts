@@ -1,12 +1,13 @@
 import { Effect, Layer } from "effect"
 import { HttpServer } from "@effect/platform"
 import { BunHttpServer, BunRuntime } from "@effect/platform-bun"
-import { loadConfig } from "./Config"
+import { loadConfig, VAD_MODEL, type ServerConfig } from "./Config"
 import { loadOrCreateToken } from "./Auth"
-import { ensureModel } from "./Models"
-import { loadSelection } from "./ServerState"
-import { makeRouter, stopLlama, type ApiContext } from "./Api"
-import { stopWhisper } from "./Whisper"
+import { checkModelReady, ensureModel } from "./Models"
+import { loadSelection, type ModelSelection } from "./ServerState"
+import { makeRouter, type ApiContext } from "./Api"
+import { stopLlama } from "./LlamaServer"
+import { stopWhisper, warmWhisper } from "./Whisper"
 
 /**
  * Omil inference core. Serves Whisper transcription + local-model cleanup to
@@ -15,9 +16,32 @@ import { stopWhisper } from "./Whisper"
  *   bun src/main.ts
  *
  * Env: OMIL_HOST (default 127.0.0.1), OMIL_PORT (3217), OMIL_DATA (./data),
- *      OMIL_WHISPER_BIN, OMIL_LLAMA_BIN, OMIL_LLAMA_PORT (3218),
+ *      OMIL_WHISPER_BIN, OMIL_WHISPER_SERVER_BIN, OMIL_LLAMA_BIN,
+ *      OMIL_LLAMA_PORT (3218), OMIL_WHISPER_PORT (llama port + 1),
  *      OMIL_WHISPER_MODEL, OMIL_LLM_MODEL
  */
+
+/**
+ * Hashes already-downloaded weights and loads whisper-server so the first
+ * dictation after launch skips both. Never downloads a missing model.
+ */
+const prepareAtBoot = (cfg: ServerConfig, selection: ModelSelection) =>
+  Effect.gen(function* () {
+    if (yield* checkModelReady(cfg, selection.whisper)) {
+      yield* ensureModel(cfg, selection.whisper)
+      yield* ensureModel(cfg, VAD_MODEL.id)
+      yield* Effect.tryPromise({
+        try: () => warmWhisper(cfg, selection.whisper),
+        catch: (error) => error,
+      })
+    }
+    if (yield* checkModelReady(cfg, selection.llm)) yield* ensureModel(cfg, selection.llm)
+  }).pipe(
+    Effect.catchAll((error) => Effect.sync(() => {
+      const reason = typeof error === "object" && error !== null && "reason" in error ? error.reason : error
+      console.error(`boot preparation: ${String(reason)}`)
+    })),
+  )
 
 const program = Effect.gen(function* () {
   const cfg = yield* loadConfig
@@ -52,18 +76,18 @@ const program = Effect.gen(function* () {
   const selection = yield* Effect.promise(() => loadSelection(cfg.dataDir))
   const ctx: ApiContext = { cfg, token, selection }
   console.log(`Omil inference core: http://${cfg.host}:${cfg.port}`)
-  console.log(`whisper=${cfg.whisperModelId} llm=${cfg.llmModelId} (downloaded on first use)`)
+  console.log(`whisper=${selection.whisper} llm=${selection.llm} (downloaded on first use)`)
   yield* Effect.addFinalizer(() => Effect.sync(() => {
     stopLlama()
     stopWhisper()
   }))
+  yield* Effect.forkDaemon(prepareAtBoot(cfg, selection))
   const server = HttpServer.serve(makeRouter(ctx))
+  // Runs until interrupted; Ctrl-C triggers the scope finalizer (sidecar shutdown).
   yield* Layer.launch(Layer.provide(server, BunHttpServer.layer({
     port: cfg.port,
     hostname: cfg.host,
   })))
-  // Park forever; Ctrl-C triggers the scope finalizer (llama shutdown).
-  yield* Effect.never
 })
 
 program.pipe(Effect.scoped, BunRuntime.runMain)

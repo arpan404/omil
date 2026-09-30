@@ -1,18 +1,18 @@
-export interface QueueJobInfo {
+interface QueueJobInfo {
   readonly jobId: string
   readonly requestId: string
   readonly enqueuedAt: number
   readonly startedAt: number | null
 }
 
-export interface QueueSnapshot {
+interface QueueSnapshot {
   readonly name: string
   readonly active: QueueJobInfo | null
   readonly pending: ReadonlyArray<QueueJobInfo>
   readonly completed: number
 }
 
-export interface QueuedResult<T> {
+interface QueuedResult<T> {
   readonly value: T
   readonly jobId: string
   readonly requestId: string

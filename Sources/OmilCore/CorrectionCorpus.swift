@@ -27,12 +27,6 @@ public struct CorrectionCorpus: Codable, Sendable {
         let data = try Data(contentsOf: url)
         return try JSONDecoder().decode(CorrectionCorpus.self, from: data)
     }
-
-    public static var bundledURL: URL? {
-        // Main-target builds do not bundle resources; the eval command and
-        // tests pass explicit paths. Kept as a hook for app-bundled corpora.
-        nil
-    }
 }
 
 // MARK: - Metrics

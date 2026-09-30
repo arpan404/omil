@@ -208,8 +208,6 @@ public actor AppleSpeechBackend: TranscriptionBackend {
     }
 
     /// Negotiated input format for the installed assets. Query after prepare().
-    public func audioFormat() async -> AVAudioFormat? { negotiatedFormat }
-
     /// File-based transcription (recorded evaluation sets, offline tests).
     /// Returns finalized text in order. Requires prepare() first.
     public func transcribeFile(url: URL) async throws -> TranscribedFile {

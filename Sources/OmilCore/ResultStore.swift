@@ -57,7 +57,7 @@ public final class ResultStore: @unchecked Sendable {
     private let defaults: UserDefaults?
     private let keyPrefix = "omil.session."
 
-    /// - Parameter appGroupId: e.g. "group.com.omil.shared". nil = in-memory
+    /// - Parameter appGroupId: e.g. "group.sh.arpan.omil.shared". nil = in-memory
     ///   (Mac direct build without groups, tests).
     public init(appGroupId: String? = nil) {
         if let id = appGroupId {

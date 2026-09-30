@@ -1,7 +1,23 @@
 import { describe, expect, test } from "bun:test"
 import { Effect } from "effect"
 import { cleanLocal, cleanWithQwen } from "../src/QwenCleanup"
-import { stripMarkdownFormatting, validateProseCleanup, wordChanges } from "../src/ProseCleanup"
+import { cleanupMaxTokens, stripMarkdownFormatting, validateProseCleanup, wordChanges } from "../src/ProseCleanup"
+
+describe("cleanup output budget", () => {
+  test("scales with transcript length inside the 128 to 2048 token range", () => {
+    expect(cleanupMaxTokens("")).toBe(128)
+    expect(cleanupMaxTokens("Make it 42.")).toBe(128)
+    expect(cleanupMaxTokens("a".repeat(300))).toBe(164)
+    expect(cleanupMaxTokens("a".repeat(3_000))).toBe(1_064)
+    expect(cleanupMaxTokens("a".repeat(50_000))).toBe(2_048)
+  })
+
+  test("budgets more tokens per character for non-Latin scripts", () => {
+    const chinese = "请把报告发给张伟".repeat(20)
+    expect(cleanupMaxTokens(chinese)).toBeGreaterThan(chinese.length)
+    expect(cleanupMaxTokens("café ".repeat(60))).toBe(164)
+  })
+})
 
 describe("prose cleanup", () => {
   test("removes model-added Markdown without changing URLs or ordinary punctuation", () => {

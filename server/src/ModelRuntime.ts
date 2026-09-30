@@ -14,7 +14,7 @@ export interface ModelRuntimeSnapshot {
   readonly error: string | null
 }
 
-export interface ModelLoadToken {
+interface ModelLoadToken {
   readonly generation: number
   readonly modelId: string
 }

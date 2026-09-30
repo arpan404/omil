@@ -10,7 +10,7 @@ import { modelSpec, VAD_MODEL, type ServerConfig } from "./Config"
  * Binaries (whisper.cpp, llama.cpp) come from the environment (brew);
  * weights download here on first run with size verification and
  * trust-on-first-use SHA-256 pinning (recorded in manifest.local.json,
- * verified on every later boot, removable by deleting the models dir).
+ * verified before first use after each launch, removable by deleting the models dir).
  */
 
 export class ModelError {
@@ -18,7 +18,10 @@ export class ModelError {
   constructor(readonly reason: string) {}
 }
 
-export type ModelFileState = "checking" | "downloading" | "verifying" | "ready" | "failed"
+export const toModelError = (error: unknown): ModelError =>
+  error instanceof ModelError ? error : new ModelError(String(error))
+
+type ModelFileState = "checking" | "downloading" | "verifying" | "ready" | "failed"
 
 export interface ModelFileLifecycle {
   readonly state: ModelFileState
@@ -44,30 +47,39 @@ export const modelFileLifecycle = (
   id: string,
 ): ModelFileLifecycle | null => operations.get(operationKey(cfg, id)) ?? null
 
-export const modelsDir = (cfg: ServerConfig) => path.join(cfg.dataDir, "models")
-export const modelPath = (cfg: ServerConfig, id: string) => {
+const modelsDir = (cfg: ServerConfig) => path.join(cfg.dataDir, "models")
+const modelPath = (cfg: ServerConfig, id: string) => {
   const spec = managedModelSpec(id)
   if (!spec) throw new ModelError(`unknown model ${id}`)
   return path.join(modelsDir(cfg), spec.filename)
 }
 
+const resolvedBinaries = new Map<string, string>()
+
+const isExecutable = (file: string): Promise<boolean> =>
+  access(file, constants.X_OK).then(() => true, () => false)
+
+/** Absolute path of an executable, or null. Hits are cached; misses rescan so a later install is noticed. */
+export const resolveBinary = async (bin: string): Promise<string | null> => {
+  const cached = resolvedBinaries.get(bin)
+  if (cached && await isExecutable(cached)) return cached
+  resolvedBinaries.delete(bin)
+  const candidates = bin.includes(path.sep)
+    ? [bin]
+    : (process.env.PATH ?? "").split(path.delimiter).filter(Boolean).map((dir) => path.join(dir, bin))
+  for (const candidate of candidates) {
+    if (await isExecutable(candidate)) {
+      resolvedBinaries.set(bin, candidate)
+      return candidate
+    }
+  }
+  return null
+}
+
 export const checkBinaries = (cfg: ServerConfig): Effect.Effect<Record<string, boolean>, never, never> =>
   Effect.promise(async () => {
-    const out: Record<string, boolean> = {}
-    for (const [name, bin] of [["whisper", cfg.whisperBin], ["llama", cfg.llamaBin]] as const) {
-      const candidates = bin.includes(path.sep)
-        ? [bin]
-        : (process.env.PATH ?? "").split(path.delimiter).map((dir) => path.join(dir, bin))
-      out[name] = false
-      for (const candidate of candidates) {
-        try {
-          await access(candidate, constants.X_OK)
-          out[name] = true
-          break
-        } catch { /* try the next PATH entry */ }
-      }
-    }
-    return out
+    const [whisper, llama] = await Promise.all([resolveBinary(cfg.whisperBin), resolveBinary(cfg.llamaBin)])
+    return { whisper: whisper !== null, llama: llama !== null }
   })
 
 const sha256File = async (file: string): Promise<string> => {
@@ -98,16 +110,35 @@ export const verifiedSha256 = async (file: string): Promise<string> => {
 
 interface LocalManifest { [filename: string]: { sha256: string; bytes: number; url: string } }
 
+const manifestFile = (cfg: ServerConfig) => path.join(modelsDir(cfg), "manifest.local.json")
+const manifestCache = new Map<string, { mtimeMs: number; size: number; manifest: LocalManifest }>()
+
+/** Parsed once per on-disk version; a stat detects edits made outside this process. */
 const readManifest = async (cfg: ServerConfig): Promise<LocalManifest> => {
-  try {
-    return await Bun.file(path.join(modelsDir(cfg), "manifest.local.json")).json()
-  } catch {
+  const file = manifestFile(cfg)
+  const info = await stat(file).catch(() => null)
+  if (!info) {
+    manifestCache.delete(file)
     return {}
   }
+  const cached = manifestCache.get(file)
+  if (cached && cached.mtimeMs === info.mtimeMs && cached.size === info.size) return { ...cached.manifest }
+  let manifest: LocalManifest
+  try {
+    manifest = await Bun.file(file).json()
+  } catch {
+    manifest = {}
+  }
+  manifestCache.set(file, { mtimeMs: info.mtimeMs, size: info.size, manifest })
+  return { ...manifest }
 }
 
 const writeManifest = async (cfg: ServerConfig, m: LocalManifest) => {
-  await Bun.write(path.join(modelsDir(cfg), "manifest.local.json"), JSON.stringify(m, null, 2))
+  const file = manifestFile(cfg)
+  manifestCache.delete(file)
+  await Bun.write(file, JSON.stringify(m, null, 2))
+  const info = await stat(file).catch(() => null)
+  if (info) manifestCache.set(file, { mtimeMs: info.mtimeMs, size: info.size, manifest: { ...m } })
 }
 
 /** Fast, non-mutating readiness probe for /v1/health (never downloads).
@@ -278,7 +309,7 @@ const ensureModelOnce = (
     return dest
   })
 
-/** Coalesces duplicate preparation requests and publishes one honest state. */
+/** Coalesces duplicate preparation requests into one download/verification. */
 export const ensureModel = (
   cfg: ServerConfig,
   id: string,
@@ -306,13 +337,13 @@ export const ensureModel = (
             state: "failed", receivedBytes: 0,
             totalBytes: managedModelSpec(id)?.expectedBytes ?? null, error: reason,
           })
-          throw error instanceof ModelError ? error : new ModelError(reason)
+          throw toModelError(error)
         })
         .finally(() => inFlight.delete(key))
       inFlight.set(key, pending)
       return pending
     },
-    catch: (error) => error instanceof ModelError ? error : new ModelError(String(error)),
+    catch: toModelError,
   })
 
 /** Delete one downloaded weight and its local integrity record. */
@@ -340,7 +371,7 @@ export const deleteModel = (
       operations.delete(key)
       return existed
     },
-    catch: (error) => error instanceof ModelError ? error : new ModelError(String(error)),
+    catch: toModelError,
   })
 
 function sizeMatches(expected: number | null, actual: number, contentLength?: number): boolean {

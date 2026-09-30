@@ -10,12 +10,17 @@ let package = Package(
     ],
     products: [
         .library(name: "OmilCore", targets: ["OmilCore"]),
+        .library(name: "OmilDesign", targets: ["OmilDesign"]),
         .executable(name: "omil-eval", targets: ["OmilEval"]),
     ],
     targets: [
         .target(
             name: "OmilCore",
             path: "Sources/OmilCore"
+        ),
+        .target(
+            name: "OmilDesign",
+            path: "Sources/OmilDesign"
         ),
         .executableTarget(
             name: "OmilEval",

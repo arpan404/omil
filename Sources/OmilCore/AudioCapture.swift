@@ -15,7 +15,6 @@ public enum CaptureState: String, Sendable {
 }
 
 public enum CaptureError: Error, Sendable {
-    case permissionDenied
     case noInputDevice
     case engineFailure(underlying: String)
     case formatUnsupported(detail: String)

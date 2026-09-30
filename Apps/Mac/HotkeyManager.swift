@@ -1,11 +1,13 @@
 import AppKit
-import OmilCore
 
 /// Monitors both Omil and other apps. Global key events require Accessibility access.
 @MainActor
 final class HotkeyManager: ObservableObject {
     static let shared = HotkeyManager()
     static let shortcutModifiers: NSEvent.ModifierFlags = [.control, .option, .shift, .command]
+    /// The fixed hands-free shortcut, matched in `handleKeyDown` (key code 31 = O).
+    static let toggleShortcutSymbol = "⌃⌥O"
+    static let toggleShortcutName = "Control + Option + O"
 
     @Published private(set) var pushToTalkKeyCode: Int
     @Published private(set) var pushToTalkModifiers: NSEvent.ModifierFlags

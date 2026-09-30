@@ -115,18 +115,6 @@ public final class RecoveryAudioStore: @unchecked Sendable {
         try writeMetadata(readMetadata().filter { $0.id != recording.id })
     }
 
-    public func deleteAll() throws {
-        guard fileManager.fileExists(atPath: rootURL.path) else { return }
-        for recording in readMetadata() {
-            let url = audioURL(for: recording)
-            if fileManager.fileExists(atPath: url.path) {
-                try fileManager.removeItem(at: url)
-            }
-        }
-        try writeMetadata([])
-        removeOrphanedAudio(keeping: [])
-    }
-
     @discardableResult
     public func prune(
         _ recordings: [RecoveryRecording]? = nil,

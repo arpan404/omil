@@ -4,8 +4,9 @@ import AVFAudio
 import OmilCore
 
 // MARK: - SessionCoordinator (iOS)
-// The containing app owns audio capture + local inference and publishes
-// completed results to the shared ResultStore for the keyboard.
+// The app captures audio and streams it to the selected speech engine (by
+// default the Omil server on the user's Mac), then publishes completed results
+// to the shared ResultStore for the keyboard.
 
 @MainActor
 final class SessionCoordinator: ObservableObject {
@@ -13,13 +14,14 @@ final class SessionCoordinator: ObservableObject {
         case idle, preparing, recording, processing, ready, failed
     }
 
-    static let appGroupId = "group.com.omil.shared"
+    static let appGroupId = "group.sh.arpan.omil.shared"
 
     @Published var phase: Phase = .idle
     @Published var draftText = ""
     @Published var lastRaw = ""
     @Published var lastCleaned = ""
-    @Published var lastDiff = ""
+    /// Live microphone level (0...1) while recording, for UI feedback only.
+    @Published var audioLevel: Double = 0
     @Published var statusMessage = "Idle"
     @Published var backendDescription = "Probing…"
     @Published var assetState = "Unknown"
@@ -27,23 +29,19 @@ final class SessionCoordinator: ObservableObject {
     @Published var speechSensitivity: SpeechSensitivity = .balanced {
         didSet { UserDefaults.standard.set(speechSensitivity.rawValue, forKey: "omil.speechSensitivity") }
     }
-    @Published var keyboardHint = ""
-    // Server core (user's Mac). Thin client: capture + display + handoff.
-    // Full mobile pass comes after Mac validation.
+    @Published var keyboardResultPending = false
     @Published var backendPreference: BackendChoice = .omilServer
     @Published var serverConfig = ServerConfig(host: "", port: 3217)
     @Published var serverCleanupEnabled = true
     @Published var serverHealth = "Unknown"
     @Published var pairingMessage = ""
     @Published var pairingInProgress = false
-    @Published var serverNote = ""
     @Published var cleanupPromptText = ""
     @Published private(set) var cleanupPromptCustom = false
     private var activeCleanupPrompt: String?
 
     let store: ResultStore
     private var session: DictationSession?
-    private var backend: (any TranscriptionBackend)?
     private var capture = AudioCapture()
     private var audioForwarder: AudioChunkForwarder?
     private var probe = SpeechSupportProbe()
@@ -169,14 +167,13 @@ final class SessionCoordinator: ObservableObject {
             config: serverConfig,
             modelId: ServerCatalog.whisperIdForFile[ServerCatalog.defaultWhisperFile]
         )
-        let health = await probeBackend.serverHealth()
-        await MainActor.run { self.serverHealth = health }
+        serverHealth = await probeBackend.serverHealth()
     }
 
-    func serverClean(rawText: String, requestId: String) async -> (text: String, note: String) {
-        guard serverCleanupEnabled, cleanupMode == .clean else {
-            return (rawText, "local rules")
-        }
+    /// Returns the server's cleanup of `rawText`, or `rawText` unchanged when
+    /// server cleanup is off or fails (the caller then keeps the local result).
+    func serverClean(rawText: String, requestId: String) async -> String {
+        guard serverCleanupEnabled, cleanupMode == .clean else { return rawText }
         let client = ServerCleanupClient(
             config: serverConfig,
             dictionary: dictionary,
@@ -189,9 +186,9 @@ final class SessionCoordinator: ObservableObject {
                 mode: cleanupMode,
                 requestId: requestId
             )
-            return (r.text, "Model cleanup via server (\(r.acceptedEdits.count) edits)")
+            return r.text
         } catch {
-            return (rawText, "Server cleanup unavailable (\(error)); used local rules")
+            return rawText
         }
     }
 
@@ -212,11 +209,7 @@ final class SessionCoordinator: ObservableObject {
     }
 
     func refreshKeyboardHint() {
-        if let pending = store.pendingResult() {
-            keyboardHint = "Keyboard has a result ready (\(pending.cleanedText?.prefix(40) ?? "")…)"
-        } else {
-            keyboardHint = "No pending keyboard result."
-        }
+        keyboardResultPending = store.pendingResult() != nil
     }
 
     private func makeBackend() -> (any TranscriptionBackend)? {
@@ -252,7 +245,6 @@ final class SessionCoordinator: ObservableObject {
         }
         let session = DictationSession(mode: cleanupMode, dictionary: dictionary)
         self.session = session
-        self.backend = backend
         self.shared = store.createSession(mode: cleanupMode)
         if let s = shared { store.updateState(s.sessionId, state: .recording) }
         phase = .preparing
@@ -261,26 +253,20 @@ final class SessionCoordinator: ObservableObject {
         Task {
             let granted = await AudioCapture.requestPermission()
             guard granted else {
-                await MainActor.run {
-                    self.phase = .failed
-                    self.statusMessage = "Microphone permission denied."
-                }
+                self.phase = .failed
+                self.statusMessage = "Microphone permission denied."
                 return
             }
             self.configureAudioSession()
             do {
                 try await session.start(backend: backend)
             } catch {
-                await MainActor.run {
-                    self.phase = .failed
-                    self.statusMessage = "Could not start: \(error)"
-                }
+                self.phase = .failed
+                self.statusMessage = "Could not start: \(error)"
                 return
             }
-            await MainActor.run {
-                self.phase = .recording
-                self.statusMessage = "Recording — tap Stop to finalize"
-            }
+            self.phase = .recording
+            self.statusMessage = "Recording — tap Stop to finalize"
             self.streamEvents(session: session)
             self.startCapture(backend: backend)
         }
@@ -304,19 +290,14 @@ final class SessionCoordinator: ObservableObject {
             for await event in await session.events() {
                 switch event {
                 case .draftAvailable(let text):
-                    await MainActor.run { self.draftText = text }
+                    self.draftText = text
                 case .finalized(let snap):
-                    await MainActor.run { self.lastRaw = snap.rawText }
+                    self.lastRaw = snap.rawText
                 case .cleaned(let view):
-                    await MainActor.run {
-                        self.lastCleaned = view.text
-                        self.lastDiff = DiffWords.diff(raw: self.lastRaw, cleaned: view.text)
-                    }
+                    self.lastCleaned = view.text
                 case .failed(let err):
-                    await MainActor.run {
-                        self.phase = .failed
-                        self.statusMessage = "Recognition failed: \(err)"
-                    }
+                    self.phase = .failed
+                    self.statusMessage = "Recognition failed: \(err)"
                 }
             }
         }
@@ -327,9 +308,20 @@ final class SessionCoordinator: ObservableObject {
             await backend.appendAudio(chunk.pcm16, timestamp: chunk.timestamp)
         }
         audioForwarder = forwarder
+        #if DEBUG
+        if let path = DebugLaunch.dictateFile {
+            feedDebugAudio(path: path, to: forwarder)
+            return
+        }
+        #endif
         do {
-            try capture.start(targetSampleRate: 16_000, targetChannels: 1) { chunk in
+            try capture.start(targetSampleRate: 16_000, targetChannels: 1) { [weak self] chunk in
                 forwarder.append(chunk)
+                let level = AudioLevelMeter.normalizedRMS(pcm16: chunk.pcm16)
+                Task { @MainActor in
+                    guard let self, self.phase == .recording else { return }
+                    self.audioLevel = level
+                }
             }
         } catch {
             forwarder.cancel()
@@ -342,10 +334,38 @@ final class SessionCoordinator: ObservableObject {
         }
     }
 
+    #if DEBUG
+    /// Plays a 16 kHz mono WAV through the recording pipeline in place of the
+    /// microphone, then stops as if the user tapped Stop.
+    private func feedDebugAudio(path: String, to forwarder: AudioChunkForwarder) {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)), data.count > 44 else {
+            phase = .failed
+            statusMessage = "Debug audio not found: \(path)"
+            return
+        }
+        let pcm = data.dropFirst(44)
+        Task {
+            let chunkBytes = 3_200 // 100 ms
+            var offset = pcm.startIndex
+            while offset < pcm.endIndex {
+                let end = min(offset + chunkBytes, pcm.endIndex)
+                let chunk = Data(pcm[offset..<end])
+                let timestamp = Double(offset - pcm.startIndex) / 32_000
+                forwarder.append(CapturedChunk(pcm16: chunk, sampleRate: 16_000, timestamp: timestamp))
+                audioLevel = AudioLevelMeter.normalizedRMS(pcm16: chunk)
+                offset = end
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            stop()
+        }
+    }
+    #endif
+
     func stop() {
         guard phase == .recording, let session = session else { return }
         phase = .processing
         statusMessage = "Finalizing…"
+        audioLevel = 0
         capture.stop()
         let forwarder = audioForwarder
         audioForwarder = nil
@@ -357,10 +377,8 @@ final class SessionCoordinator: ObservableObject {
             if let result = await session.stop() {
                 await self.publish(result: result)
             } else {
-                await MainActor.run {
-                    self.phase = .idle
-                    self.statusMessage = "Cancelled"
-                }
+                self.phase = .idle
+                self.statusMessage = "Cancelled"
             }
         }
     }
@@ -369,42 +387,37 @@ final class SessionCoordinator: ObservableObject {
         capture.cancel()
         audioForwarder?.cancel()
         audioForwarder = nil
+        audioLevel = 0
         if let s = shared { store.cancelSession(s.sessionId) }
         Task {
             await session?.cancel()
-            await MainActor.run {
-                self.phase = .idle
-                self.draftText = ""
-                self.statusMessage = "Cancelled — nothing published"
-            }
+            self.phase = .idle
+            self.draftText = ""
+            self.statusMessage = "Cancelled — nothing published"
         }
     }
 
     private func publish(result: SessionResult) async {
         guard let committed = await session?.commitForDelivery() else {
-            await MainActor.run {
-                self.phase = .idle
-                self.statusMessage = "Nothing to publish"
-            }
+            self.phase = .idle
+            self.statusMessage = "Nothing to publish"
             return
         }
         let cleaned = await self.serverClean(
             rawText: committed.rawSnapshot.rawText,
             requestId: committed.sessionId.rawValue
         )
-        let finalText = cleaned.text.isEmpty ? committed.cleaned.text : cleaned.text
-        await MainActor.run { self.serverNote = cleaned.note }
+        let finalText = cleaned.isEmpty ? committed.cleaned.text : cleaned
         if let s = shared {
             store.publishResult(
                 s.sessionId, cleaned: finalText,
                 raw: committed.rawSnapshot.rawText, sequence: 1)
         }
-        await MainActor.run {
-            self.lastCleaned = finalText
-            self.phase = .ready
-            self.statusMessage = "Done — switch to the Omil keyboard and tap Insert, or copy below."
-            self.refreshKeyboardHint()
-        }
+        self.lastCleaned = finalText
+        DictationHistory.shared.add(raw: committed.rawSnapshot.rawText, cleaned: finalText)
+        self.phase = .ready
+        self.statusMessage = "Done — switch to the Omil keyboard and tap Insert, or copy below."
+        self.refreshKeyboardHint()
     }
 
     func setMode(_ m: CleanupMode) {
@@ -420,18 +433,20 @@ final class SessionCoordinator: ObservableObject {
     }
 
     func confirmDictionary(spoken: String, written: String) {
+        objectWillChange.send()
         dictionary.confirm(spoken: spoken, written: written)
         if let data = try? JSONEncoder().encode(dictionary) {
             UserDefaults.standard.set(data, forKey: "omil.dict")
         }
     }
 
-    var dictionaryEntries: [String: String] { dictionary.entries }
-}
-
-enum DiffWords {
-    static func diff(raw: String, cleaned: String) -> String {
-        if raw == cleaned { return "(no changes)" }
-        return "RAW: \(raw)\nCLEANED: \(cleaned)"
+    func removeDictionary(spoken: String) {
+        objectWillChange.send()
+        dictionary.remove(spoken: spoken)
+        if let data = try? JSONEncoder().encode(dictionary) {
+            UserDefaults.standard.set(data, forKey: "omil.dict")
+        }
     }
+
+    var dictionaryEntries: [String: String] { dictionary.entries }
 }

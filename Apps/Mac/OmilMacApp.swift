@@ -1,4 +1,5 @@
 import SwiftUI
+import OmilDesign
 import Combine
 import OmilCore
 
@@ -6,21 +7,24 @@ import OmilCore
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    /// Single shared controller — no init-time wiring to go stale.
     var controller: DictationController { AppContext.controller }
     private var mainWindowController: NSWindowController?
+    private var settingsWindowController: NSWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppContext.appDelegate = self
-        NSLog("Omil launched")
         controller.startup()
         PillManager.shared.attach(controller)
         showMainWindow()
     }
 
-    /// The main window is a plain AppKit window hosting SwiftUI content:
-    /// deterministic, unlike the SwiftUI Window scene which never
-    /// materialized in this app.
+    /// The main window is an AppKit window hosting SwiftUI, so it can be shown
+    /// from the menu bar, intents, and Dock clicks without a Window scene.
+    func showMainWindow(section: MainSection) {
+        AppNavigation.shared.section = section
+        showMainWindow()
+    }
+
     func showMainWindow() {
         let c = controller
         if mainWindowController == nil {
@@ -39,13 +43,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 backing: .buffered, defer: false)
             window.title = "Omil"
             window.titlebarAppearsTransparent = true
-            window.titleVisibility = .hidden
+            window.toolbarStyle = .unified
             window.minSize = NSSize(
                 width: min(760, visible.width - 16),
                 height: min(540, visible.height - 16)
             )
-            let palette = AppAppearance.shared.themePreset.palette(for: AppAppearance.shared.colorScheme)
-            window.backgroundColor = NSColor(hex: palette.canvas)
+            window.isOpaque = false
+            window.backgroundColor = .clear
             window.contentView = hosting
             position(window, in: visible)
             window.isReleasedWhenClosed = false
@@ -58,13 +62,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
         mainWindowController?.showWindow(nil)
         mainWindowController?.window?.makeKeyAndOrderFront(nil)
-        NSLog("Omil: main window shown (visible=%d)",
-              mainWindowController?.window?.isVisible == true ? 1 : 0)
     }
 
+    /// Settings get their own window, like other Mac apps, instead of a sheet
+    /// that blocks the main window.
     func showSettings() {
-        showMainWindow()
-        AppContext.settingsCoordinator.isPresented = true
+        if settingsWindowController == nil {
+            let size = NSSize(width: 820, height: 600)
+            let hosting = NSHostingView(rootView: SettingsView(controller: controller))
+            hosting.frame = NSRect(origin: .zero, size: size)
+            hosting.autoresizingMask = [.width, .height]
+            let window = NSWindow(
+                contentRect: NSRect(origin: .zero, size: size),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+                backing: .buffered, defer: false)
+            window.title = "Settings"
+            window.titlebarAppearsTransparent = true
+            window.titleVisibility = .hidden
+            window.minSize = NSSize(width: 720, height: 520)
+            window.collectionBehavior = [.fullScreenNone]
+            window.isOpaque = false
+            window.backgroundColor = .clear
+            window.contentView = hosting
+            window.isReleasedWhenClosed = false
+            window.center()
+            window.setFrameAutosaveName("OmilSettings")
+            settingsWindowController = NSWindowController(window: window)
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        settingsWindowController?.showWindow(nil)
+        settingsWindowController?.window?.makeKeyAndOrderFront(nil)
     }
 
 
@@ -86,14 +113,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let intersection = window.frame.intersection(screen.visibleFrame)
             return intersection.width >= 240 && intersection.height >= 160
         }
-    }
-
-    /// Kept for the menu action name.
-    @discardableResult
-    func openMainWindow() -> Bool {
-        NSLog("Omil: Open Omil pressed")
-        showMainWindow()
-        return mainWindowController?.window?.isVisible == true
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -147,15 +166,8 @@ enum AppContext {
     }()
     static let localServer = LocalServerManager()
     static let controller = DictationController(localServer: localServer)
-    static let settingsCoordinator = SettingsCoordinator()
     static let menuBarRecordingState = MenuBarRecordingState(controller: controller)
     static let updater = UpdateController()
-}
-
-
-@MainActor
-final class SettingsCoordinator: ObservableObject {
-    @Published var isPresented = false
 }
 
 @main
@@ -215,156 +227,235 @@ private struct RecordingMenuBarLabel: View {
 
 struct MenuBarView: View {
     @ObservedObject var controller: DictationController
+    @ObservedObject private var hotkeys = HotkeyManager.shared
+    @State private var copied = false
 
     private var recording: Bool { controller.phase == .recording }
     private var busy: Bool { controller.phase == .preparing || controller.phase == .processing }
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                OmilMark(size: 34)
-                Text("Omil")
-                    .font(.system(size: 16, weight: .semibold))
-                Spacer()
-                Button {
-                    AppContext.appDelegate?.showSettings()
-                } label: {
-                    Image(systemName: "gearshape")
-                        .frame(width: 28, height: 28)
-                }
-                .buttonStyle(HoverButtonStyle(cornerRadius: 7))
-                .help("Settings")
-                .accessibilityLabel("Settings")
-            }
-            .padding(18)
-
-            VStack(alignment: .leading, spacing: 14) {
-                HStack(spacing: 7) {
-                    Circle()
-                        .fill(recording ? OmilTheme.coral : controller.serverIsReady ? OmilTheme.mint : OmilTheme.warning)
-                        .frame(width: 6, height: 6)
-                    Text(statusTitle)
-                        .font(.system(size: 13, weight: .medium))
-                }
-                if recording {
-                    LiveSignalRail(meter: controller.audioMeter)
-                        .frame(height: 28)
-                } else if busy {
-                    HStack(spacing: 8) {
-                        ProgressView().controlSize(.small)
-                        Text(controller.statusMessage)
-                            .font(.system(size: 12))
-                            .foregroundStyle(OmilTheme.muted)
-                    }
-                } else if controller.phase == .failed {
-                    HStack(alignment: .top, spacing: 8) {
-                        Image(systemName: "exclamationmark.circle")
-                            .foregroundStyle(OmilTheme.warning)
-                        Text(controller.statusMessage)
-                            .font(.system(size: 12))
-                            .foregroundStyle(OmilTheme.muted)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .lineLimit(3)
-                            .help(controller.statusMessage)
-                    }
-                } else {
-                    Text("Hold \(HotkeyManager.shared.pushToTalkName) in any text field. Release when you're done speaking.")
-                        .font(.system(size: 12))
-                        .foregroundStyle(OmilTheme.muted)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Button {
-                    controller.toggle(source: .menuBar)
-                } label: {
-                    HStack {
-                        Image(systemName: recording ? "stop.fill" : "mic.fill")
-                        Text(recording ? "Stop and transcribe" : "Start dictation")
-                        Spacer()
-                        if !recording { Text("⌃⌥O").foregroundStyle(OmilTheme.signalInk.opacity(0.65)) }
-                    }
-                    .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(SignalButtonStyle())
-                .disabled(busy || (!recording && !controller.serverIsReady))
-                if recording || controller.phase == .preparing {
-                    Button("Cancel recording") { controller.cancel() }
-                        .buttonStyle(.plain)
-                        .font(.system(size: 12))
-                        .foregroundStyle(OmilTheme.muted)
-                }
-            }
-            .padding(16)
-            .background(OmilTheme.panelLifted.opacity(0.55), in: RoundedRectangle(cornerRadius: 12))
-            .padding(.horizontal, 12)
-            .padding(.bottom, 12)
-
+        VStack(spacing: 10) {
+            header
+            dictationModule
             if !controller.lastCleaned.isEmpty {
-                VStack(alignment: .leading, spacing: 7) {
-                    HStack {
-                        Text("Last transcript")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(OmilTheme.muted)
-                        Spacer()
-                        Button { controller.copyLast() } label: { Image(systemName: "doc.on.doc") }
-                            .buttonStyle(.plain)
-                            .help("Copy transcript")
-                            .accessibilityLabel("Copy transcript")
-                    }
-                    Text(controller.lastCleaned)
-                        .font(.system(size: 12))
-                        .lineLimit(3)
-                        .textSelection(.enabled)
-                }
-                .padding(.horizontal, 18)
-                .padding(.bottom, 14)
+                lastTranscriptModule
+                    .transition(.opacity.combined(with: .move(edge: .top)))
             }
-
-            Divider()
-            VStack(spacing: 2) {
-                menuRow("Open Omil", icon: "macwindow", shortcut: "") {
-                    AppContext.appDelegate?.showMainWindow()
-                }
-                menuRow("Show floating pill", icon: controller.pillEnabled ? "checkmark.circle.fill" : "circle", shortcut: "") {
-                    controller.setPillEnabled(!controller.pillEnabled)
-                }
-                menuRow("Check for updates", icon: "arrow.down.circle", shortcut: "") {
-                    AppContext.updater.checkForUpdates()
-                }
-                .disabled(!AppContext.updater.canCheckForUpdates)
-                menuRow("Quit Omil", icon: "power", shortcut: "⌘Q") { NSApp.terminate(nil) }
-            }
-            .padding(8)
+            menuModule
         }
+        .padding(10)
         .frame(width: 320)
-        .background(OmilTheme.panel)
         .foregroundStyle(OmilTheme.ink)
+        .animation(OmilMotion.standard, value: controller.phase)
+        .animation(OmilMotion.standard, value: controller.lastCleaned.isEmpty)
         .omilAppearance()
     }
 
-    private func menuRow(_ title: String, icon: String, shortcut: String, action: @escaping () -> Void) -> some View {
+    private var header: some View {
+        HStack(spacing: 10) {
+            OmilMark(size: 28)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Omil")
+                    .font(.system(size: 14, weight: .semibold))
+                HStack(spacing: 5) {
+                    Circle().fill(statusColor).frame(width: 6, height: 6)
+                    Text(statusTitle)
+                        .contentTransition(.opacity)
+                }
+                .font(OmilFont.caption)
+                .foregroundStyle(OmilTheme.muted)
+            }
+            Spacer()
+            Button {
+                AppContext.appDelegate?.showSettings()
+            } label: {
+                Image(systemName: "gearshape")
+            }
+            .buttonStyle(IconButtonStyle())
+            .help("Settings")
+            .accessibilityLabel("Settings")
+        }
+        .padding(.horizontal, 6)
+        .padding(.top, 4)
+    }
+
+    private var dictationModule: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ZStack {
+                if recording {
+                    LiveSignalRail(meter: controller.audioMeter)
+                        .frame(height: 30)
+                        .transition(.scale(scale: 0.8).combined(with: .opacity))
+                } else if busy {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text(controller.phase == .processing ? controller.processingStage.title : "Getting ready…")
+                            .font(OmilFont.callout)
+                            .foregroundStyle(OmilTheme.muted)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .transition(.opacity)
+                } else if controller.phase == .failed {
+                    Label(controller.statusMessage, systemImage: "exclamationmark.triangle.fill")
+                        .font(OmilFont.callout)
+                        .foregroundStyle(OmilTheme.muted)
+                        .symbolRenderingMode(.hierarchical)
+                        .lineLimit(3)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .transition(.opacity)
+                } else {
+                    Text("Hold \(hotkeys.pushToTalkName) in any text field, or start here.")
+                        .font(OmilFont.callout)
+                        .foregroundStyle(OmilTheme.muted)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .transition(.opacity)
+                }
+            }
+            .frame(minHeight: 30)
+
+            HStack(spacing: 8) {
+                Button {
+                    controller.toggle(source: .menuBar)
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: recording ? "stop.fill" : "mic.fill")
+                            .contentTransition(.symbolEffect(.replace))
+                        Text(recording ? "Stop and Transcribe" : "Start Dictation")
+                        Spacer()
+                        if !recording && hotkeys.toggleEnabled {
+                            Text(HotkeyManager.toggleShortcutSymbol)
+                                .opacity(0.6)
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .omilButton(prominent: true, tint: recording ? OmilTheme.coral : nil)
+                .controlSize(.large)
+                .disabled(busy || (!recording && !controller.serverIsReady))
+
+                if recording || controller.phase == .preparing {
+                    Button {
+                        controller.cancel()
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .buttonStyle(IconButtonStyle(destructive: true))
+                    .help("Cancel Recording")
+                    .accessibilityLabel("Cancel Recording")
+                    .transition(.scale.combined(with: .opacity))
+                }
+            }
+        }
+        .padding(12)
+        .background(OmilTheme.groupFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private var lastTranscriptModule: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Last Transcript")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(OmilTheme.muted)
+                Spacer()
+                Button {
+                    controller.copyLast()
+                    withAnimation(OmilMotion.quick) { copied = true }
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .seconds(1.4))
+                        withAnimation(OmilMotion.quick) { copied = false }
+                    }
+                } label: {
+                    Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                        .contentTransition(.symbolEffect(.replace))
+                }
+                .buttonStyle(IconButtonStyle())
+                .help(copied ? "Copied" : "Copy Transcript")
+                .accessibilityLabel(copied ? "Copied" : "Copy transcript")
+            }
+            Text(controller.lastCleaned)
+                .font(OmilFont.body)
+                .lineLimit(3)
+                .textSelection(.enabled)
+                .contentTransition(.opacity)
+        }
+        .padding(12)
+        .background(OmilTheme.groupFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private var menuModule: some View {
+        VStack(spacing: 0) {
+            menuRow("Open Omil", icon: "macwindow") {
+                AppContext.appDelegate?.showMainWindow()
+            }
+            menuToggleRow("Floating Pill", icon: "capsule", isOn: Binding(
+                get: { controller.pillEnabled },
+                set: { controller.setPillEnabled($0) }
+            ))
+            menuRow("Check for Updates…", icon: "arrow.down.circle") {
+                AppContext.updater.checkForUpdates()
+            }
+            .disabled(!AppContext.updater.canCheckForUpdates)
+            Divider().padding(.vertical, 4).padding(.horizontal, 8)
+            menuRow("Quit Omil", icon: "power", shortcut: "⌘Q") { NSApp.terminate(nil) }
+        }
+        .padding(4)
+        .background(OmilTheme.groupFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private func menuRow(_ title: String, icon: String, shortcut: String = "", action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 10) {
-                Image(systemName: icon).frame(width: 18)
+                Image(systemName: icon)
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(OmilTheme.muted)
+                    .frame(width: 18)
                 Text(title)
                 Spacer()
                 Text(shortcut).foregroundStyle(OmilTheme.muted)
             }
-            .font(.system(size: 12))
+            .font(OmilFont.body)
             .padding(.horizontal, 10)
-            .frame(height: 34)
+            .frame(height: 30)
             .contentShape(Rectangle())
         }
         .buttonStyle(HoverButtonStyle())
     }
 
+    private func menuToggleRow(_ title: String, icon: String, isOn: Binding<Bool>) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(OmilTheme.muted)
+                .frame(width: 18)
+            Text(title)
+            Spacer()
+            Toggle(title, isOn: isOn)
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+        }
+        .font(OmilFont.body)
+        .padding(.horizontal, 10)
+        .frame(height: 30)
+    }
+
+    private var statusColor: Color {
+        switch controller.phase {
+        case .recording: return OmilTheme.coral
+        case .failed: return OmilTheme.warning
+        case .preparing, .processing: return OmilTheme.signal
+        default: return controller.serverIsReady ? OmilTheme.mint : OmilTheme.warning
+        }
+    }
+
     private var statusTitle: String {
         switch controller.phase {
-        case .idle: return controller.serverIsReady ? "Ready to transcribe" : "Finish speech setup in Omil"
+        case .idle: return controller.serverIsReady ? "Ready" : "Engine not ready"
         case .preparing: return "Getting ready"
         case .recording: return "Listening"
         case .processing: return controller.processingStage.title
         case .ready: return controller.lastCleaned.isEmpty ? "No speech detected" : "Transcript ready"
-        case .failed: return "Couldn't finish. Open Omil for details."
+        case .failed: return "Couldn't finish"
         }
     }
 }
@@ -380,11 +471,22 @@ private enum SettingsPane: String, CaseIterable {
 
     var icon: String {
         switch self {
-        case .general: return "slider.horizontal.3"
-        case .appearance: return "paintpalette"
-        case .permissions: return "lock.shield"
+        case .general: return "gearshape.fill"
+        case .appearance: return "paintbrush.pointed.fill"
+        case .permissions: return "hand.raised.fill"
         case .shortcuts: return "command"
-        case .advanced: return "gearshape.2"
+        case .advanced: return "wrench.and.screwdriver.fill"
+        }
+    }
+
+    /// System Settings–style tile colors.
+    var tint: Color {
+        switch self {
+        case .general: return Color(hex: 0x8E8E93)
+        case .appearance: return Color(hex: 0x5E5CE6)
+        case .permissions: return Color(hex: 0x0A84FF)
+        case .shortcuts: return Color(hex: 0x636366)
+        case .advanced: return Color(hex: 0x48484A)
         }
     }
 }
@@ -397,8 +499,9 @@ private enum SettingsPillMode: String, CaseIterable {
 
 struct SettingsView: View {
     @ObservedObject var controller: DictationController
-    @Environment(\.dismiss) private var dismiss
-    @State private var pane: SettingsPane = .general
+    @ObservedObject private var appearance = AppAppearance.shared
+    @AppStorage("omil.settingsPane") private var pane: SettingsPane = .general
+    @Namespace private var paneSelection
     @ObservedObject private var hotkeys = HotkeyManager.shared
     @State private var pendingModifier: Int?
     @State private var shortcutError = ""
@@ -413,14 +516,6 @@ struct SettingsView: View {
     private func retentionTitle(_ days: Int) -> String {
         if days == 0 { return "Off" }
         return days == 1 ? "1 day" : "\(days) days"
-    }
-
-    var micStatusText: String {
-        switch controller.micPermission {
-        case .granted: return "granted"
-        case .denied: return "denied. Grant access to record"
-        case .unknown: return "not determined yet"
-        }
     }
 
     func startShortcutCapture() {
@@ -469,74 +564,49 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        HStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 0) {
-                HStack(spacing: 10) {
-                    OmilMark(size: 32)
-                    Text("Settings")
-                        .font(OmilType.display(17))
-                }
-                .padding(.horizontal, 16)
-                .padding(.top, 18)
-                .padding(.bottom, 22)
-
-                VStack(spacing: 4) {
-                    ForEach(SettingsPane.allCases, id: \.self) { item in
-                        Button {
-                            pane = item
-                        } label: {
-                            Label(item.rawValue, systemImage: item.icon)
-                                .font(.system(size: 12, weight: pane == item ? .semibold : .medium))
-                                .foregroundStyle(pane == item ? OmilTheme.ink : OmilTheme.muted)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.horizontal, 10)
-                                .frame(height: 36)
-                                .background(
-                                    pane == item ? OmilTheme.panelLifted : .clear,
-                                    in: RoundedRectangle(cornerRadius: 8)
-                                )
-                        }
-                        .buttonStyle(HoverButtonStyle())
-                        .accessibilityAddTraits(pane == item ? .isSelected : [])
+        NavigationSplitView {
+            List {
+                ForEach(SettingsPane.allCases, id: \.self) { item in
+                    ThemedSidebarRow(title: item.rawValue, selected: pane == item, namespace: paneSelection) {
+                        SettingsIconTile(symbol: item.icon, tint: item.tint)
+                    } action: {
+                        withAnimation(OmilMotion.standard) { pane = item }
                     }
+                    .listRowInsets(EdgeInsets(top: 1, leading: 0, bottom: 1, trailing: 0))
                 }
-                .padding(.horizontal, 10)
-                Spacer()
-                Text(controller.usesCustomServer ? "Using your transcription server" : "Speech processing on this Mac")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(OmilTheme.faint)
-                    .padding(16)
             }
-            .frame(width: 168)
-            .background(OmilTheme.sidebar)
-
-            Divider().overlay(OmilTheme.line)
-
-            ScrollView {
+            .listStyle(.sidebar)
+            .navigationSplitViewColumnWidth(min: 190, ideal: 210, max: 240)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                Text(AppVersion.display)
+                    .font(OmilFont.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 14)
+            }
+        } detail: {
+            ZStack {
                 Group {
                     switch pane {
                     case .general: generalPane
-                    case .appearance: appearancePane
-                    case .permissions: permissionsPane
-                    case .shortcuts: shortcutsPane
+                case .appearance: appearancePane
+                case .permissions: permissionsPane
+                case .shortcuts: shortcutsPane
                     case .advanced: advancedPane
                     }
                 }
-                .padding(28)
+                .id(pane)
+                .transition(.asymmetric(insertion: .opacity.combined(with: .offset(y: 8)), removal: .opacity))
             }
-            .scrollIndicators(.never)
-            .id(pane)
-            .background(OmilTheme.canvas)
+            .formStyle(.grouped)
+            .scrollContentBackground(.hidden)
+            .navigationTitle(pane.rawValue)
+            .toastHost()
         }
-        .frame(width: 900, height: 620)
-        .overlay(alignment: .topTrailing) {
-            Button("Done") { dismiss() }
-                .buttonStyle(QuietButtonStyle())
-                .keyboardShortcut(.cancelAction)
-                .padding(16)
-        }
-        .background(OmilTheme.canvas)
-        .omilAppearance()
+        .frame(minWidth: 720, minHeight: 520)
+        .id("\(appearance.themePreset.id)-\(appearance.colorScheme)")
+        .omilAppearance(fullSizeTitlebar: true)
         .onAppear {
             controller.refreshMicPermission()
             controller.refreshAXTrust()
@@ -546,10 +616,9 @@ struct SettingsView: View {
     }
 
     private var generalPane: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            SettingsPageHeader(title: "General", detail: "Choose how Omil handles your dictation.")
+        Form {
 
-            SettingsGroup(title: "Dictation") {
+            Section("Dictation") {
                 SettingsRow(title: "Cleanup", detail: "Clean removes fillers. Verbatim keeps every spoken word.") {
                     Picker("Cleanup", selection: $controller.cleanupMode) {
                         Text("Clean").tag(CleanupMode.clean)
@@ -557,9 +626,8 @@ struct SettingsView: View {
                     }
                     .pickerStyle(.segmented)
                     .labelsHidden()
-                    .frame(width: 180)
+                    .fixedSize()
                 }
-                SettingsDivider()
                 SettingsRow(title: "Speech sensitivity", detail: controller.speechSensitivity.detail) {
                     OmilPickerField(
                         title: "Speech sensitivity",
@@ -569,13 +637,11 @@ struct SettingsView: View {
                     )
                     .frame(width: 180)
                 }
-                SettingsDivider()
                 SettingsRow(title: "Automatically copy transcripts", detail: "Copy each finished transcript to the clipboard.") {
                     Toggle("Automatically copy transcripts", isOn: $controller.automaticallyCopyTranscripts)
                         .labelsHidden()
                         .toggleStyle(.switch)
                 }
-                SettingsDivider()
                 SettingsRow(title: "Floating pill", detail: "Always keeps a Start control on your desktop. Drag the pill background to move it.") {
                     OmilPickerField(
                         title: "Floating pill",
@@ -596,7 +662,6 @@ struct SettingsView: View {
                     )
                     .frame(width: 150)
                 }
-                SettingsDivider()
                 SettingsRow(
                     title: "Saved recordings",
                     detail: controller.audioRetentionDays == 0
@@ -616,7 +681,7 @@ struct SettingsView: View {
                 }
             }
 
-            SettingsGroup(title: "This Mac") {
+            Section("This Mac") {
                 SettingsRow(title: "Launch at login", detail: "Start Omil after you sign in.") {
                     Toggle("Launch at login", isOn: Binding(
                         get: { controller.launchAtLogin },
@@ -625,7 +690,6 @@ struct SettingsView: View {
                     .labelsHidden()
                     .toggleStyle(.switch)
                 }
-                SettingsDivider()
                 SettingsRow(
                     title: controller.usesCustomServer ? "Other server" : "Local engine",
                     detail: controller.speechSetupSummary
@@ -634,27 +698,35 @@ struct SettingsView: View {
                         Circle()
                             .fill(controller.serverIsReady ? OmilTheme.mint : OmilTheme.warning)
                             .frame(width: 7, height: 7)
-                        Button("Check") { Task { await controller.refreshBackendStatus() } }
-                            .buttonStyle(QuietButtonStyle())
+                        Button("Check") {
+                            Task { @MainActor in
+                                await controller.refreshBackendStatus()
+                                ToastCenter.shared.show(
+                                    controller.serverIsReady ? "Engine Is Ready" : "Engine Needs Attention",
+                                    symbol: controller.serverIsReady ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"
+                                )
+                            }
+                        }
+                            .omilButton()
                     }
                 }
             }
 
-            SettingsGroup(title: "Getting started") {
+            Section("Getting started") {
                 SettingsRow(title: "Review setup", detail: "Check permissions and try your first dictation again.") {
                     Button("Show setup") {
                         controller.onboarded = false
                         AppContext.appDelegate?.showMainWindow()
                     }
-                    .buttonStyle(QuietButtonStyle())
+                    .omilButton()
                     .disabled(controller.phase == .recording || controller.phase == .preparing || controller.phase == .processing)
                 }
             }
 
-            SettingsGroup(title: "Updates") {
+            Section("Updates") {
                 SettingsRow(title: AppVersion.display, detail: "Updates are delivered from GitHub Releases.") {
                     Button("Check now") { AppContext.updater.checkForUpdates() }
-                        .buttonStyle(QuietButtonStyle())
+                        .omilButton()
                         .disabled(!AppContext.updater.canCheckForUpdates)
                 }
             }
@@ -662,57 +734,53 @@ struct SettingsView: View {
     }
 
     private var appearancePane: some View {
-        VStack(alignment: .leading, spacing: 26) {
-            SettingsPageHeader(title: "Appearance", detail: "Choose a color scheme and a palette for Omil.")
-
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Color scheme")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(OmilTheme.ink)
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 3), spacing: 12) {
+        Form {
+            Section("Appearance") {
+                HStack(alignment: .top, spacing: 12) {
                     ForEach(AppearancePreference.allCases) { scheme in
-                        ColorSchemeCard(
-                            preference: scheme,
-                            preset: controller.themePreset,
-                            selected: controller.appearance == scheme
-                        ) {
+                        AppearanceChoice(title: scheme.title, selected: controller.appearance == scheme) {
+                            switch scheme {
+                            case .system:
+                                PaletteThumbnail(light: controller.themePreset.palette(for: .light),
+                                                 dark: controller.themePreset.palette(for: .dark))
+                            case .light:
+                                PaletteThumbnail(light: controller.themePreset.palette(for: .light))
+                            case .dark:
+                                PaletteThumbnail(light: controller.themePreset.palette(for: .dark))
+                            }
+                        } action: {
                             controller.appearance = scheme
                         }
                     }
                 }
+                .padding(.vertical, 10)
             }
-
-            VStack(alignment: .leading, spacing: 14) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text("Themes")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(OmilTheme.ink)
-                    Spacer()
-                    Text("\(ThemePreset.allCases.count) palettes")
-                        .font(.system(size: 11))
-                        .foregroundStyle(OmilTheme.muted)
-                }
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 12)], spacing: 12) {
+            WindowTransparencySection()
+            Section {
+                HStack(alignment: .top, spacing: 12) {
                     ForEach(ThemePreset.allCases) { preset in
-                        ThemePresetCard(
-                            preset: preset,
-                            activeScheme: AppAppearance.shared.colorScheme,
-                            selected: controller.themePreset == preset
-                        ) {
+                        AppearanceChoice(title: preset.title, subtitle: preset.detail,
+                                         selected: controller.themePreset == preset) {
+                            PaletteThumbnail(light: preset.palette(for: AppAppearance.shared.colorScheme))
+                        } action: {
                             controller.themePreset = preset
                         }
                     }
                 }
+                .padding(.vertical, 10)
+            } header: {
+                Text("Theme")
+            } footer: {
+                Text("Themes change Omil's colors only. Your Mac's accent color is unaffected.")
+                    .foregroundStyle(.secondary)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var permissionsPane: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            SettingsPageHeader(title: "Permissions", detail: "Manage microphone access and writing in other apps.")
+        Form {
 
-            SettingsGroup(title: "Microphone") {
+            Section("Microphone") {
                 PermissionSettingsRow(
                     icon: "mic.fill",
                     title: controller.micPermission == .granted ? "Microphone allowed" : "Microphone access needed",
@@ -726,7 +794,7 @@ struct SettingsView: View {
                 }
             }
 
-            SettingsGroup(title: "Writing in other apps") {
+            Section("Writing in other apps") {
                 PermissionSettingsRow(
                     icon: "cursorarrow.motionlines",
                     title: controller.axTrusted ? "Accessibility allowed" : "Accessibility access needed",
@@ -738,43 +806,41 @@ struct SettingsView: View {
                 ) {
                     controller.axTrusted ? controller.refreshAXTrust() : controller.requestAXTrust()
                 }
-                SettingsDivider()
                 SettingsRow(title: "System Settings", detail: "Review or remove Accessibility access.") {
                     Button("Open") {
                         NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
                     }
-                    .buttonStyle(QuietButtonStyle())
+                    .omilButton()
                 }
             }
         }
     }
 
     private var shortcutsPane: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            SettingsPageHeader(title: "Shortcuts", detail: "Start dictation without leaving the app you are using.")
+        Form {
 
-            SettingsGroup(title: "Push to talk") {
+            Section("Push to talk") {
                 SettingsRow(
                     title: recordingShortcut ? "Press a shortcut" : hotkeys.pushToTalkName,
                     detail: recordingShortcut ? (shortcutError.isEmpty ? "A modifier key or a key combination." : shortcutError) : "Hold to speak. Release to transcribe."
                 ) {
                     if recordingShortcut {
                         Button("Cancel") { stopShortcutCapture() }
-                            .buttonStyle(QuietButtonStyle())
+                            .omilButton()
                     } else {
                         Button("Change") { startShortcutCapture() }
-                            .buttonStyle(SignalButtonStyle())
+                            .omilButton(prominent: true)
                     }
                 }
                 if hotkeys.pushToTalkKeyCode == 63 && hotkeys.pushToTalkModifiers.isEmpty {
                     Text("If Fn also opens Emoji & Symbols, set “Press Fn key to” to “Do Nothing” in macOS Keyboard settings.")
-                        .font(.system(size: 11))
+                        .font(OmilFont.ui(11))
                         .foregroundStyle(OmilTheme.muted)
                 }
             }
 
-            SettingsGroup(title: "Hands-free") {
-                SettingsRow(title: "Control + Option + O", detail: "Press once to start and once to stop.") {
+            Section("Hands-free") {
+                SettingsRow(title: HotkeyManager.toggleShortcutName, detail: "Press once to start and once to stop.") {
                     Toggle("Hands-free shortcut", isOn: Binding(
                         get: { HotkeyManager.shared.toggleEnabled },
                         set: { HotkeyManager.shared.toggleEnabled = $0 }
@@ -788,265 +854,267 @@ struct SettingsView: View {
     }
 
     private var advancedPane: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            SettingsPageHeader(title: "Advanced", detail: "Control how the server cleans your transcripts.")
-            SettingsGroup(title: "Cleanup prompt") {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Guides full-text cleanup of grammar, spelling, and spoken corrections. Protected values and word-diff checks still apply.")
-                        .font(.system(size: 11))
-                        .foregroundStyle(OmilTheme.muted)
-                    TextEditor(text: $controller.promptText)
-                        .font(.system(size: 12, design: .monospaced))
-                        .scrollContentBackground(.hidden)
-                        .frame(minHeight: 220)
-                        .padding(10)
-                        .background(OmilTheme.canvas, in: RoundedRectangle(cornerRadius: 9))
-                        .overlay(RoundedRectangle(cornerRadius: 9).stroke(OmilTheme.lineStrong))
-                        .accessibilityLabel("Cleanup prompt")
-                    HStack {
-                        Text(controller.promptCustom ? "Using your prompt" : "Using server prompt")
-                            .font(OmilType.utility(10))
-                            .foregroundStyle(OmilTheme.muted)
-                        Spacer()
-                        Button("Use server prompt") { controller.resetPrompt() }
-                            .disabled(!controller.promptCustom)
-                        Button("Save prompt") { controller.savePrompt() }
-                            .disabled(controller.promptText.trimmingCharacters(in: .whitespacesAndNewlines).count < 50 || controller.promptText.count > 50_000)
-                            .buttonStyle(SignalButtonStyle())
-                    }
-                    if !controller.serverOpNote.isEmpty {
-                        Text(controller.serverOpNote)
-                            .font(.system(size: 10))
-                            .foregroundStyle(OmilTheme.muted)
-                    }
-                }
-                .padding(16)
-            }
+        Form {
+            CleanupPromptSection(controller: controller)
         }
-        .onAppear { controller.loadPrompt() }
     }
 }
 
-private struct SettingsPageHeader: View {
-    let title: String
-    let detail: String
+/// Edits a local draft so typing doesn't publish through the controller to
+/// every observing view; the draft is written back on Save.
+private struct CleanupPromptSection: View {
+    @ObservedObject var controller: DictationController
+    @State private var draft = ""
+
+    private var draftIsValid: Bool {
+        draft.count <= 50_000 && draft.trimmingCharacters(in: .whitespacesAndNewlines).count >= 50
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(OmilType.display(25))
-            Text(detail)
-                .font(.system(size: 12))
-                .foregroundStyle(OmilTheme.muted)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-private struct ColorSchemeCard: View {
-    let preference: AppearancePreference
-    let preset: ThemePreset
-    let selected: Bool
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            VStack(spacing: 10) {
-                preview
-                    .frame(height: 100)
-                    .clipShape(RoundedRectangle(cornerRadius: 9))
-                    .overlay(RoundedRectangle(cornerRadius: 9).stroke(OmilTheme.lineStrong))
-                    .accessibilityHidden(true)
-                HStack(spacing: 7) {
-                    Image(systemName: icon)
-                        .font(.system(size: 11, weight: .medium))
+        Section("Cleanup prompt") {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Guides full-text cleanup of grammar, spelling, and spoken corrections. Protected values and word-diff checks still apply.")
+                    .font(OmilFont.caption)
+                    .foregroundStyle(OmilTheme.muted)
+                TextEditor(text: $draft)
+                    .font(OmilFont.mono)
+                    .scrollContentBackground(.hidden)
+                    .padding(8)
+                    .frame(minHeight: 220)
+                    .background(OmilTheme.ink.opacity(0.04), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(OmilTheme.ink.opacity(0.08), lineWidth: 0.5))
+                    .accessibilityLabel("Cleanup prompt")
+                HStack {
+                    Text(controller.promptCustom ? "Using your prompt" : "Using server prompt")
+                        .font(OmilFont.caption)
                         .foregroundStyle(OmilTheme.muted)
-                    Text(preference.title)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(OmilTheme.ink)
-                    Spacer(minLength: 0)
-                    if selected {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundStyle(OmilTheme.signal)
-                            .accessibilityHidden(true)
+                    Spacer()
+                    Button("Use Server Prompt") {
+                        controller.resetPrompt()
+                        ToastCenter.shared.show("Using Server Prompt", symbol: "arrow.uturn.backward.circle.fill")
                     }
+                    .omilButton()
+                    .disabled(!controller.promptCustom)
+                    Button("Save Prompt") {
+                        controller.promptText = draft
+                        controller.savePrompt()
+                        ToastCenter.shared.show("Prompt Saved")
+                    }
+                    .omilButton(prominent: true)
+                    .disabled(!draftIsValid || draft == controller.promptText && controller.promptCustom)
+                }
+                if !controller.serverOpNote.isEmpty {
+                    Text(controller.serverOpNote)
+                        .font(OmilFont.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
-            .padding(10)
-            .background(OmilTheme.panel, in: RoundedRectangle(cornerRadius: 13))
-            .overlay(RoundedRectangle(cornerRadius: 13)
-                .stroke(selected ? OmilTheme.signal : OmilTheme.line, lineWidth: selected ? 2 : 1))
+            .padding(.vertical, 4)
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel("\(preference.title) color scheme")
-        .accessibilityAddTraits(selected ? .isSelected : [])
-    }
-
-    private var icon: String {
-        switch preference {
-        case .system: return "circle.lefthalf.filled"
-        case .light: return "sun.max"
-        case .dark: return "moon.stars"
+        .onAppear {
+            draft = controller.promptText
+            controller.loadPrompt()
         }
+        .onChange(of: controller.promptText) { _, text in draft = text }
     }
+}
 
-    @ViewBuilder
-    private var preview: some View {
-        switch preference {
-        case .system:
-            HStack(spacing: 0) {
-                MiniAppPreview(colors: preset.palette(for: .light), compact: true)
-                MiniAppPreview(colors: preset.palette(for: .dark), compact: true)
+private struct SettingsIconTile: View {
+    let symbol: String
+    let tint: Color
+
+    var body: some View {
+        Image(systemName: symbol)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(.white)
+            .frame(width: 22, height: 22)
+            .background {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(tint.gradient)
+                    .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .strokeBorder(.white.opacity(0.18), lineWidth: 0.5))
             }
-        case .light:
-            MiniAppPreview(colors: preset.palette(for: .light), compact: false)
-        case .dark:
-            MiniAppPreview(colors: preset.palette(for: .dark), compact: false)
+            .accessibilityHidden(true)
+    }
+}
+
+/// Lets people choose how much of the desktop shows through Omil's windows.
+private struct WindowTransparencySection: View {
+    @ObservedObject private var appearance = AppAppearance.shared
+
+    var body: some View {
+        Section {
+            LabeledContent {
+                HStack(spacing: 10) {
+                    Image(systemName: "square.fill")
+                        .foregroundStyle(.secondary)
+                        .help("Opaque")
+                    Slider(value: $appearance.windowTransparency, in: 0...1)
+                        .frame(width: 200)
+                        .accessibilityLabel("Window transparency")
+                        .accessibilityValue("\(Int(appearance.windowTransparency * 100)) percent")
+                    Image(systemName: "square.dashed")
+                        .foregroundStyle(.secondary)
+                        .help("Clear")
+                    Text("\(Int((appearance.windowTransparency * 100).rounded()))%")
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                        .frame(width: 38, alignment: .trailing)
+                }
+            } label: {
+                Text("Window Transparency")
+                Text(description)
+            }
+        } header: {
+            HStack {
+                Text("Window")
+                Spacer()
+                if abs(appearance.windowTransparency - AppAppearance.defaultTransparency) > 0.001 {
+                    Button("Reset") {
+                        withAnimation(OmilMotion.standard) {
+                            appearance.windowTransparency = AppAppearance.defaultTransparency
+                        }
+                    }
+                    .buttonStyle(.link)
+                    .font(OmilFont.caption)
+                }
+            }
+        }
+    }
+
+    private var description: String {
+        switch appearance.windowTransparency {
+        case ..<0.05: return "Solid background."
+        case ..<0.86: return "Frosted glass shows your desktop softly."
+        default: return "Clear glass. Text may be harder to read."
         }
     }
 }
 
-private struct MiniAppPreview: View {
+/// A window thumbnail drawn in a palette, like System Settings' appearance choices.
+private struct MiniWindow: View {
     let colors: ThemePalette
-    let compact: Bool
 
     var body: some View {
         HStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 8) {
-                Circle().fill(Color(hex: colors.signal)).frame(width: 11, height: 11)
-                Capsule().fill(Color(hex: colors.lineStrong)).frame(width: compact ? 15 : 26, height: 4)
-                Capsule().fill(Color(hex: colors.lineStrong)).frame(width: compact ? 12 : 21, height: 4)
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 2.5) {
+                    ForEach(0..<3, id: \.self) { _ in
+                        Circle().fill(Color(hex: colors.lineStrong)).frame(width: 4, height: 4)
+                    }
+                }
+                .padding(.bottom, 3)
+                RoundedRectangle(cornerRadius: 2).fill(Color(hex: colors.signal).opacity(0.25)).frame(height: 6)
+                Capsule().fill(Color(hex: colors.lineStrong)).frame(width: 16, height: 3)
+                Capsule().fill(Color(hex: colors.lineStrong)).frame(width: 12, height: 3)
+                Spacer(minLength: 0)
             }
-            .padding(.leading, compact ? 7 : 11)
-            .frame(width: compact ? 30 : 48, height: 100, alignment: .leading)
+            .padding(6)
+            .frame(width: 32)
+            .frame(maxHeight: .infinity, alignment: .top)
             .background(Color(hex: colors.sidebar))
 
-            VStack(alignment: .leading, spacing: 9) {
-                Capsule().fill(Color(hex: colors.ink)).frame(width: compact ? 27 : 55, height: 5)
-                Capsule().fill(Color(hex: colors.lineStrong)).frame(width: compact ? 36 : 80, height: 4)
-                Capsule().fill(Color(hex: colors.lineStrong)).frame(width: compact ? 26 : 59, height: 4)
+            VStack(alignment: .leading, spacing: 5) {
+                Capsule().fill(Color(hex: colors.ink)).frame(width: 30, height: 4)
+                Capsule().fill(Color(hex: colors.lineStrong)).frame(width: 44, height: 3)
+                Capsule().fill(Color(hex: colors.lineStrong)).frame(width: 36, height: 3)
                 Spacer(minLength: 0)
                 HStack {
-                    Capsule().fill(Color(hex: colors.lineStrong)).frame(width: compact ? 23 : 48, height: 4)
-                    Spacer(minLength: 0)
-                    Circle().fill(Color(hex: colors.signal)).frame(width: 10, height: 10)
+                    Spacer()
+                    Capsule().fill(Color(hex: colors.signal)).frame(width: 18, height: 7)
                 }
-                .padding(5)
-                .background(Color(hex: colors.panelDeep), in: RoundedRectangle(cornerRadius: 5))
             }
-            .padding(compact ? 8 : 12)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(7)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .background(Color(hex: colors.panel))
         }
     }
 }
 
-private struct ThemePresetCard: View {
-    let preset: ThemePreset
-    let activeScheme: ColorScheme
-    let selected: Bool
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(spacing: 19) {
-                    ThemeOrb(colors: preset.palette(for: .light), active: activeScheme == .light)
-                    ThemeOrb(colors: preset.palette(for: .dark), active: activeScheme == .dark)
-                    Spacer(minLength: 0)
-                }
-                .padding(.top, 8)
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(preset.title)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(OmilTheme.ink)
-                    Spacer(minLength: 0)
-                    if selected {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundStyle(OmilTheme.signal)
-                            .accessibilityHidden(true)
-                    }
-                }
-                Text(preset.detail)
-                    .font(.system(size: 11))
-                    .foregroundStyle(OmilTheme.muted)
-                    .lineLimit(1)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(15)
-            .background(OmilTheme.panel, in: RoundedRectangle(cornerRadius: 15))
-            .overlay(RoundedRectangle(cornerRadius: 15)
-                .stroke(selected ? OmilTheme.signal : OmilTheme.line, lineWidth: selected ? 2 : 1))
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("\(preset.title) theme, \(preset.detail)")
-        .accessibilityAddTraits(selected ? .isSelected : [])
-    }
-}
-
-private struct ThemeOrb: View {
-    let colors: ThemePalette
-    let active: Bool
+private struct PaletteThumbnail: View {
+    let light: ThemePalette
+    var dark: ThemePalette? = nil
 
     var body: some View {
         ZStack {
-            Circle()
-                .fill(Color(hex: colors.panel))
-                .overlay(Circle().stroke(Color(hex: colors.lineStrong), lineWidth: 1))
-            Circle()
-                .fill(Color(hex: colors.sidebar))
-                .frame(width: 48, height: 48)
-            Image(systemName: "waveform")
-                .font(.system(size: 18, weight: .medium))
-                .foregroundStyle(Color(hex: colors.signal))
+            MiniWindow(colors: light)
+            if let dark {
+                // Split diagonally, the way System Settings draws "Auto".
+                MiniWindow(colors: dark)
+                    .mask {
+                        GeometryReader { proxy in
+                            Path { path in
+                                path.move(to: CGPoint(x: proxy.size.width * 0.62, y: 0))
+                                path.addLine(to: CGPoint(x: proxy.size.width, y: 0))
+                                path.addLine(to: CGPoint(x: proxy.size.width, y: proxy.size.height))
+                                path.addLine(to: CGPoint(x: proxy.size.width * 0.38, y: proxy.size.height))
+                                path.closeSubpath()
+                            }
+                        }
+                    }
+            }
         }
-        .frame(width: 62, height: 62)
-        .overlay(Circle().stroke(active ? Color(hex: colors.signal) : .clear, lineWidth: 2)
-            .frame(width: 70, height: 70))
+        .frame(width: 112, height: 72)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(.black.opacity(0.14), lineWidth: 0.5))
+        .shadow(color: .black.opacity(0.12), radius: 3, y: 1)
         .accessibilityHidden(true)
     }
 }
 
-private struct SettingsGroup<Content: View>: View {
+/// One choice in an appearance picker: thumbnail, a selection ring that sits
+/// fully inside its own frame (never clipped), and a centered label.
+private struct AppearanceChoice<Preview: View>: View {
     let title: String
-    @ViewBuilder let content: () -> Content
+    var subtitle: String? = nil
+    let selected: Bool
+    @ViewBuilder let preview: () -> Preview
+    let action: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            Text(title)
-                .font(OmilType.utility(9, weight: .bold))
-                .tracking(0.8)
-                .foregroundStyle(OmilTheme.faint)
-                .padding(.leading, 3)
-            VStack(spacing: 0) { content() }
-                .background(OmilTheme.panel, in: RoundedRectangle(cornerRadius: 12))
-                .overlay(RoundedRectangle(cornerRadius: 12).stroke(OmilTheme.line))
+        Button(action: action) {
+            VStack(spacing: 7) {
+                preview()
+                    .padding(4)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .strokeBorder(selected ? OmilTheme.signal : .clear, lineWidth: 3)
+                    }
+                VStack(spacing: 2) {
+                    Text(title)
+                        .font(.system(size: 13, weight: selected ? .semibold : .regular))
+                        .foregroundStyle(OmilTheme.ink)
+                    if let subtitle {
+                        Text(subtitle)
+                            .font(OmilFont.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .accessibilityLabel(subtitle.map { "\(title), \($0)" } ?? title)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+        .animation(OmilMotion.quick, value: selected)
     }
 }
 
+/// A System Settings row: title with an explanatory subtitle, control on the trailing edge.
 private struct SettingsRow<Accessory: View>: View {
     let title: String
     let detail: String
     @ViewBuilder let accessory: () -> Accessory
 
     var body: some View {
-        HStack(spacing: 16) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(OmilTheme.ink)
-                Text(detail)
-                    .font(.system(size: 10))
-                    .foregroundStyle(OmilTheme.muted)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: 16)
+        LabeledContent {
             accessory()
+        } label: {
+            Text(title)
+            Text(detail)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-        .frame(minHeight: 64)
     }
 }
 
@@ -1059,40 +1127,28 @@ private struct PermissionSettingsRow: View {
     let action: () -> Void
 
     var body: some View {
-        HStack(spacing: 13) {
-            Image(systemName: granted ? "checkmark" : icon)
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(granted ? OmilTheme.mint : OmilTheme.signal)
-                .frame(width: 34, height: 34)
-                .background(
-                    (granted ? OmilTheme.mint : OmilTheme.signal).opacity(0.1),
-                    in: RoundedRectangle(cornerRadius: 9)
-                )
-            VStack(alignment: .leading, spacing: 3) {
+        LabeledContent {
+            Button(actionTitle, action: action)
+                .buttonStyle(granted ? AnyPrimitiveButtonStyle(.bordered) : AnyPrimitiveButtonStyle(.borderedProminent))
+        } label: {
+            Label {
                 Text(title)
-                    .font(.system(size: 12, weight: .semibold))
                 Text(detail)
-                    .font(.system(size: 10))
-                    .foregroundStyle(OmilTheme.muted)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: 14)
-            if granted {
-                Button(actionTitle, action: action)
-                    .buttonStyle(QuietButtonStyle())
-            } else {
-                Button(actionTitle, action: action)
-                    .buttonStyle(SignalButtonStyle())
+            } icon: {
+                Image(systemName: granted ? "checkmark.circle.fill" : icon)
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(granted ? OmilTheme.mint : .secondary)
             }
         }
-        .padding(16)
     }
 }
 
-private struct SettingsDivider: View {
-    var body: some View {
-        Divider()
-            .overlay(OmilTheme.line)
-            .padding(.leading, 16)
+private struct AnyPrimitiveButtonStyle: PrimitiveButtonStyle {
+    private let make: (Configuration) -> AnyView
+
+    init<S: PrimitiveButtonStyle>(_ style: S) {
+        make = { AnyView(style.makeBody(configuration: $0)) }
     }
+
+    func makeBody(configuration: Configuration) -> some View { make(configuration) }
 }

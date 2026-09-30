@@ -65,7 +65,8 @@ final class ClipboardInserter: @unchecked Sendable {
     /// write (same change count + same content). Returns true when restored.
     @discardableResult
     func restoreIfOwned(prepared: PreparedPaste) -> Bool {
-        Thread.sleep(forTimeInterval: 0.4) // host paste-consumption window (see docs)
+        // Give the target app time to read the pasteboard before restoring it.
+        Thread.sleep(forTimeInterval: 0.4)
         let pb = pasteboard
         lock.lock(); defer { lock.unlock() }
         let current = pb.string(forType: .string)
@@ -89,11 +90,6 @@ final class ClipboardInserter: @unchecked Sendable {
             items.append(item)
         }
         return pasteboard.writeObjects(items)
-    }
-
-    func currentOwnership() -> ClipboardOwnership {
-        lock.lock(); defer { lock.unlock() }
-        return ownership
     }
 }
 

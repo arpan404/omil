@@ -11,9 +11,9 @@
 
 import { ONES, TENS, SCALES, DAY_WORDS, isNameLike, repairKind, structuralSpan, type Token, type Snapshot, type ProposedEdit, type Abstention } from "./Cleanup"
 
-export const RESOLVER_VERSION = "omil-ts-corr-1"
+const RESOLVER_VERSION = "omil-ts-corr-1"
 
-export interface CorrectionCandidate {
+interface CorrectionCandidate {
   candidateId: string
   slotKey: string
   valueText: string
@@ -22,7 +22,7 @@ export interface CorrectionCandidate {
   editId: string
 }
 
-export interface Resolution {
+interface Resolution {
   edits: ProposedEdit[]
   abstentions: Abstention[]
   candidates: CorrectionCandidate[]

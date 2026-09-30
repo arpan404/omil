@@ -2,8 +2,9 @@ import path from "node:path"
 import { DEFAULT_LLM, DEFAULT_WHISPER, modelSpec } from "./Config"
 
 /**
- * Mutable server state: selected Whisper/LLM models + custom cleanup prompt.
- * Persisted in the data dir; the Mac app drives changes over the API.
+ * Server-wide defaults persisted in the data dir: the Whisper/LLM models used
+ * when a request names none, and the custom cleanup prompt. Clients usually
+ * send their own model and prompt with each request.
  */
 
 export interface ModelSelection { whisper: string; llm: string }

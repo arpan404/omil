@@ -7,7 +7,7 @@
  * locally. Anything ungrounded is dropped and the wording is preserved.
  */
 
-export type TokenKind = "word" | "number" | "punctuation" | "filler" | "cue"
+type TokenKind = "word" | "number" | "punctuation" | "filler" | "cue"
 
 export interface Token {
   id: string
@@ -17,7 +17,7 @@ export interface Token {
   isProtected: boolean
 }
 
-export type EditOp =
+type EditOp =
   | "deleteFiller" | "deleteRepeat" | "replaceFromSource"
   | "selectCandidate" | "normalizeNumber" | "formattingCommand"
   | "dictionarySubstitution"
@@ -162,7 +162,7 @@ export function isNameLike(t: Token): boolean {
   return !!f && f === f.toUpperCase() && f !== f.toLowerCase() && t.text.length > 1
 }
 
-export type RepairKind = "number" | "day" | "name" | "phrase"
+type RepairKind = "number" | "day" | "name" | "phrase"
 
 /** Classify a repair span by its value type (mirrors OmilCore repairType). */
 export function repairKind(span: Token[]): RepairKind {
@@ -223,14 +223,14 @@ function isSentenceTok(t: Token): boolean {
   return t.kind === "punctuation" && (t.text === "." || t.text === "?" || t.text === "!")
 }
 
-export const CARRIER_VERBS = new Set(["call", "send", "email", "text", "schedule", "book"])
+const CARRIER_VERBS = new Set(["call", "send", "email", "text", "schedule", "book"])
 
 /**
  * Structural mirror between two spans (no window needed): repair and
  * reparandum share an exact tail (2+ words) with one differing value word,
  * or a carrier verb + single differing value ("call Pam" vs "Sam").
  */
-export function spansMirror(repair: Token[], repara: Token[]): boolean {
+function spansMirror(repair: Token[], repara: Token[]): boolean {
   const rw = repair.map((t) => t.normalized)
   const bw = repara.map((t) => t.normalized)
   const func = new Set(["the", "a", "an", "to", "it", "for", "and", "or", "of", "in", "on", "is", "are", "was", "i", "you", "please", "just", "no", "about", "with", "at"])

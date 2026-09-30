@@ -63,7 +63,8 @@ describe("model file lifecycle", () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), "omil-model-corrupt-"))
     const cfg: ServerConfig = {
       host: "127.0.0.1", port: 3217, dataDir,
-      whisperBin: "whisper-cli", llamaBin: "llama-server", llamaPort: 3218,
+      whisperBin: "whisper-cli", whisperServerBin: "whisper-server", llamaBin: "llama-server",
+      llamaPort: 3218, whisperPort: 3219,
       whisperModelId: "whisper-large-v3-turbo-q8", llmModelId: "qwen3.5-4b",
     }
     try {
@@ -90,8 +91,10 @@ describe("model file lifecycle", () => {
       port: 3217,
       dataDir,
       whisperBin: "whisper-cli",
+      whisperServerBin: "whisper-server",
       llamaBin: "llama-server",
       llamaPort: 3218,
+      whisperPort: 3219,
       whisperModelId: "whisper-large-v3-turbo-q8",
       llmModelId: "qwen3.5-2b",
     }
@@ -113,8 +116,10 @@ describe("model file lifecycle", () => {
       port: 3217,
       dataDir,
       whisperBin: "whisper-cli",
+      whisperServerBin: "whisper-server",
       llamaBin: "llama-server",
       llamaPort: 3218,
+      whisperPort: 3219,
       whisperModelId: "whisper-large-v3-turbo-q8",
       llmModelId: "qwen3.5-2b",
     }
