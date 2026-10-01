@@ -20,19 +20,19 @@ struct SidebarUpdateNotice: View {
             VStack(alignment: .leading, spacing: 8) {
                 Label("Update Available", systemImage: "arrow.down.circle.fill")
                     .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(OmilTheme.signal)
+                    .foregroundStyle(OmilTheme.ink)
                 Text("Omil \(version) is ready to download.")
                     .font(OmilFont.caption)
                     .foregroundStyle(OmilTheme.muted)
-                Button("Update Now…") { updater.checkForUpdates() }
-                    .buttonStyle(.borderedProminent)
+                Button("Update Now", systemImage: "arrow.down.circle") { updater.checkForUpdates() }
+                    .buttonStyle(FlatButtonStyle(prominent: true))
                     .controlSize(.small)
                     .disabled(!updater.canCheckForUpdates)
                     .help("Download and install Omil \(version)")
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(10)
-            .background(OmilTheme.signal.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+            .background(OmilTheme.panelLifted, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             .padding(.horizontal, 10)
             .padding(.bottom, 10)
         }

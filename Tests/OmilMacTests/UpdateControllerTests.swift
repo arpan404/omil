@@ -4,6 +4,27 @@ import Sparkle
 
 @MainActor
 final class UpdateControllerTests: XCTestCase {
+    func testAvailabilityScheduleChecksImmediatelyThenWaitsUntilDeadline() {
+        var schedule = UpdateAvailabilitySchedule()
+        let start = Date(timeIntervalSince1970: 1_000)
+        XCTAssertTrue(schedule.isDue(at: start))
+        schedule.recordCheck(at: start, interval: 270)
+        XCTAssertFalse(schedule.isDue(at: start.addingTimeInterval(269)))
+        XCTAssertTrue(schedule.isDue(at: start.addingTimeInterval(270)))
+        // Waking after the deadline needs just one check, then a fresh interval.
+        let wake = start.addingTimeInterval(3_600)
+        XCTAssertTrue(schedule.isDue(at: wake))
+        schedule.recordCheck(at: wake, interval: 330)
+        XCTAssertFalse(schedule.isDue(at: wake.addingTimeInterval(329)))
+        XCTAssertTrue(schedule.isDue(at: wake.addingTimeInterval(330)))
+    }
+
+    func testAvailabilityCheckJitterStaysWithinThirtySecondsOfFiveMinutes() {
+        let intervals = (0..<100).map { _ in UpdateAvailabilitySchedule.randomInterval() }
+        XCTAssertTrue(intervals.allSatisfy { (270...330).contains($0) })
+        XCTAssertGreaterThan(Set(intervals).count, 1)
+    }
+
     private func item() throws -> SUAppcastItem {
         try XCTUnwrap(SUAppcastItem(dictionary: [
             "sparkle:version": "999",

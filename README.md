@@ -174,6 +174,13 @@ GitHub is the automatic update source for the Mac app. iOS builds stay local for
 manual upload to Apple. The DMG is the only app download published on GitHub and
 is also used by Sparkle for automatic updates.
 
+While the Mac app is running and automatic update checks are enabled, it quietly
+checks for sidebar update availability every 4 minutes 30 seconds to 5 minutes
+30 seconds, choosing a fresh random interval each time. It also checks on launch
+and checks when returning to the foreground if the next check is due. Checks wait
+when Sparkle is busy; sleeping Macs do not check until they wake. Manual checks
+remain available from the menu and settings.
+
 Run `/usr/bin/python3 scripts/tests/release-workflow.py` to check the release
 workflow. It uses temporary Git repositories and mocked Apple/GitHub operations,
 with real Ed25519 signature verification. It covers successful publication,
