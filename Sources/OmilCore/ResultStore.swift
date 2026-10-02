@@ -36,11 +36,15 @@ public struct SharedSession: Codable, Sendable {
     public var acknowledgedAt: Date?
     /// Monotonic per session; the keyboard ignores replays with old values.
     public var resultSequence: Int
+    /// Started from the keyboard: the keyboard inserts it as soon as it's
+    /// ready instead of waiting for Insert. Optional so older saves decode.
+    public var autoInsert: Bool?
 
-    public init(sessionId: SessionID = SessionID(), mode: CleanupMode = .clean) {
+    public init(sessionId: SessionID = SessionID(), mode: CleanupMode = .clean, autoInsert: Bool = false) {
         self.sessionId = sessionId
         self.state = .requested
         self.mode = mode
+        self.autoInsert = autoInsert
         self.createdAt = Date()
         self.updatedAt = Date()
         self.acknowledgedDelivery = false
@@ -70,8 +74,8 @@ public final class ResultStore: @unchecked Sendable {
     // MARK: App side
 
     @discardableResult
-    public func createSession(mode: CleanupMode = .clean) -> SharedSession {
-        let s = SharedSession(mode: mode)
+    public func createSession(mode: CleanupMode = .clean, autoInsert: Bool = false) -> SharedSession {
+        let s = SharedSession(mode: mode, autoInsert: autoInsert)
         lock.lock(); sessions[s.sessionId.rawValue] = s; lock.unlock()
         persist(s)
         return s

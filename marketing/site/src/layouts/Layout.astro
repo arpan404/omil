@@ -1,0 +1,68 @@
+---
+import "../styles/global.css";
+
+interface Props {
+  title?: string;
+  description?: string;
+}
+
+const {
+  title = "Omil: free, private dictation for your Mac",
+  description = "Hold Right Option, speak, and let go. Omil turns your voice into clean text in any app, on your own Mac. No account, no cloud, no subscription.",
+} = Astro.props;
+const og = new URL("/media/og.png", Astro.site ?? Astro.url).href;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <link rel="canonical" href={new URL(Astro.url.pathname, Astro.site ?? Astro.url).href} />
+    <link rel="icon" type="image/png" href="/media/icon-64.png" />
+    <link rel="apple-touch-icon" href="/media/icon-180.png" />
+    <meta name="theme-color" content="#fbfbfc" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:image" content={og} />
+    <meta name="twitter:card" content="summary_large_image" />
+    <script is:inline>
+      // Resolve the theme before first paint: the saved choice, otherwise the system.
+      (() => {
+        const root = document.documentElement;
+        const media = matchMedia("(prefers-color-scheme: dark)");
+        const apply = () => {
+          const choice = localStorage.getItem("omil-theme") || "system";
+          const dark = choice === "dark" || (choice === "system" && media.matches);
+          root.dataset.theme = dark ? "dark" : "light";
+          root.dataset.themeChoice = choice;
+          document.querySelector('meta[name="theme-color"]')?.setAttribute("content", dark ? "#0a0a0b" : "#fbfbfc");
+        };
+        apply();
+        media.addEventListener("change", apply);
+        window.__applyTheme = apply;
+        root.classList.add("js");
+      })();
+    </script>
+  </head>
+  <body class="min-h-[100dvh] bg-canvas font-sans text-ink">
+    <slot />
+    <script>
+      // Reveal on entry, once. Reduced motion is handled in CSS: nothing is hidden there.
+      const seen = new IntersectionObserver(
+        (entries) => {
+          for (const entry of entries) {
+            if (!entry.isIntersecting) continue;
+            entry.target.classList.add("is-in");
+            seen.unobserve(entry.target);
+          }
+        },
+        { rootMargin: "0px 0px -10% 0px", threshold: 0.08 },
+      );
+      document.querySelectorAll("[data-reveal], [data-reveal-stagger]").forEach((el) => seen.observe(el));
+    </script>
+  </body>
+</html>

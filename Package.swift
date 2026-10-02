@@ -20,6 +20,7 @@ let package = Package(
         ),
         .target(
             name: "OmilDesign",
+            dependencies: ["OmilCore"],
             path: "Sources/OmilDesign"
         ),
         .executableTarget(

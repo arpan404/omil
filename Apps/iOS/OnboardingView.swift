@@ -154,12 +154,12 @@ struct OnboardingView: View {
                   title: "Welcome to Omil",
                   subtitle: "Speak instead of typing. Omil turns your voice into clean, ready-to-send text.") {
             SetupGroup {
-                FeatureRow(symbol: "keyboard.fill", tint: .tileBlue, title: "Dictate Anywhere",
-                           detail: "Record in Omil, then insert the text in any app with the Omil keyboard.")
+                FeatureRow(symbol: "keyboard.fill", tint: .tileBlue, title: "Dictate in Any App",
+                           detail: "Tap the mic on the Omil keyboard, speak, and your words appear where you're typing.")
                 FeatureRow(symbol: "wand.and.stars", tint: .tileIndigo, title: "Clean by Default",
                            detail: "Filler words and false starts are removed, and punctuation is added for you.")
-                FeatureRow(symbol: "lock.fill", tint: .tileTeal, title: "Private on Your Mac",
-                           detail: "Speech is processed by Omil on your own Mac, never in the cloud.")
+                FeatureRow(symbol: "lock.fill", tint: .tileTeal, title: "Free and Private on Your Mac",
+                           detail: "Your Mac does the speech recognition. No cloud, no account, no subscription.")
             }
         }
     }
@@ -201,13 +201,13 @@ struct OnboardingView: View {
     private var keyboard: some View {
         SetupPage(symbol: "keyboard.fill", tint: .tileGray,
                   title: "Turn On the Keyboard",
-                  subtitle: "The Omil keyboard inserts your dictation into any app.") {
+                  subtitle: "Dictate in any app from the Omil keyboard, then switch right back to your usual keyboard.") {
             SetupGroup {
                 StepRow(number: 1, text: "Open Settings, then tap Keyboards.")
                 SetupDivider()
                 StepRow(number: 2, text: "Turn on Omil Dictation.")
                 SetupDivider()
-                StepRow(number: 3, text: "Turn on Allow Full Access so it can read your dictations.")
+                StepRow(number: 3, text: "Turn on Allow Full Access so it can talk to the Omil app.")
             }
             Button {
                 if let url = URL(string: UIApplication.openSettingsURLString) {
@@ -225,12 +225,12 @@ struct OnboardingView: View {
                   title: "You're All Set",
                   subtitle: "Here's how to dictate with Omil.") {
             SetupGroup {
-                FeatureRow(symbol: "mic.fill", tint: colors.signal, title: "Tap to Dictate",
-                           detail: "Tap the microphone, speak, then tap again to finish.")
-                FeatureRow(symbol: "globe", tint: .tileBlue, title: "Switch Keyboards",
-                           detail: "In any app, touch and hold the globe key and choose Omil Dictation.")
-                FeatureRow(symbol: "text.insert", tint: .tileIndigo, title: "Insert",
-                           detail: "Tap Insert on the Omil keyboard to add your text.")
+                FeatureRow(symbol: "globe", tint: .tileBlue, title: "Switch to Omil",
+                           detail: "In any app, tap the globe key (or touch and hold it) and choose Omil Dictation.")
+                FeatureRow(symbol: "mic.fill", tint: colors.recording, title: "Tap the Mic and Speak",
+                           detail: "The first time, Omil opens for a moment. Go back and keep talking.")
+                FeatureRow(symbol: "checkmark.circle.fill", tint: .tileGreen, title: "Tap Done",
+                           detail: "Your clean text appears where you were typing, and your usual keyboard comes back.")
             }
         }
     }

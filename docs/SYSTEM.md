@@ -237,13 +237,33 @@ app and copies its endpoint and token into iOS. The iOS app then records audio
 and sends it to the same server managed by the Mac app. When a result is ready,
 the app writes it to an App Group `ResultStore` with a session identifier.
 
-The keyboard extension never records audio or loads models. It polls the shared
-store, inserts one pending result through `textDocumentProxy`, and acknowledges
-that session. A second tap cannot insert the same result again.
+The keyboard extension never records audio or loads models (extensions have no
+microphone). Instead it drives the app through `KeyboardLink`
+(`Sources/OmilCore/KeyboardLink.swift`): two small JSON files in the App Group
+container plus Darwin notifications to wake the other side.
 
-Shared storage cannot wake a suspended containing app. The current mobile path
-therefore requires recording in the Omil app before switching to the keyboard.
-It remains experimental until it has been validated on physical devices.
+1. The first tap on the keyboard's mic opens the app with `omil://dictate`. The
+   app starts a mic session and begins listening right away; a screen tells the
+   user to go back with the system's back breadcrumb.
+2. With `UIBackgroundModes` `audio`, the audio engine keeps running in the
+   background for the chosen time (1, 5, 15 or 60 minutes after the last
+   dictation). Audio is routed to a dictation only while one is running;
+   between dictations it is dropped on the spot.
+3. While the session is live (the app refreshes a heartbeat every second), the
+   keyboard sends `start`, `stop`, `cancel` and `end` commands and shows the
+   live waveform, without leaving the current app. A stale heartbeat means the
+   app was suspended, so the next tap opens it again.
+4. Results started from the keyboard are marked `autoInsert` in the
+   `ResultStore`; the keyboard inserts them as soon as they're ready and
+   acknowledges the session, so a result is inserted once. Results from the
+   app itself wait for an Insert tap.
+5. iOS has no way to add a key to Apple's keyboard, so after inserting, Omil
+   can switch to the next keyboard (`advanceToNextInputMode`), which returns
+   the user to their usual keyboard and language.
+
+A call or Siri interrupts the audio session; the app keeps what was said and
+ends the mic session. This path remains experimental until it has been
+validated on physical devices.
 
 ## Source map
 
@@ -259,4 +279,4 @@ It remains experimental until it has been validated on physical devices.
 | Cleanup and validation | `server/src/QwenCleanup.ts`, `server/src/Cleanup.ts`, `server/src/Resolver.ts` |
 | Model downloads and runtime state | `server/src/Models.ts`, `server/src/ModelRuntime.ts` |
 | Inference scheduling | `server/src/InferenceQueue.ts`, `server/src/Api.ts` |
-| Mobile handoff | `Apps/iOS/SessionCoordinator.swift`, `Apps/Keyboard/KeyboardViewController.swift` |
+| Mobile handoff | `Apps/iOS/SessionCoordinator.swift`, `Apps/Keyboard/KeyboardViewController.swift`, `Sources/OmilCore/KeyboardLink.swift` |

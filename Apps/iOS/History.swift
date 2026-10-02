@@ -1,5 +1,6 @@
 import SwiftUI
 import OmilCore
+import OmilDesign
 
 // MARK: - Dictation history (on this device)
 
@@ -250,10 +251,9 @@ private struct HistoryDetailView: View {
                     case .original:
                         Text(record.raw.isEmpty ? record.cleaned : record.raw)
                     case .changes:
-                        Text(TranscriptDiff.attributed(
-                            TranscriptDiff.tokens(raw: record.raw, cleaned: record.cleaned),
-                            added: colors.success, removed: colors.recording
-                        ))
+                        GitDiffView(raw: record.raw, cleaned: record.cleaned,
+                                    removed: colors.recording, added: colors.success,
+                                    font: .system(.callout, design: .monospaced))
                     }
                 }
                 .font(.body)

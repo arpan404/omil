@@ -1,0 +1,20 @@
+---
+import { Icon } from "astro-icon/components";
+import { DOWNLOAD_URL } from "../data/site";
+
+// The one download action. Every instance points at the DMG itself and downloads it directly.
+interface Props {
+  size?: "sm" | "md" | "lg";
+  /** The nav uses the short label; everywhere else says what it downloads. */
+  short?: boolean;
+  class?: string;
+}
+const { size = "md", short = false, class: className } = Astro.props;
+const sizeClass = size === "sm" ? "btn-sm" : size === "lg" ? "btn-lg" : "";
+const iconClass = size === "sm" ? "size-3.5" : size === "lg" ? "size-5" : "size-[18px]";
+---
+
+<a href={DOWNLOAD_URL} download class:list={["btn btn-primary", sizeClass, className]}>
+  <Icon name="ph:apple-logo-fill" class={iconClass} aria-hidden="true" />
+  {short ? "Download" : "Download for Mac"}
+</a>

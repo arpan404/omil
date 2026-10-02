@@ -32,7 +32,7 @@
 	<key>NSCameraUsageDescription</key>
 	<string>Omil scans the pairing QR code shown on your Mac to connect to its speech engine.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Omil records your voice and sends it to the speech engine you select, including your Mac on the local network.</string>
+	<string>Omil records your voice when you dictate, in the app or from the Omil keyboard, and sends it to your Mac on the local network.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Omil transcribes your dictation using on-device speech recognition.</string>
 	<key>UIApplicationSceneManifest</key>
@@ -42,5 +42,20 @@
 	</dict>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+	</array>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>sh.arpan.omil.ios</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>omil</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>

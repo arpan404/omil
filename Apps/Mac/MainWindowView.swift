@@ -780,16 +780,25 @@ private struct ResultCard: View {
             )
         } content: {
             ScrollView {
-                Text(resultText)
-                    .font(selectedTab == .changes ? OmilFont.mono : OmilFont.reading)
-                    .lineSpacing(4)
-                    .foregroundStyle(isEmpty ? OmilTheme.faint : OmilTheme.ink)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 14)
-                    .contentTransition(.opacity)
-                    .animation(OmilMotion.standard, value: resultText)
+                Group {
+                    if selectedTab == .changes && !isEmpty && !controller.lastRaw.isEmpty {
+                        GitDiffView(raw: controller.lastRaw, cleaned: controller.lastCleaned,
+                                    removed: OmilTheme.coral, added: OmilTheme.mint, font: OmilFont.mono)
+                            .foregroundStyle(OmilTheme.ink)
+                            .textSelection(.enabled)
+                    } else {
+                        Text(resultText)
+                            .font(selectedTab == .changes ? OmilFont.mono : OmilFont.reading)
+                            .lineSpacing(4)
+                            .foregroundStyle(isEmpty ? OmilTheme.faint : OmilTheme.ink)
+                            .textSelection(.enabled)
+                            .contentTransition(.opacity)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 14)
+                .animation(OmilMotion.standard, value: resultText)
             }
             .frame(minHeight: 96, maxHeight: 220)
 
@@ -1189,12 +1198,21 @@ private struct HistoryTranscriptSheet: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                Text(displayedText)
-                    .font(tab == 1 ? OmilFont.mono : OmilFont.reading)
-                    .lineSpacing(4)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(20)
+                Group {
+                    if tab == 1, let raw = transcript.raw {
+                        GitDiffView(raw: raw, cleaned: transcript.clean,
+                                    removed: OmilTheme.coral, added: OmilTheme.mint, font: OmilFont.mono)
+                            .foregroundStyle(OmilTheme.ink)
+                            .textSelection(.enabled)
+                    } else {
+                        Text(displayedText)
+                            .font(tab == 1 ? OmilFont.mono : OmilFont.reading)
+                            .lineSpacing(4)
+                            .textSelection(.enabled)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(20)
             }
             .navigationTitle("Transcript")
             .navigationSubtitle(transcript.title)

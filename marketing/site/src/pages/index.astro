@@ -1,0 +1,24 @@
+---
+import Cleanup from "../components/Cleanup.astro";
+import Devices from "../components/Devices.astro";
+import Faq from "../components/Faq.astro";
+import Footer from "../components/Footer.astro";
+import Hero from "../components/Hero.astro";
+import Nav from "../components/Nav.astro";
+import Personal from "../components/Personal.astro";
+import Private from "../components/Private.astro";
+import Layout from "../layouts/Layout.astro";
+---
+
+<Layout>
+  <Nav />
+  <main>
+    <Hero />
+    <Cleanup />
+    <Personal />
+    <Private />
+    <Devices />
+    <Faq />
+  </main>
+  <Footer />
+</Layout>

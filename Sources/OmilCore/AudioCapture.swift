@@ -178,7 +178,9 @@ public final class AudioCapture: NSObject, @unchecked Sendable {
     private func handleTap(buffer: AVAudioPCMBuffer) {
         guard state == .recording else { return }
         let handler = chunkHandler
+        lock.lock()
         let start = startedAt ?? Date()
+        lock.unlock()
         let elapsed = Date().timeIntervalSince(start)
         var out16 = Data()
         var outRate = buffer.format.sampleRate
@@ -216,13 +218,25 @@ public final class AudioCapture: NSObject, @unchecked Sendable {
                 withUnsafeBytes(of: &s16) { out16.append(contentsOf: $0) }
             }
         }
+        lock.lock()
         accumulatedFrames += out16.count / 2
-        if accumulatedFrames * MemoryLayout<Int16>.size > Self.maxBytes {
+        let total = accumulatedFrames
+        lock.unlock()
+        if total * MemoryLayout<Int16>.size > Self.maxBytes {
             // Bound the pipeline: stop with a clear state instead of growing.
             stop()
             return
         }
         handler?(CapturedChunk(pcm16: out16, sampleRate: outRate, timestamp: elapsed))
+    }
+
+    /// Starts a new recording on a running engine: chunk timestamps restart
+    /// at zero and the size bound applies to this recording only.
+    public func markSegmentStart() {
+        lock.lock()
+        startedAt = Date()
+        accumulatedFrames = 0
+        lock.unlock()
     }
 
     public func stop() {

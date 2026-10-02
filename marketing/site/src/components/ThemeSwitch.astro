@@ -1,0 +1,78 @@
+---
+import { Icon } from "astro-icon/components";
+
+const options = [
+  { id: "system", label: "System", icon: "ph:desktop" },
+  { id: "light", label: "Light", icon: "ph:sun" },
+  { id: "dark", label: "Dark", icon: "ph:moon" },
+];
+---
+
+<!-- A three-way segmented control. One thumb slides under the saved choice. -->
+<div role="radiogroup" aria-label="Theme" class="theme-switch relative flex items-center rounded-full bg-tile p-0.5 ring-1 ring-line" data-theme-switch style="--i: 0">
+  <span class="thumb absolute top-0.5 left-0.5 size-7 rounded-full bg-surface shadow-[0_1px_2px_rgb(var(--shadow-tint)/0.12),0_0_0_1px_var(--line)]" aria-hidden="true"></span>
+  {
+    options.map((o) => (
+      <button
+        type="button"
+        role="radio"
+        aria-checked="false"
+        aria-label={o.label}
+        title={o.label}
+        data-choice={o.id}
+        class="relative grid size-7 place-items-center rounded-full text-muted transition-colors duration-300 hover:text-ink aria-checked:text-ink"
+      >
+        <Icon name={o.icon} class="size-[15px]" />
+      </button>
+    ))
+  }
+</div>
+
+<script>
+  const root = document.documentElement;
+  const ids = ["system", "light", "dark"];
+  for (const group of document.querySelectorAll<HTMLElement>("[data-theme-switch]")) {
+    const buttons = [...group.querySelectorAll<HTMLButtonElement>("[data-choice]")];
+    const sync = () => {
+      const choice = root.dataset.themeChoice ?? "system";
+      group.style.setProperty("--i", String(Math.max(0, ids.indexOf(choice))));
+      for (const b of buttons) {
+        const on = b.dataset.choice === choice;
+        b.setAttribute("aria-checked", String(on));
+        b.tabIndex = on ? 0 : -1;
+      }
+    };
+    const choose = (choice: string) => {
+      localStorage.setItem("omil-theme", choice);
+      root.classList.add("theme-switching");
+      (window as unknown as { __applyTheme: () => void }).__applyTheme();
+      requestAnimationFrame(() => requestAnimationFrame(() => root.classList.remove("theme-switching")));
+      // Every switch on the page follows (nav and footer share the choice).
+      document.querySelectorAll<HTMLElement>("[data-theme-switch]").forEach((g) => g.dispatchEvent(new Event("themechange")));
+    };
+    group.addEventListener("themechange", sync);
+    buttons.forEach((b, i) => {
+      b.addEventListener("click", () => choose(b.dataset.choice!));
+      b.addEventListener("keydown", (e) => {
+        const step = e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0;
+        if (!step) return;
+        e.preventDefault();
+        const next = buttons[(i + step + buttons.length) % buttons.length];
+        choose(next.dataset.choice!);
+        next.focus();
+      });
+    });
+    sync();
+  }
+</script>
+
+<style>
+  .thumb {
+    translate: calc(var(--i) * 1.75rem) 0;
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .thumb {
+      transition: translate 0.45s var(--ease-omil);
+    }
+  }
+</style>

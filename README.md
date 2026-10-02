@@ -194,4 +194,19 @@ a failed Mac build, an invalid updater signature, and prerelease handling.
 - Mobile recording, keyboard handoff, background behavior, latency, and power use have not been checked on a device.
 - Repeatable speech tests use synthetic audio. Human-speech evaluation has not been run.
 
+## Repository layout
+
+| Path | What it is |
+| --- | --- |
+| `Apps/Mac`, `Apps/iOS`, `Apps/Keyboard` | The Mac app, the iPhone and iPad app, and the keyboard extension |
+| `Sources/OmilCore`, `Sources/OmilDesign` | Shared Swift code: dictation pipeline, keyboard link, design tokens |
+| `Sources/OmilEval` | Command-line speech evaluation |
+| `Tests` | Swift tests |
+| `server` | The local speech and cleanup server (Bun) bundled into the Mac app |
+| `scripts` | Build, signing, release and verification scripts |
+| `docs` | Architecture notes and research |
+| `marketing/site` | The website (Astro) |
+| `marketing/video` | The launch film (Remotion), which also renders the website's media |
+| `project.yml` | XcodeGen spec for `Omil.xcodeproj` |
+
 [How Omil works](docs/SYSTEM.md) is the architecture writeup.

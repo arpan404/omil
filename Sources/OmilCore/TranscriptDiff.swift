@@ -1,18 +1,38 @@
-import SwiftUI
+import Foundation
 
-/// Word-level diff between the raw transcript and the cleaned text, for the
-/// Changes view. Same algorithm as the Mac app's DiffUtil: words and
+/// Word-level diff between the raw transcript and the cleaned text. Words and
 /// punctuation are separate tokens, so a punctuation fix doesn't show up as
-/// replacing the neighboring word.
-enum TranscriptDiff {
-    enum Kind: Equatable { case same, added, removed }
+/// replacing the neighboring word. Shared by the Mac and iOS Changes views.
+public enum TranscriptDiff {
+    public enum Kind: Equatable, Sendable { case same, added, removed }
 
-    struct Token: Equatable {
-        let text: String
-        let kind: Kind
+    public struct Token: Equatable, Sendable {
+        public let text: String
+        public let kind: Kind
+
+        public init(text: String, kind: Kind) {
+            self.text = text
+            self.kind = kind
+        }
     }
 
-    static func tokens(raw: String, cleaned: String) -> [Token] {
+    /// The diff the way git shows it: the original line with its removals marked,
+    /// and the cleaned line with its additions marked. Unchanged words appear in both.
+    public struct Lines: Equatable, Sendable {
+        public let original: [Token]
+        public let cleaned: [Token]
+        public var hasChanges: Bool { original.contains { $0.kind != .same } || cleaned.contains { $0.kind != .same } }
+    }
+
+    public static func lines(raw: String, cleaned: String) -> Lines {
+        let all = tokens(raw: raw, cleaned: cleaned)
+        return Lines(
+            original: all.filter { $0.kind != .added },
+            cleaned: all.filter { $0.kind != .removed }
+        )
+    }
+
+    public static func tokens(raw: String, cleaned: String) -> [Token] {
         let a = split(raw)
         let b = split(cleaned)
         // Past this size the table gets expensive; show the cleaned text as-is.
@@ -42,36 +62,13 @@ enum TranscriptDiff {
         return out
     }
 
-    /// Renders tokens as text: additions tinted, removals struck through.
-    static func attributed(_ tokens: [Token], added: Color, removed: Color) -> AttributedString {
-        var result = AttributedString()
-        for (index, token) in tokens.enumerated() {
-            if index > 0 && !attachesToPrevious(token.text) {
-                result += AttributedString(" ")
-            }
-            var piece = AttributedString(token.text)
-            switch token.kind {
-            case .same:
-                break
-            case .added:
-                piece.foregroundColor = added
-                piece.backgroundColor = added.opacity(0.14)
-            case .removed:
-                piece.foregroundColor = removed
-                piece.strikethroughStyle = .single
-                piece.backgroundColor = removed.opacity(0.1)
-            }
-            result += piece
-        }
-        return result
-    }
-
-    private static func attachesToPrevious(_ token: String) -> Bool {
+    /// Whether a token is written without a space before it (closing punctuation).
+    public static func attachesToPrevious(_ token: String) -> Bool {
         guard token.count == 1, let c = token.first else { return false }
         return ".,!?;:)]}%”’".contains(c)
     }
 
-    private nonisolated(unsafe) static let pattern = try? NSRegularExpression(
+    private static let pattern = try? NSRegularExpression(
         pattern: #"[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)*|[^\p{L}\p{N}\s]"#
     )
 

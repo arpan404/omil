@@ -1,5 +1,6 @@
 import SwiftUI
 import OmilCore
+import OmilDesign
 
 enum TranscriptVersion: String, CaseIterable, Identifiable {
     case clean = "Clean"
@@ -9,7 +10,8 @@ enum TranscriptVersion: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
-/// Home: one calm, centered record control, then the latest transcript.
+/// Home, laid out like Notes and Voice Memos: your words are the page, and
+/// the record control is docked at the bottom.
 struct DictateView: View {
     @ObservedObject var coordinator: SessionCoordinator
     @Environment(\.omil) private var colors
@@ -24,51 +26,42 @@ struct DictateView: View {
 
     private var phase: SessionCoordinator.Phase { coordinator.phase }
     private var isRecording: Bool { phase == .recording }
-    private var isBusy: Bool { phase == .preparing || phase == .processing }
-
-    private var showsCard: Bool {
-        guard !coordinator.needsMacSetup else { return false }
-        switch phase {
-        case .processing: return true
-        case .recording: return !coordinator.draftText.isEmpty
-        case .preparing: return false
-        case .idle, .ready, .failed: return !coordinator.lastCleaned.isEmpty
-        }
-    }
+    private var hasResult: Bool { !coordinator.lastCleaned.isEmpty }
 
     var body: some View {
         NavigationStack {
-            GeometryReader { proxy in
-                ScrollView {
-                    VStack(spacing: 28) {
-                        if coordinator.needsMacSetup {
-                            setupHero
-                                .transition(.opacity.combined(with: .scale(scale: 0.96)))
-                        } else {
-                            hero
-                                .transition(.opacity.combined(with: .scale(scale: 0.96)))
-                        }
-                        if showsCard {
-                            transcriptCard
-                                .transition(.move(edge: .bottom).combined(with: .opacity))
-                        }
+            Group {
+                if coordinator.needsMacSetup {
+                    ScrollView {
+                        setupHero
+                            .padding(24)
+                            .frame(maxWidth: .infinity)
+                            .containerRelativeFrame(.vertical, alignment: .center)
                     }
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 20)
-                    .frame(maxWidth: 620)
-                    .frame(maxWidth: .infinity, minHeight: proxy.size.height,
-                           alignment: showsCard ? .top : .center)
+                    .scrollBounceBehavior(.basedOnSize)
+                    .transition(.opacity)
+                } else {
+                    page
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .safeAreaInset(edge: .bottom, spacing: 0) {
+                            RecordBar(coordinator: coordinator, levels: levels, recordingStart: recordingStart)
+                        }
                 }
-                .scrollBounceBehavior(.basedOnSize)
             }
             .safeAreaInset(edge: .top, spacing: 0) {
-                if !coordinator.needsMacSetup, let notice = coordinator.engineNotice {
-                    NoticeCard(notice: notice, retrying: retrying, retry: retry)
-                        .padding(.horizontal, 20)
-                        .padding(.top, 8)
-                        .frame(maxWidth: 620)
-                        .transition(.move(edge: .top).combined(with: .opacity))
+                VStack(spacing: 10) {
+                    if !coordinator.needsMacSetup, let notice = coordinator.engineNotice {
+                        NoticeCard(notice: notice, retrying: retrying, retry: retry)
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                    }
+                    if coordinator.micSessionEnds != nil {
+                        MicSessionBanner(coordinator: coordinator)
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                    }
                 }
+                .padding(.horizontal, 16)
+                .padding(.top, 4)
+                .frame(maxWidth: 680)
             }
             .background(colors.canvas.ignoresSafeArea())
             .navigationTitle("Dictate")
@@ -89,7 +82,7 @@ struct DictateView: View {
             .animation(Motion.standard, value: phase)
             .animation(Motion.standard, value: coordinator.needsMacSetup)
             .animation(Motion.standard, value: coordinator.engineNotice)
-            .animation(Motion.standard, value: showsCard)
+            .animation(Motion.standard, value: coordinator.micSessionEnds == nil)
             .sensoryFeedback(trigger: phase) { old, new in
                 switch (old, new) {
                 case (_, .recording): return .impact(weight: .medium)
@@ -103,7 +96,7 @@ struct DictateView: View {
                 if new == .recording {
                     recordingStart = .now
                     levels = [Double](repeating: 0, count: Waveform.barCount)
-                } else if new != .recording {
+                } else {
                     recordingStart = nil
                 }
                 if new == .ready { version = .clean }
@@ -112,6 +105,13 @@ struct DictateView: View {
                 guard isRecording else { return }
                 levels.removeFirst()
                 levels.append(level)
+            }
+            .onChange(of: coordinator.pairingRequested) { _, requested in
+                guard requested else { return }
+                coordinator.pairingRequested = false
+                showSettings = false
+                showHistory = false
+                showConnection = true
             }
             .onChange(of: scenePhase) { _, newPhase in
                 guard newPhase == .active, !DebugLaunch.isDemo else { return }
@@ -141,81 +141,87 @@ struct DictateView: View {
         }
     }
 
-    // MARK: Hero
-
-    private var hero: some View {
-        VStack(spacing: 8) {
-            StatusChip(title: statusTitle, color: statusColor, pulsing: isRecording)
-            RecordButton(phase: phase, level: coordinator.audioLevel, action: primaryAction)
-            heroFooter
-                .frame(minHeight: 44, alignment: .top)
-        }
-        .frame(maxWidth: .infinity)
-    }
+    // MARK: Page
 
     @ViewBuilder
-    private var heroFooter: some View {
+    private var page: some View {
         switch phase {
-        case .recording:
-            VStack(spacing: 14) {
-                if let recordingStart {
-                    ElapsedTime(start: recordingStart)
+        case .recording, .preparing:
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    Label(phase == .preparing ? "Starting" : "Listening", systemImage: "waveform")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(colors.recording)
+                        .symbolEffect(.variableColor.iterative, isActive: isRecording)
+                    Text(coordinator.draftText.isEmpty ? "Start talking. Your words appear here." : coordinator.draftText)
+                        .font(.title3)
+                        .foregroundStyle(coordinator.draftText.isEmpty ? colors.faint : colors.ink)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentTransition(.opacity)
+                        .animation(Motion.quick, value: coordinator.draftText)
                 }
-                Waveform(levels: levels, color: colors.recording)
-                Button("Cancel", role: .cancel) { coordinator.cancel() }
-                    .buttonStyle(OmilButtonStyle(kind: .secondary, fullWidth: false))
-                    .controlSize(.small)
-                    .padding(.top, 4)
+                .pagePadding()
             }
             .transition(.opacity)
-        case .preparing:
-            footnote("Starting the microphone…")
         case .processing:
-            footnote("Transcribing and cleaning up…")
-        case .failed:
-            footnote(coordinator.statusMessage)
-        case .idle, .ready:
-            footnote(coordinator.lastCleaned.isEmpty ? "Tap to start dictating." : "Tap to dictate again.")
-        }
-    }
-
-    private func footnote(_ text: String) -> some View {
-        Text(text)
-            .font(.subheadline)
-            .foregroundStyle(colors.muted)
-            .multilineTextAlignment(.center)
-            .fixedSize(horizontal: false, vertical: true)
-            .contentTransition(.opacity)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text("Cleaning up on your Mac")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(colors.muted)
+                    }
+                    Text(coordinator.draftText.isEmpty ? "Your words will appear here in a moment." : coordinator.draftText)
+                        .font(.title3)
+                        .foregroundStyle(colors.faint)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .pagePadding()
+            }
             .transition(.opacity)
-    }
-
-    private func primaryAction() {
-        switch phase {
-        case .recording: coordinator.stop()
-        case .idle, .ready, .failed: coordinator.start()
-        case .preparing, .processing: break
+        case .idle, .ready, .failed:
+            if hasResult {
+                result
+                    .transition(.opacity)
+            } else {
+                ContentUnavailableView {
+                    Label("Nothing Dictated Yet", systemImage: "waveform")
+                } description: {
+                    Text("Tap the record button and start talking. Omil cleans up your words on your Mac.\n\nIn other apps, use the Omil keyboard.")
+                }
+                .transition(.opacity)
+            }
         }
     }
 
-    private var statusTitle: String {
-        if coordinator.engineNotice != nil && !isRecording && !isBusy { return "Not Ready" }
-        switch phase {
-        case .idle, .ready: return "Ready"
-        case .preparing: return "Starting"
-        case .recording: return "Listening"
-        case .processing: return "Transcribing"
-        case .failed: return "Needs Attention"
-        }
-    }
-
-    private var statusColor: Color {
-        if coordinator.engineNotice != nil && !isRecording && !isBusy { return colors.warning }
-        switch phase {
-        case .idle, .ready: return colors.success
-        case .preparing: return colors.faint
-        case .recording: return colors.recording
-        case .processing: return colors.signal
-        case .failed: return colors.warning
+    private var result: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                Picker("Version", selection: $version.animation(Motion.quick)) {
+                    ForEach(TranscriptVersion.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                transcriptText
+                    .id(version)
+                    .transition(.opacity)
+                HStack(spacing: 10) {
+                    Button { ToastCenter.shared.copy(shareText) } label: {
+                        Label("Copy", systemImage: "doc.on.doc")
+                    }
+                    ShareLink(item: shareText) {
+                        Label("Share", systemImage: "square.and.arrow.up")
+                    }
+                }
+                .buttonStyle(OmilButtonStyle(kind: .secondary, fullWidth: false))
+                .controlSize(.small)
+                if coordinator.keyboardResultPending {
+                    Label("Also ready on the Omil keyboard in any app.", systemImage: "keyboard")
+                        .font(.footnote)
+                        .foregroundStyle(colors.muted)
+                }
+            }
+            .pagePadding()
         }
     }
 
@@ -254,46 +260,6 @@ struct DictateView: View {
 
     // MARK: Transcript
 
-    private var transcriptCard: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            switch phase {
-            case .recording:
-                Label("Live", systemImage: "waveform")
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(colors.recording)
-                    .symbolEffect(.variableColor.iterative, isActive: true)
-                Text(coordinator.draftText)
-                    .font(.body)
-                    .foregroundStyle(colors.ink)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            case .processing:
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text("Transcribing")
-                        .font(.footnote.weight(.semibold))
-                        .foregroundStyle(colors.muted)
-                }
-                Text("Your words will appear here as soon as your Mac finishes cleaning them up.")
-                    .font(.body)
-                    .redacted(reason: .placeholder)
-                    .accessibilityHidden(true)
-            default:
-                Picker("Version", selection: $version.animation(Motion.quick)) {
-                    ForEach(TranscriptVersion.allCases) { Text($0.rawValue).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                transcriptText
-                    .id(version)
-                    .transition(.opacity)
-                Divider()
-                actions
-            }
-        }
-        .padding(18)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .groupedCard(colors)
-    }
-
     @ViewBuilder
     private var transcriptText: some View {
         Group {
@@ -307,13 +273,13 @@ struct DictateView: View {
                     Text("No changes. Omil kept your words as spoken.")
                         .foregroundStyle(colors.muted)
                 } else {
-                    Text(TranscriptDiff.attributed(
-                        TranscriptDiff.tokens(raw: originalText, cleaned: coordinator.lastCleaned),
-                        added: colors.success, removed: colors.recording))
+                    GitDiffView(raw: originalText, cleaned: coordinator.lastCleaned,
+                                removed: colors.recording, added: colors.success,
+                                font: .system(.callout, design: .monospaced))
                 }
             }
         }
-        .font(.body)
+        .font(.title3)
         .foregroundStyle(colors.ink)
         .textSelection(.enabled)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -327,61 +293,104 @@ struct DictateView: View {
     private var shareText: String {
         version == .original ? originalText : coordinator.lastCleaned
     }
+}
 
-    private var actions: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 12) {
-                Button { ToastCenter.shared.copy(shareText) } label: {
-                    Label("Copy", systemImage: "doc.on.doc")
-                }
-                ShareLink(item: shareText) {
-                    Label("Share", systemImage: "square.and.arrow.up")
-                }
-            }
-            .buttonStyle(OmilButtonStyle(kind: .secondary))
-            .controlSize(.small)
-            if coordinator.keyboardResultPending {
-                Label("Ready to insert from the Omil keyboard.", systemImage: "keyboard")
-                    .font(.footnote)
-                    .foregroundStyle(colors.muted)
-                    .transition(.opacity)
-            }
-        }
+private extension View {
+    /// Readable line length on iPad, Notes-like margins on iPhone.
+    func pagePadding() -> some View {
+        padding(.horizontal, 20)
+            .padding(.vertical, 16)
+            .frame(maxWidth: 680, alignment: .leading)
+            .frame(maxWidth: .infinity)
     }
 }
 
-// MARK: - Pieces
+// MARK: - Record bar
 
-private struct StatusChip: View {
-    let title: String
-    let color: Color
-    let pulsing: Bool
+/// Docked at the bottom like Voice Memos: the red record button, which turns
+/// into Stop; while listening, the time and a live waveform above it.
+private struct RecordBar: View {
+    @ObservedObject var coordinator: SessionCoordinator
+    let levels: [Double]
+    let recordingStart: Date?
     @Environment(\.omil) private var colors
 
+    private var phase: SessionCoordinator.Phase { coordinator.phase }
+    private var recording: Bool { phase == .recording }
+
     var body: some View {
-        HStack(spacing: 7) {
-            Image(systemName: "circle.fill")
-                .font(.caption2)
-                .imageScale(.small)
-                .foregroundStyle(color)
-                .symbolEffect(.pulse, options: .repeating, isActive: pulsing)
-            Text(title)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(colors.ink)
-                .contentTransition(.opacity)
+        VStack(spacing: 12) {
+            if recording {
+                VStack(spacing: 8) {
+                    if let recordingStart { ElapsedTime(start: recordingStart) }
+                    Waveform(levels: levels, color: colors.recording)
+                }
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            } else if phase == .failed {
+                Label(coordinator.statusMessage, systemImage: "exclamationmark.triangle.fill")
+                    .font(.footnote)
+                    .foregroundStyle(colors.warning)
+                    .multilineTextAlignment(.center)
+                    .transition(.opacity)
+            }
+            HStack {
+                leading
+                    .frame(width: 96, alignment: .leading)
+                Spacer()
+                RecordButton(phase: phase, action: primaryAction)
+                Spacer()
+                Color.clear.frame(width: 96, height: 1)
+            }
         }
-        .padding(.horizontal, 13)
-        .padding(.vertical, 7)
-        .background(colors.panel, in: Capsule())
-        .overlay(Capsule().strokeBorder(colors.line, lineWidth: 0.5))
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Status: \(title)")
+        .padding(.horizontal, 20)
+        .padding(.top, 14)
+        .padding(.bottom, 8)
+        .frame(maxWidth: 680)
+        .frame(maxWidth: .infinity)
+        .background(.bar)
+        .overlay(alignment: .top) { Divider() }
+        .animation(Motion.standard, value: phase)
+    }
+
+    @ViewBuilder
+    private var leading: some View {
+        if recording {
+            Button("Cancel", role: .cancel) { coordinator.cancel() }
+                .font(.body.weight(.medium))
+                .foregroundStyle(colors.ink)
+        } else {
+            Menu {
+                Picker("Mode", selection: Binding(get: { coordinator.cleanupMode }, set: { coordinator.setMode($0) })) {
+                    Label("Clean", systemImage: "wand.and.stars").tag(CleanupMode.clean)
+                    Label("Verbatim", systemImage: "text.quote").tag(CleanupMode.verbatim)
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Text(coordinator.cleanupMode == .clean ? "Clean" : "Verbatim")
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.caption2.weight(.semibold))
+                }
+                .font(.body.weight(.medium))
+                .foregroundStyle(colors.ink)
+            }
+            .disabled(phase == .processing || phase == .preparing)
+            .accessibilityLabel("Mode: \(coordinator.cleanupMode == .clean ? "Clean" : "Verbatim")")
+        }
+    }
+
+    private func primaryAction() {
+        switch phase {
+        case .recording: coordinator.stop()
+        case .idle, .ready, .failed: coordinator.start()
+        case .preparing, .processing: break
+        }
     }
 }
 
+/// The record button from Voice Memos: a red circle in a ring that becomes a
+/// rounded square to stop.
 private struct RecordButton: View {
     let phase: SessionCoordinator.Phase
-    let level: Double
     let action: () -> Void
     @Environment(\.omil) private var colors
 
@@ -392,44 +401,30 @@ private struct RecordButton: View {
         Button(action: action) {
             ZStack {
                 Circle()
-                    .fill(colors.recording.opacity(0.16))
-                    .scaleEffect(recording ? 1.1 + level * 0.3 : 0.9)
-                    .opacity(recording ? 1 : 0)
-                Circle()
-                    .fill(fill)
+                    .strokeBorder(colors.ink.opacity(colors.isDark ? 0.35 : 0.18), lineWidth: 4)
                 if busy {
                     ProgressView()
-                        .controlSize(.large)
                         .tint(colors.ink)
-                        .transition(.opacity.combined(with: .scale(scale: 0.8)))
                 } else {
-                    Image(systemName: recording ? "stop.fill" : "mic.fill")
-                        .font(.system(size: 44, weight: .semibold))
-                        .foregroundStyle(recording ? .white : colors.signalInk)
-                        .contentTransition(.symbolEffect(.replace))
-                        .transition(.opacity.combined(with: .scale(scale: 0.8)))
+                    RoundedRectangle(cornerRadius: recording ? 7 : 30, style: .continuous)
+                        .fill(colors.recording)
+                        .frame(width: recording ? 28 : 58, height: recording ? 28 : 58)
                 }
             }
-            .frame(width: 128, height: 128)
-            .padding(24)
+            .frame(width: 72, height: 72)
             .contentShape(Circle())
         }
         .buttonStyle(PressableStyle())
         .allowsHitTesting(!busy)
-        .animation(.spring(response: 0.18, dampingFraction: 0.7), value: level)
-        .animation(Motion.standard, value: phase)
+        .animation(.spring(response: 0.3, dampingFraction: 0.75), value: recording)
         .accessibilityLabel(recording ? "Stop Recording" : busy ? "Working" : "Start Recording")
         .accessibilityHint(recording ? "Finishes and transcribes your dictation." : "")
     }
-
-    private var fill: Color {
-        if recording { return colors.recording }
-        if busy { return colors.panelLifted }
-        return colors.signal
-    }
 }
 
-private struct ElapsedTime: View {
+// MARK: - Pieces
+
+struct ElapsedTime: View {
     let start: Date
     @Environment(\.omil) private var colors
 

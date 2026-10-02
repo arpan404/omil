@@ -1,0 +1,99 @@
+---
+import { GITHUB_URL, REQUIREMENTS } from "../data/site";
+import DownloadButton from "./DownloadButton.astro";
+import Pill from "./Pill.astro";
+import ThemeSwitch from "./ThemeSwitch.astro";
+const year = new Date().getFullYear();
+// The closing line is dictated: the pill listens, the words arrive as spoken, the pill is done.
+const words = ["Stop", "typing", "everything."];
+---
+
+<footer>
+  <section class="section">
+    <div class="shell">
+      <div class="desk flex flex-col items-center px-6 py-20 text-center md:py-28" data-finale>
+        <Pill state="idle" size="lg" id="finale-pill" />
+        <h2 class="display mt-9 max-w-[13ch] text-[2.85rem] sm:text-6xl md:mt-11 md:text-7xl lg:text-[5.5rem]" aria-label={words.join(" ")}>
+          <span aria-hidden="true" class="inline-flex flex-wrap justify-center gap-x-[0.23em]">
+            {words.map((w) => <span class="said inline-block">{w}</span>)}
+          </span>
+        </h2>
+        <div class="after mt-10 flex flex-col items-center gap-5 md:mt-12">
+          <DownloadButton size="lg" />
+          <p class="max-w-[34ch] text-[13.5px] leading-relaxed text-muted sm:max-w-none">{REQUIREMENTS} Free, with no account.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="shell mt-10 md:mt-14">
+    <div class="flex flex-col items-center justify-between gap-6 border-t border-line py-8 text-[13.5px] text-muted sm:flex-row">
+      <div class="flex items-center gap-2.5">
+        <img src="/media/icon-64.png" alt="" width="20" height="20" class="size-5 rounded-[5px]" />
+        <span>© {year} Omil</span>
+      </div>
+      <ul class="flex flex-wrap items-center justify-center gap-x-6 gap-y-3">
+        <li><a href={GITHUB_URL} class="rounded-md transition-colors duration-300 hover:text-ink">GitHub</a></li>
+        <li><a href={`${GITHUB_URL}/releases`} class="rounded-md transition-colors duration-300 hover:text-ink">Release notes</a></li>
+        <li><a href={`${GITHUB_URL}/blob/main/docs/SYSTEM.md`} class="rounded-md transition-colors duration-300 hover:text-ink">How it’s built</a></li>
+        <li><ThemeSwitch /></li>
+      </ul>
+    </div>
+  </div>
+</footer>
+
+<script>
+  import { onceVisible, reduceMotion, wait } from "../scripts/motion";
+
+  const finale = document.querySelector<HTMLElement>("[data-finale]");
+  if (finale) {
+    const pill = finale.querySelector<HTMLElement>("#finale-pill")!;
+    const said = [...finale.querySelectorAll<HTMLElement>(".said")];
+    if (reduceMotion()) pill.dataset.state = "done";
+    else
+      onceVisible(
+        finale,
+        async () => {
+          pill.dataset.state = "listening";
+          await wait(650);
+          for (const word of said) {
+            word.classList.add("is-said");
+            await wait(380);
+          }
+          await wait(250);
+          pill.dataset.state = "cleaning";
+          await wait(800);
+          pill.dataset.state = "done";
+          finale.classList.add("is-done");
+        },
+        0.45,
+      );
+  }
+</script>
+
+<style>
+  @media (prefers-reduced-motion: no-preference) {
+    :global(.js) .said {
+      opacity: 0;
+      transform: translateY(0.3em);
+      transition:
+        opacity 0.7s var(--ease-omil),
+        transform 0.9s var(--ease-omil);
+    }
+    :global(.js) .said.is-said {
+      opacity: 1;
+      transform: none;
+    }
+    :global(.js) .after {
+      opacity: 0;
+      translate: 0 16px;
+      transition:
+        opacity 0.9s var(--ease-omil),
+        translate 1s var(--ease-omil);
+    }
+    :global(.js) .is-done .after {
+      opacity: 1;
+      translate: 0 0;
+    }
+  }
+</style>

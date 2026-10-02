@@ -1,0 +1,30 @@
+{
+  "name": "omil-launch-video",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "assets": "./scripts/assets.sh",
+    "studio": "remotion studio src/index.ts",
+    "render": "remotion render src/index.ts OmilLaunch out/omil-launch.mp4",
+    "site-media": "bash scripts/site-media.sh"
+  },
+  "dependencies": {
+    "@remotion/cli": "^4.0.531",
+    "@remotion/fonts": "4.0.531",
+    "@remotion/google-fonts": "4.0.531",
+    "@remotion/media": "4.0.531",
+    "@remotion/media-utils": "4.0.531",
+    "@remotion/rough-notation": "4.0.531",
+    "@remotion/transitions": "4.0.531",
+    "qrcode": "^1.5.4",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "remotion": "^4.0.531"
+  },
+  "devDependencies": {
+    "@types/qrcode": "^1.5.6",
+    "@types/react": "^19.3.0",
+    "bun-types": "^1.4.2",
+    "typescript": "^7.0.2"
+  }
+}

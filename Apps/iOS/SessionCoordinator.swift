@@ -7,6 +7,11 @@ import OmilCore
 // The app captures audio and streams it to the selected speech engine (by
 // default the Omil server on the user's Mac), then publishes completed results
 // to the shared ResultStore for the keyboard.
+//
+// The keyboard can't record, so it opens the app with omil://dictate. That
+// starts a mic session: the audio engine keeps running in the background
+// (UIBackgroundModes audio) for a few minutes, and the keyboard starts and
+// stops dictations through the KeyboardLink while the user stays in their app.
 
 @MainActor
 final class SessionCoordinator: ObservableObject {
@@ -16,7 +21,12 @@ final class SessionCoordinator: ObservableObject {
 
     static let appGroupId = "group.sh.arpan.omil.shared"
 
-    @Published var phase: Phase = .idle
+    /// Who started the current dictation.
+    enum Origin { case app, keyboard }
+
+    @Published var phase: Phase = .idle {
+        didSet { if phase != oldValue { publishLink() } }
+    }
     @Published var draftText = ""
     @Published var lastRaw = ""
     @Published var lastCleaned = ""
@@ -38,7 +48,27 @@ final class SessionCoordinator: ObservableObject {
     @Published var pairingInProgress = false
     @Published var cleanupPromptText = ""
     @Published private(set) var cleanupPromptCustom = false
+    /// When the keyboard's mic session ends; nil when it's off.
+    @Published private(set) var micSessionEnds: Date?
+    /// Shown after the keyboard opens the app, telling the user to go back.
+    @Published var showsReturnHint = false
+    /// Set when the keyboard asks to pair, so the app opens the pairing screen.
+    @Published var pairingRequested = false
+    @Published var micSessionMinutes: Int {
+        didSet { UserDefaults.standard.set(micSessionMinutes, forKey: Self.micSessionKey) }
+    }
+    @Published var returnAfterInsert: Bool {
+        didSet {
+            UserDefaults.standard.set(returnAfterInsert, forKey: Self.returnAfterInsertKey)
+            shareKeyboardSetup()
+        }
+    }
+    @Published private(set) var origin: Origin = .app
     private var activeCleanupPrompt: String?
+
+    static let micSessionChoices = [1, 5, 15, 60]
+    private static let micSessionKey = "omil.keyboard.micMinutes"
+    private static let returnAfterInsertKey = "omil.keyboard.returnAfterInsert"
 
     let store: ResultStore
     private var session: DictationSession?
@@ -50,9 +80,22 @@ final class SessionCoordinator: ObservableObject {
     private var shared: SharedSession?
     private var eventTask: Task<Void, Never>?
     private var dictionary = PersonalDictionary()
+    private let router = CaptureRouter()
+    /// The audio engine is running (always while a mic session is on).
+    private var captureRunning = false
+    private var recordingStarted: Date?
+    private let link = LinkChannel(appGroupId: SessionCoordinator.appGroupId)
+    private var commandObserver: DarwinObserver?
+    private var lastCommandId: UUID?
+    private var heartbeatTask: Task<Void, Never>?
+    private var lastLinkWrite = Date.distantPast
+    private var interruptionObserver: NSObjectProtocol?
 
     init() {
         self.store = ResultStore(appGroupId: Self.appGroupId)
+        let minutes = UserDefaults.standard.integer(forKey: Self.micSessionKey)
+        micSessionMinutes = Self.micSessionChoices.contains(minutes) ? minutes : 5
+        returnAfterInsert = UserDefaults.standard.object(forKey: Self.returnAfterInsertKey) as? Bool ?? true
         activeCleanupPrompt = UserDefaults.standard.string(forKey: "omil.cleanupSystemPrompt")
         if let activeCleanupPrompt {
             cleanupPromptText = activeCleanupPrompt
@@ -75,6 +118,15 @@ final class SessionCoordinator: ObservableObject {
             backendPreference = pref
         }
         serverCleanupEnabled = UserDefaults.standard.object(forKey: "omil.serverCleanup") as? Bool ?? true
+        router.setLevelHandler { [weak self] level in
+            Task { @MainActor in self?.levelChanged(level) }
+        }
+        commandObserver = DarwinObserver(KeyboardLink.commandPosted) { [weak self] in
+            Task { @MainActor in self?.handleKeyboardCommand() }
+        }
+        // A fresh launch has no mic session, whatever an earlier run left behind.
+        publishLink()
+        shareKeyboardSetup()
         Task { await refreshStatus() }
     }
 
@@ -88,6 +140,7 @@ final class SessionCoordinator: ObservableObject {
             UserDefaults.standard.set(data, forKey: "omil.backend")
         }
         UserDefaults.standard.set(serverCleanupEnabled, forKey: "omil.serverCleanup")
+        shareKeyboardSetup()
         Task {
             await refreshServerHealth()
             pairingMessage = serverHealth.contains(" · ")
@@ -236,7 +289,7 @@ final class SessionCoordinator: ObservableObject {
 
     // MARK: Recording
 
-    func start() {
+    func start(origin: Origin = .app) {
         guard phase == .idle || phase == .ready || phase == .failed else { return }
         guard let backend = makeBackend() else {
             phase = .failed
@@ -245,11 +298,12 @@ final class SessionCoordinator: ObservableObject {
         }
         let session = DictationSession(mode: cleanupMode, dictionary: dictionary)
         self.session = session
-        self.shared = store.createSession(mode: cleanupMode)
+        self.origin = origin
+        self.shared = store.createSession(mode: cleanupMode, autoInsert: origin == .keyboard)
         if let s = shared { store.updateState(s.sessionId, state: .recording) }
+        draftText = ""
         phase = .preparing
         statusMessage = "Preparing…"
-        draftText = ""
         Task {
             let granted = await AudioCapture.requestPermission()
             guard granted else {
@@ -257,14 +311,16 @@ final class SessionCoordinator: ObservableObject {
                 self.statusMessage = "Microphone permission denied."
                 return
             }
-            self.configureAudioSession()
+            if !self.captureRunning { self.configureAudioSession() }
             do {
                 try await session.start(backend: backend)
             } catch {
+                self.releaseCapture()
                 self.phase = .failed
                 self.statusMessage = "Could not start: \(error)"
                 return
             }
+            self.recordingStarted = .now
             self.phase = .recording
             self.statusMessage = "Recording — tap Stop to finalize"
             self.streamEvents(session: session)
@@ -276,7 +332,13 @@ final class SessionCoordinator: ObservableObject {
         #if os(iOS)
         do {
             let s = AVAudioSession.sharedInstance()
-            try s.setCategory(.record, mode: .measurement, options: [.duckOthers])
+            if micSessionEnds != nil {
+                // A mic session runs for minutes in the background, so let
+                // the user's music and videos keep playing.
+                try s.setCategory(.playAndRecord, mode: .measurement, options: [.mixWithOthers])
+            } else {
+                try s.setCategory(.record, mode: .measurement, options: [.duckOthers])
+            }
             try s.setActive(true)
         } catch {
             statusMessage = "Audio session: \(error)"
@@ -314,24 +376,49 @@ final class SessionCoordinator: ObservableObject {
             return
         }
         #endif
+        capture.markSegmentStart()
+        router.attach(forwarder)
+        guard !captureRunning else { return }
         do {
-            try capture.start(targetSampleRate: 16_000, targetChannels: 1) { [weak self] chunk in
-                forwarder.append(chunk)
-                let level = AudioLevelMeter.normalizedRMS(pcm16: chunk.pcm16)
-                Task { @MainActor in
-                    guard let self, self.phase == .recording else { return }
-                    self.audioLevel = level
-                }
+            try capture.start(targetSampleRate: 16_000, targetChannels: 1) { [router] chunk in
+                router.handle(chunk)
             }
+            captureRunning = true
         } catch {
+            router.detach()
             forwarder.cancel()
             audioForwarder = nil
-            Task { @MainActor in
-                self.phase = .failed
-                self.statusMessage = "Microphone unavailable: \(error)"
-            }
+            phase = .failed
+            statusMessage = "Microphone unavailable: \(error)"
             Task { await session?.cancel() }
         }
+    }
+
+    private func levelChanged(_ level: Double) {
+        guard phase == .recording else { return }
+        audioLevel = level
+        // The keyboard draws its waveform from the shared state.
+        if micSessionEnds != nil, Date().timeIntervalSince(lastLinkWrite) > 0.08 {
+            publishLink(notify: false)
+        }
+    }
+
+    /// Stops sending audio to the finished dictation. A mic session keeps the
+    /// engine running for the next one; otherwise the microphone turns off.
+    private func releaseCapture() {
+        router.detach()
+        recordingStarted = nil
+        guard micSessionEnds == nil else { return }
+        stopEngine()
+    }
+
+    private func stopEngine() {
+        guard captureRunning else { return }
+        capture.stop()
+        captureRunning = false
+        #if os(iOS)
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        #endif
     }
 
     #if DEBUG
@@ -363,15 +450,12 @@ final class SessionCoordinator: ObservableObject {
 
     func stop() {
         guard phase == .recording, let session = session else { return }
-        phase = .processing
-        statusMessage = "Finalizing…"
         audioLevel = 0
-        capture.stop()
+        releaseCapture()
         let forwarder = audioForwarder
         audioForwarder = nil
-        #if os(iOS)
-        try? AVAudioSession.sharedInstance().setActive(false)
-        #endif
+        statusMessage = "Finalizing…"
+        phase = .processing
         Task {
             await forwarder?.finish()
             if let result = await session.stop() {
@@ -384,7 +468,7 @@ final class SessionCoordinator: ObservableObject {
     }
 
     func cancel() {
-        capture.cancel()
+        releaseCapture()
         audioForwarder?.cancel()
         audioForwarder = nil
         audioLevel = 0
@@ -415,14 +499,173 @@ final class SessionCoordinator: ObservableObject {
         }
         self.lastCleaned = finalText
         DictationHistory.shared.add(raw: committed.rawSnapshot.rawText, cleaned: finalText)
+        if micSessionEnds != nil { extendMicSession() }
+        self.statusMessage = origin == .keyboard
+            ? "Done — your text goes in where you were typing."
+            : "Done — insert it with the Omil keyboard, or copy below."
         self.phase = .ready
-        self.statusMessage = "Done — switch to the Omil keyboard and tap Insert, or copy below."
         self.refreshKeyboardHint()
     }
 
     func setMode(_ m: CleanupMode) {
         cleanupMode = m
         UserDefaults.standard.set(m.rawValue, forKey: "omil.mode")
+    }
+
+    // MARK: Keyboard mic session
+
+    /// Handles omil:// links from the keyboard.
+    func handle(url: URL) {
+        guard url.scheme == KeyboardLink.dictateURL.scheme else { return }
+        switch url.host {
+        case KeyboardLink.dictateURL.host: dictateForKeyboard()
+        case KeyboardLink.pairURL.host: pairingRequested = true
+        default: break
+        }
+    }
+
+    /// The keyboard opened the app to dictate: turn the mic session on and
+    /// start listening right away, so the user can go back and keep talking.
+    func dictateForKeyboard() {
+        guard !needsMacSetup else {
+            pairingRequested = true
+            return
+        }
+        beginMicSession()
+        showsReturnHint = true
+        switch phase {
+        case .idle, .ready, .failed: start(origin: .keyboard)
+        case .preparing, .recording, .processing: break
+        }
+    }
+
+    func beginMicSession() {
+        let wasOff = micSessionEnds == nil
+        extendMicSession()
+        guard wasOff else { return }
+        observeInterruptions()
+        heartbeatTask = Task { [weak self] in
+            while !Task.isCancelled {
+                self?.heartbeat()
+                try? await Task.sleep(for: .seconds(1))
+            }
+        }
+    }
+
+    func endMicSession() {
+        guard micSessionEnds != nil else { return }
+        micSessionEnds = nil
+        showsReturnHint = false
+        heartbeatTask?.cancel()
+        heartbeatTask = nil
+        if let interruptionObserver { NotificationCenter.default.removeObserver(interruptionObserver) }
+        interruptionObserver = nil
+        switch phase {
+        case .preparing, .recording: cancel()
+        default: stopEngine()
+        }
+        publishLink()
+    }
+
+    private func extendMicSession() {
+        micSessionEnds = Date().addingTimeInterval(TimeInterval(micSessionMinutes * 60))
+    }
+
+    private func heartbeat() {
+        guard let ends = micSessionEnds else { return }
+        let busy = phase == .preparing || phase == .recording || phase == .processing
+        if !busy, ends <= .now {
+            endMicSession()
+            return
+        }
+        publishLink(notify: false)
+    }
+
+    /// A call or Siri takes the microphone and stops the engine; keep what
+    /// was said so far and end the session (the keyboard reopens the app).
+    private func observeInterruptions() {
+        #if os(iOS)
+        interruptionObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.interruptionNotification, object: nil, queue: .main
+        ) { [weak self] note in
+            guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                  AVAudioSession.InterruptionType(rawValue: raw) == .began else { return }
+            Task { @MainActor in
+                guard let self else { return }
+                if self.phase == .recording { self.stop() }
+                self.captureRunning = false
+                self.capture.cancel()
+                self.endMicSession()
+            }
+        }
+        #endif
+    }
+
+    private func handleKeyboardCommand() {
+        guard let command = link?.command(after: lastCommandId) else { return }
+        lastCommandId = command.id
+        switch command.kind {
+        case .start:
+            // The engine can't start in the background; without a running
+            // session the keyboard opens the app instead.
+            guard micSessionEnds != nil, captureRunning else {
+                publishLink()
+                return
+            }
+            extendMicSession()
+            start(origin: .keyboard)
+        case .stop: stop()
+        case .cancel: cancel()
+        case .end: endMicSession()
+        }
+    }
+
+    private var linkState: LinkState {
+        guard micSessionEnds != nil else {
+            return LinkState(phase: .off, sessionId: shared?.sessionId.rawValue)
+        }
+        let linkPhase: LinkState.Phase
+        switch phase {
+        case .idle, .ready: linkPhase = .ready
+        case .preparing: linkPhase = .starting
+        case .recording: linkPhase = .recording
+        case .processing: linkPhase = .processing
+        case .failed: linkPhase = .failed
+        }
+        return LinkState(
+            phase: linkPhase,
+            sessionEnds: micSessionEnds,
+            recordingStarted: recordingStarted,
+            level: phase == .recording ? audioLevel : 0,
+            draft: String(draftText.suffix(160)),
+            message: phase == .failed ? keyboardFailureMessage : nil,
+            sessionId: shared?.sessionId.rawValue
+        )
+    }
+
+    private var keyboardFailureMessage: String {
+        if statusMessage.contains("permission") { return "Allow the microphone for Omil in Settings." }
+        if backendPreference == .omilServer { return "Couldn't reach your Mac. Make sure Omil is open on it." }
+        return "Dictation didn't start. Try again."
+    }
+
+    private func publishLink(notify: Bool = true) {
+        guard let link else { return }
+        lastLinkWrite = .now
+        link.write(linkState, notify: notify)
+    }
+
+    private func shareKeyboardSetup() {
+        let paired = backendPreference != .omilServer || serverConfig.isConfigured
+        link?.write(LinkSetup(paired: paired, macName: Self.macName(for: serverConfig.host),
+                              returnAfterInsert: returnAfterInsert))
+    }
+
+    /// "Studio-Mac.local" → "Studio Mac"; addresses stay as they are.
+    static func macName(for host: String) -> String? {
+        guard !host.isEmpty else { return nil }
+        guard host.hasSuffix(".local") else { return host }
+        return String(host.dropLast(6)).replacingOccurrences(of: "-", with: " ")
     }
 
     // MARK: Dictionary
@@ -449,4 +692,35 @@ final class SessionCoordinator: ObservableObject {
     }
 
     var dictionaryEntries: [String: String] { dictionary.entries }
+}
+
+/// Sends microphone audio to the dictation in progress, if any. The engine
+/// keeps running between dictations in a mic session; audio arriving with no
+/// dictation attached is dropped on the spot, never stored.
+final class CaptureRouter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var forwarder: AudioChunkForwarder?
+    private var onLevel: (@Sendable (Double) -> Void)?
+
+    func setLevelHandler(_ handler: @escaping @Sendable (Double) -> Void) {
+        lock.lock(); onLevel = handler; lock.unlock()
+    }
+
+    func attach(_ forwarder: AudioChunkForwarder) {
+        lock.lock(); self.forwarder = forwarder; lock.unlock()
+    }
+
+    func detach() {
+        lock.lock(); forwarder = nil; lock.unlock()
+    }
+
+    func handle(_ chunk: CapturedChunk) {
+        lock.lock()
+        let forwarder = forwarder
+        let onLevel = onLevel
+        lock.unlock()
+        guard let forwarder else { return }
+        forwarder.append(chunk)
+        onLevel?(AudioLevelMeter.normalizedRMS(pcm16: chunk.pcm16))
+    }
 }

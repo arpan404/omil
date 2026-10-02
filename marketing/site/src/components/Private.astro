@@ -1,0 +1,178 @@
+---
+import { Icon } from "astro-icon/components";
+import { GITHUB_URL } from "../data/site";
+
+// Where your voice goes: every step sits inside the Mac, and a signal travels the path while
+// the section is on screen. The server sits outside, and the line to it never connects.
+const steps = [
+  { icon: "ph:microphone", title: "Microphone", body: "Recorded while you hold the key." },
+  { icon: "ph:waveform", title: "Speech recognition", body: "Runs on Apple silicon." },
+  { icon: "ph:magic-wand", title: "Cleanup", body: "Rewritten on your Mac." },
+  { icon: "ph:cursor-text", title: "Your text field", body: "Typed where you were." },
+];
+---
+
+<section id="private" class="section">
+  <div class="shell">
+    <div class="mx-auto max-w-[48rem] text-center">
+      <h2 data-reveal class="title">Your voice never leaves your Mac.</h2>
+      <p data-reveal style="--i: 1" class="lead mx-auto mt-5 max-w-[46ch]">
+        No account, no cloud, no subscription. Recognition and cleanup run on the machine in front of you, and{" "}
+        <a href={GITHUB_URL} class="text-ink underline decoration-line-strong underline-offset-4 transition-colors duration-300 hover:decoration-ink">the source is public</a>.
+      </p>
+    </div>
+
+    <div data-reveal="scale" style="--i: 2" class="flow mt-14 grid gap-8 md:mt-20 lg:grid-cols-[minmax(0,1fr)_17rem] lg:gap-0" data-flow>
+      <!-- Inside the Mac -->
+      <div class="mac tile relative px-6 pt-12 pb-9 md:px-10 md:pt-14 md:pb-12">
+        <span class="absolute -top-3.5 left-6 inline-flex h-7 items-center gap-1.5 rounded-full bg-surface px-3 text-[12.5px] font-medium ring-1 ring-line-strong md:left-10">
+          <Icon name="ph:laptop" class="size-4" aria-hidden="true" />
+          Your Mac
+        </span>
+        <ol class="steps relative grid gap-y-6 sm:grid-cols-4 sm:gap-x-6">
+          <span class="rail" aria-hidden="true"><span class="signal"></span></span>
+          {
+            steps.map((s, i) => (
+              <li class="relative flex items-center gap-4 sm:block" style={`--n: ${i}`}>
+                <span class="node relative grid size-14 flex-none place-items-center rounded-full bg-surface text-ink">
+                  <Icon name={s.icon} class="size-[22px]" aria-hidden="true" />
+                </span>
+                <span class="block sm:mt-6">
+                  <span class="block font-semibold tracking-[-0.015em]">{s.title}</span>
+                  <span class="mt-0.5 block text-[14.5px] leading-relaxed text-muted sm:mt-1">{s.body}</span>
+                </span>
+              </li>
+            ))
+          }
+        </ol>
+      </div>
+
+      <!-- Outside it -->
+      <div class="outside relative flex items-start gap-4 px-6 md:px-10 lg:block lg:px-0 lg:pt-14 lg:pl-20">
+        <span class="link hidden lg:block" aria-hidden="true">
+          <span class="break grid size-6 place-items-center rounded-full bg-canvas text-muted ring-1 ring-line-strong">
+            <Icon name="ph:x-bold" class="size-2.5" />
+          </span>
+        </span>
+        <span class="grid size-14 flex-none place-items-center rounded-full border border-dashed border-line-strong text-faint">
+          <Icon name="ph:cloud-slash" class="size-[22px]" aria-hidden="true" />
+        </span>
+        <span class="block pt-1 lg:mt-6 lg:pt-0">
+          <span class="block font-semibold tracking-[-0.015em] text-muted">Any server</span>
+          <span class="mt-0.5 block text-[14.5px] leading-relaxed text-muted lg:mt-1">Never receives your audio or your text. Internet is only used for setup and updates.</span>
+        </span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<script>
+  import { whileVisible } from "../scripts/motion";
+  const flow = document.querySelector<HTMLElement>("[data-flow]");
+  if (flow) whileVisible(flow);
+</script>
+
+<style>
+  .mac {
+    box-shadow: inset 0 0 0 1px var(--line-strong);
+  }
+  .node {
+    box-shadow:
+      0 0 0 1px var(--line-strong),
+      0 6px 16px -8px rgb(var(--shadow-tint) / 0.2);
+  }
+
+  /* The path between the steps, drawn through the centres of the nodes. */
+  .rail {
+    position: absolute;
+    background: var(--line-strong);
+    overflow: hidden;
+    /* phones: a vertical line */
+    left: calc(1.75rem - 0.5px);
+    top: 1.75rem;
+    bottom: 1.75rem;
+    width: 1px;
+  }
+  .signal {
+    display: none;
+  }
+  @media (min-width: 640px) {
+    .rail {
+      container-type: inline-size;
+      top: calc(1.75rem - 1px);
+      bottom: auto;
+      left: 1.75rem;
+      /* four equal columns with 1.5rem gaps: stop at the last node's centre */
+      right: calc((100% - 4.5rem) / 4 - 1.75rem);
+      width: auto;
+      height: 2px;
+      border-radius: 2px;
+    }
+    .signal {
+      display: block;
+      width: 7rem;
+      height: 100%;
+      background: linear-gradient(90deg, transparent, var(--ink) 70%, transparent);
+      transform: translateX(-7rem);
+    }
+  }
+
+  /* The line to the server: dashed, and broken. */
+  .link {
+    position: absolute;
+    left: 0;
+    top: calc(3.5rem + 1.75rem);
+    width: 5rem;
+    border-top: 1.5px dashed var(--line-strong);
+  }
+  .break {
+    position: absolute;
+    left: 50%;
+    top: 0;
+    translate: -50% -50%;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    /* One pass takes 2.4s (0.8s per step), then rests. Each node lights as the signal reaches it. */
+    [data-live] .signal {
+      animation: travel 3.6s linear infinite;
+    }
+    [data-live] .node {
+      animation: reach 3.6s var(--ease-omil) infinite;
+      animation-delay: calc(var(--n) * 0.8s);
+    }
+    :global(.js) .flow .rail {
+      transform-origin: left top;
+      transition: transform 1.4s var(--ease-omil) 0.5s;
+    }
+    :global(.js) .flow:not(.is-in) .rail {
+      transform: scale(0);
+    }
+  }
+  @keyframes travel {
+    0% {
+      transform: translateX(-7rem);
+    }
+    66.6%,
+    100% {
+      transform: translateX(100cqw);
+    }
+  }
+  @keyframes reach {
+    0%,
+    26%,
+    100% {
+      box-shadow:
+        0 0 0 1px var(--line-strong),
+        0 6px 16px -8px rgb(var(--shadow-tint) / 0.2);
+      scale: 1;
+    }
+    5% {
+      box-shadow:
+        0 0 0 1.5px var(--ink),
+        0 0 0 6px color-mix(in srgb, var(--ink) 8%, transparent),
+        0 6px 16px -8px rgb(var(--shadow-tint) / 0.2);
+      scale: 1.05;
+    }
+  }
+</style>

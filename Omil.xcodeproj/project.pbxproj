@@ -21,6 +21,7 @@
 		1EB9298E271B4A50839D2C65 /* SessionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5BF80D997AFF8047BD7C73E /* SessionCoordinator.swift */; };
 		20DC695B0350A941669542DA /* OmilMacApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE8761062032A3B86123D949 /* OmilMacApp.swift */; };
 		28A21821B78FAD474062E12B /* RecentTargetApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 244A391BBADE6B5BB0FE41E8 /* RecentTargetApp.swift */; };
+		2A4D314ED740EB9FC04BDF40 /* KeyboardSessionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81695CA0B85E8774FC540C39 /* KeyboardSessionView.swift */; };
 		30B4B3C2F9DEAB2AF13DDD24 /* OmilIOSApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 049BF89C8C48F72E25AB3907 /* OmilIOSApp.swift */; };
 		3DD7D2771DDD8E6CD3669B1E /* OmilCore in Frameworks */ = {isa = PBXBuildFile; productRef = 4D8C289D65ECE23772F2D649 /* OmilCore */; };
 		3ED974A0AAC5D47FECA54B2C /* DictateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51DEA5C6A858C916BE54C55B /* DictateView.swift */; };
@@ -40,7 +41,6 @@
 		A13375DF34A15ED13C6BF065 /* DiffUtilTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18A4150AE36033E556680B69 /* DiffUtilTests.swift */; };
 		A440BA01828D7F2EA3516236 /* ClipboardInserter.swift in Sources */ = {isa = PBXBuildFile; fileRef = D848F1CE08AE5D255D009732 /* ClipboardInserter.swift */; };
 		A57A1BC73285B4EA4B3D02F6 /* DictationController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C59DC022BA72956BFC5C9C30 /* DictationController.swift */; };
-		A5A4320CFE46D621A8F48CB7 /* TranscriptDiff.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F90D528D573A26DEAB3B10A /* TranscriptDiff.swift */; };
 		AFB127F15462B24B9A2774AC /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 95C9B641D58FC29E10C96E1B /* Assets.xcassets */; };
 		B32BF2822752F3E3EED6D0CF /* UpdateControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9BA197997461D7F34825C15F /* UpdateControllerTests.swift */; };
 		B4C9102AE5A80146488DCADC /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE202A64F423446B4433191B /* Theme.swift */; };
@@ -118,6 +118,7 @@
 		64FCC9C1613278E5136ECA1D /* InstallationFlow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InstallationFlow.swift; sourceTree = "<group>"; };
 		67247A6F6A7142F80F113B7D /* Feedback.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Feedback.swift; sourceTree = "<group>"; };
 		7F2749EF7E70116A221AF4C5 /* OmilMacTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = OmilMacTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		81695CA0B85E8774FC540C39 /* KeyboardSessionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardSessionView.swift; sourceTree = "<group>"; };
 		81FAE7C85F1BC9F0F732F80B /* Omil.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Omil.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		851E5181A4DE29DF310D1367 /* History.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = History.swift; sourceTree = "<group>"; };
 		86E3ED1AE11456D7141BD9C3 /* InstallationFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InstallationFlowTests.swift; sourceTree = "<group>"; };
@@ -127,7 +128,6 @@
 		972AF13517E3CDBE826C8A80 /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
 		9BA197997461D7F34825C15F /* UpdateControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateControllerTests.swift; sourceTree = "<group>"; };
 		9F3850DCBEC22156CB08ED76 /* OmilMac.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = OmilMac.entitlements; sourceTree = "<group>"; };
-		9F90D528D573A26DEAB3B10A /* TranscriptDiff.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptDiff.swift; sourceTree = "<group>"; };
 		A039BF3D31992831A763E73B /* EngineStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngineStatus.swift; sourceTree = "<group>"; };
 		A08557C363B4D76C63A85DD1 /* TextDeliveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextDeliveryTests.swift; sourceTree = "<group>"; };
 		A9320DC452C49F34B44ABBB2 /* RecentTargetAppTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecentTargetAppTests.swift; sourceTree = "<group>"; };
@@ -287,6 +287,7 @@
 				67247A6F6A7142F80F113B7D /* Feedback.swift */,
 				851E5181A4DE29DF310D1367 /* History.swift */,
 				4D39E5E2A3EB44CBC48C6734 /* Info.plist */,
+				81695CA0B85E8774FC540C39 /* KeyboardSessionView.swift */,
 				C9112B0EB2008C1F2CF4F79C /* OmilIOS.entitlements */,
 				049BF89C8C48F72E25AB3907 /* OmilIOSApp.swift */,
 				50628AF477C94770CF6BE552 /* OnboardingView.swift */,
@@ -294,7 +295,6 @@
 				B5BF80D997AFF8047BD7C73E /* SessionCoordinator.swift */,
 				F4DCAF2CE1730C11FA35C09A /* SettingsView.swift */,
 				AE202A64F423446B4433191B /* Theme.swift */,
-				9F90D528D573A26DEAB3B10A /* TranscriptDiff.swift */,
 			);
 			path = iOS;
 			sourceTree = "<group>";
@@ -541,13 +541,13 @@
 				E6802080B6C79F064C54FF2C /* EngineStatus.swift in Sources */,
 				09C0653C21483BC79CEB0742 /* Feedback.swift in Sources */,
 				EE9EC4BCB5B8443C09C59CEE /* History.swift in Sources */,
+				2A4D314ED740EB9FC04BDF40 /* KeyboardSessionView.swift in Sources */,
 				30B4B3C2F9DEAB2AF13DDD24 /* OmilIOSApp.swift in Sources */,
 				1E12E9A70B6516F5C2E2A25A /* OnboardingView.swift in Sources */,
 				9E72606017AAD04E51AD489B /* Pairing.swift in Sources */,
 				1EB9298E271B4A50839D2C65 /* SessionCoordinator.swift in Sources */,
 				059862573AE37FD35E3A51E5 /* SettingsView.swift in Sources */,
 				B4C9102AE5A80146488DCADC /* Theme.swift in Sources */,
-				A5A4320CFE46D621A8F48CB7 /* TranscriptDiff.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

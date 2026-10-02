@@ -18,6 +18,7 @@ struct OmilIOSApp: App {
 struct RootView: View {
     @ObservedObject var coordinator: SessionCoordinator
     @AppStorage("omil.ios.onboarded") private var onboarded = false
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         Group {
@@ -33,7 +34,23 @@ struct RootView: View {
                 .transition(.move(edge: .leading).combined(with: .opacity))
             }
         }
+        .overlay {
+            if coordinator.showsReturnHint {
+                ReturnToAppView(coordinator: coordinator)
+                    .transition(.opacity)
+            }
+        }
+        .animation(Motion.standard, value: coordinator.showsReturnHint)
         .toastHost()
+        .onOpenURL { url in
+            // Links from the keyboard wait until setup is finished.
+            guard onboarded else { return }
+            coordinator.handle(url: url)
+        }
+        .onChange(of: scenePhase) { _, phase in
+            // Back in the other app: next time Omil opens, show the app itself.
+            if phase == .background { coordinator.showsReturnHint = false }
+        }
         .onAppear { DebugLaunch.applyDemo(to: coordinator) }
     }
 }
@@ -46,7 +63,8 @@ struct RootView: View {
 ///                            prompt, privacy, keyboard
 ///                            (keyboard focuses a text field to show the keyboard)
 ///   -OmilDemo NAME           fake a state: result, recording, processing,
-///                            setup, notready, failed
+///                            setup, notready, failed, keyboard (the screen
+///                            shown when the keyboard opens the app)
 ///   -OmilDictateFile PATH    dictate a 16 kHz mono WAV through the real
 ///                            pipeline instead of the microphone
 enum DebugLaunch {
@@ -110,6 +128,15 @@ enum DebugLaunch {
         case "recording":
             coordinator.phase = .recording
             coordinator.draftText = "I think we should move the design review"
+            Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { _ in
+                Task { @MainActor in
+                    coordinator.audioLevel = Double.random(in: 0.15...0.85)
+                }
+            }
+        case "keyboard":
+            coordinator.beginMicSession()
+            coordinator.showsReturnHint = true
+            coordinator.phase = .recording
             Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { _ in
                 Task { @MainActor in
                     coordinator.audioLevel = Double.random(in: 0.15...0.85)

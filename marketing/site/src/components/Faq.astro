@@ -1,0 +1,122 @@
+---
+import { Icon } from "astro-icon/components";
+import { GITHUB_URL } from "../data/site";
+
+const faqs = [
+  {
+    q: "Is it really free?",
+    a: "Yes. There is no account, no trial and no paid plan. Omil runs on your own Mac, so there is nothing to charge for.",
+  },
+  {
+    q: "What do I need?",
+    a: "An Apple silicon Mac with macOS 14 or later. On first launch Omil sets up its speech tools and downloads what it needs to run offline.",
+  },
+  {
+    q: "Which languages does it understand?",
+    a: "English, for now.",
+  },
+  {
+    q: "Does my audio go anywhere?",
+    a: "No. Recording, recognition and cleanup all happen on your Mac. An internet connection is only needed for the first setup and for updates.",
+  },
+  {
+    q: "Which apps does it work in?",
+    a: "Any app with a text field. Omil types into the field you were using, with your permission through Accessibility.",
+  },
+  {
+    q: "Can I change how it cleans up?",
+    a: "Yes. Switch between Clean and Verbatim at any time, add dictionary words and snippets, or edit the cleanup prompt itself.",
+  },
+  {
+    q: "What about iPhone and iPad?",
+    a: "Coming soon. The Omil keyboard sends your dictation to your Mac for transcription, so it stays free and private too.",
+  },
+];
+---
+
+<section id="faq" class="section">
+  <div class="shell grid gap-10 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] lg:gap-20">
+    <div class="lg:sticky lg:top-28 lg:self-start">
+      <h2 data-reveal class="title">Questions</h2>
+      <p data-reveal style="--i: 1" class="lead mt-5 max-w-[30ch]">
+        Something else?{" "}
+        <a href={`${GITHUB_URL}/issues`} class="text-ink underline decoration-line-strong underline-offset-4 transition-colors duration-300 hover:decoration-ink">Ask on GitHub</a>.
+      </p>
+    </div>
+
+    <!-- Without JavaScript every answer is open. With it, they open one at a time on a grid-row transition. -->
+    <div data-reveal style="--i: 1" class="border-t border-line" data-faq>
+      {
+        faqs.map((f, i) => (
+          <div class="item border-b border-line">
+            <h3>
+              <button type="button" id={`faq-q-${i}`} aria-controls={`faq-a-${i}`} aria-expanded="true" class="group flex w-full cursor-pointer items-center justify-between gap-6 py-5 text-left text-[1.0625rem] font-medium tracking-[-0.012em] md:py-6 md:text-[1.1875rem]">
+                {f.q}
+                <span class="sign grid size-8 flex-none place-items-center rounded-full text-muted ring-1 ring-line-strong transition-colors duration-300 group-hover:text-ink">
+                  <Icon name="ph:plus" class="size-4" aria-hidden="true" />
+                </span>
+              </button>
+            </h3>
+            <div class="answer grid" id={`faq-a-${i}`} role="region" aria-labelledby={`faq-q-${i}`}>
+              <div class="min-h-0 overflow-hidden">
+                <p class="max-w-[56ch] pb-6 leading-relaxed text-muted md:pb-7 md:text-[1.0625rem]">{f.a}</p>
+              </div>
+            </div>
+          </div>
+        ))
+      }
+    </div>
+  </div>
+</section>
+
+<script>
+  for (const list of document.querySelectorAll<HTMLElement>("[data-faq]")) {
+    const buttons = [...list.querySelectorAll<HTMLButtonElement>("button[aria-controls]")];
+    const set = (b: HTMLButtonElement, open: boolean) => {
+      b.setAttribute("aria-expanded", String(open));
+      // A closed answer is out of reach of the keyboard and of find-in-page.
+      document.getElementById(b.getAttribute("aria-controls")!)!.toggleAttribute("inert", !open);
+    };
+    buttons.forEach((b) => set(b, false));
+    list.classList.add("is-ready");
+    for (const b of buttons) {
+      b.addEventListener("click", () => {
+        const open = b.getAttribute("aria-expanded") !== "true";
+        buttons.forEach((other) => set(other, other === b && open));
+      });
+    }
+  }
+</script>
+
+<style>
+  .answer {
+    grid-template-rows: 1fr;
+  }
+  .item:has([aria-expanded="false"]) .answer,
+  :global(.js) [data-faq]:not(.is-ready) .answer {
+    grid-template-rows: 0fr;
+  }
+  .item:has([aria-expanded="false"]) .answer p {
+    opacity: 0;
+    translate: 0 -6px;
+  }
+  .item:has([aria-expanded="true"]) .sign {
+    rotate: 45deg;
+    color: var(--ink);
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .is-ready .answer {
+      transition: grid-template-rows 0.6s var(--ease-omil);
+    }
+    .is-ready .answer p {
+      transition:
+        opacity 0.5s var(--ease-omil),
+        translate 0.6s var(--ease-omil);
+    }
+    .sign {
+      transition:
+        rotate 0.6s var(--ease-omil),
+        color 0.3s;
+    }
+  }
+</style>

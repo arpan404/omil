@@ -1,0 +1,84 @@
+---
+// iPhone and iPad are not released yet, so the tile says so. The devices stand at two depths
+// and travel at different speeds while the page scrolls.
+---
+
+<section id="iphone" class="section">
+  <div class="shell">
+    <div class="tile relative overflow-hidden" data-devices>
+      <div class="grid lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] lg:items-center">
+        <div class="px-7 pt-9 md:px-14 md:pt-14 lg:py-20 lg:pr-0">
+          <span data-reveal class="inline-flex h-7 items-center rounded-full bg-surface px-3 text-[12.5px] font-medium ring-1 ring-line-strong">Coming soon</span>
+          <h2 data-reveal style="--i: 1" class="title mt-6 max-w-[11ch] lg:text-[2.75rem] xl:text-[3.25rem]">On iPhone and iPad, too.</h2>
+          <p data-reveal style="--i: 2" class="lead mt-5 max-w-[32ch]">
+            Pair once, then tap the mic on the Omil keyboard in any app. Your Mac does the transcribing, so it stays free and private.
+          </p>
+        </div>
+        <div data-reveal="fade" style="--i: 1" class="devices relative mx-auto mt-6 aspect-[10/9] w-full max-w-[36rem] lg:mx-0 lg:mt-0 lg:max-w-none">
+          <img
+            src="/media/ipad.webp"
+            alt="The Omil keyboard on iPad, listening while writing an email in Mail"
+            width="2366"
+            height="1786"
+            loading="lazy"
+            decoding="async"
+            class="ipad absolute max-w-none"
+            data-depth="back"
+          />
+          <img
+            src="/media/iphone-done.webp"
+            alt="The Omil keyboard on iPhone after inserting a dictated message in Messages"
+            width="1160"
+            height="2070"
+            loading="lazy"
+            decoding="async"
+            class="iphone absolute max-w-none"
+            data-depth="front"
+          />
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<script>
+  import { animate, scroll } from "motion";
+  import { reduceMotion } from "../scripts/motion";
+
+  // Depth: the iPad drifts a little, the iPhone in front of it drifts more.
+  const tile = document.querySelector<HTMLElement>("[data-devices]");
+  if (tile && !reduceMotion()) {
+    const back = tile.querySelector<HTMLElement>('[data-depth="back"]')!;
+    const front = tile.querySelector<HTMLElement>('[data-depth="front"]')!;
+    const range = { target: tile, offset: ["start end", "end start"] } as const;
+    scroll(animate(back, { y: [14, -14] }, { ease: "linear" }), range);
+    scroll(animate(front, { y: [34, -34] }, { ease: "linear" }), range);
+  }
+</script>
+
+<style>
+  /* The renders carry their own soft shadows in a transparent margin, so sizes here are
+     the image box, not the device. */
+  .ipad {
+    width: 86%;
+    top: 0;
+    right: 1%;
+  }
+  .iphone {
+    width: 33%;
+    bottom: 1%;
+    left: 3%;
+  }
+  @media (min-width: 1024px) {
+    .ipad {
+      width: 90%;
+      top: 9%;
+      right: 1.5%;
+    }
+    .iphone {
+      width: 35%;
+      bottom: 2%;
+      left: 0;
+    }
+  }
+</style>

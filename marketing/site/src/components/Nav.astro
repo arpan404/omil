@@ -1,0 +1,118 @@
+---
+import { Icon } from "astro-icon/components";
+import { GITHUB_URL } from "../data/site";
+import DownloadButton from "./DownloadButton.astro";
+import ThemeSwitch from "./ThemeSwitch.astro";
+
+const links = [
+  { href: "#how", label: "How it works" },
+  { href: "#cleanup", label: "Cleanup" },
+  { href: "#private", label: "Privacy" },
+  { href: "#faq", label: "FAQ" },
+];
+---
+
+<!-- A sentinel at the very top of the page. When it scrolls out of view the bar lifts off the page. -->
+<div data-nav-sentinel class="pointer-events-none absolute top-0 h-6 w-full" aria-hidden="true"></div>
+
+<!-- A floating capsule. The thumb behind the links follows the section being read. -->
+<header class="pointer-events-none fixed inset-x-0 top-0 z-40 flex justify-center px-3 pt-3 md:pt-4" data-nav>
+  <nav class="nav-bar pointer-events-auto relative flex h-[3.25rem] w-full max-w-[52rem] items-center rounded-full pr-2 pl-4" aria-label="Main">
+    <span class="nav-material absolute inset-0 rounded-full" aria-hidden="true"></span>
+    <a href="/" class="relative flex items-center gap-2.5 text-[15px] font-semibold tracking-tight">
+      <img src="/media/icon-64.png" alt="" width="26" height="26" class="size-[26px] rounded-[7px]" />
+      Omil
+    </a>
+    <ul class="relative mx-auto hidden items-center text-[13.5px] font-medium text-muted md:flex" data-nav-links>
+      <span class="nav-thumb pointer-events-none absolute top-0 left-0 h-full rounded-full" aria-hidden="true"></span>
+      {
+        links.map((l) => (
+          <li>
+            <a href={l.href} class="nav-link relative block rounded-full px-3.5 py-1.5 transition-colors duration-300 hover:text-ink aria-[current]:text-ink">
+              {l.label}
+            </a>
+          </li>
+        ))
+      }
+    </ul>
+    <div class="relative ml-auto flex items-center gap-1.5 md:ml-0">
+      <a href={GITHUB_URL} class="hidden size-9 place-items-center rounded-full text-muted transition-colors duration-300 hover:text-ink sm:grid" aria-label="Omil on GitHub">
+        <Icon name="ph:github-logo" class="size-[19px]" />
+      </a>
+      <ThemeSwitch />
+      <span class="w-1" aria-hidden="true"></span>
+      <DownloadButton size="sm" short />
+    </div>
+  </nav>
+</header>
+
+<script>
+  const nav = document.querySelector<HTMLElement>("[data-nav]");
+  const sentinel = document.querySelector("[data-nav-sentinel]");
+  if (nav && sentinel) {
+    // Lifted once the page has scrolled, driven by the top sentinel, not a scroll listener.
+    new IntersectionObserver(([e]) => nav.classList.toggle("is-scrolled", !e.isIntersecting), { threshold: 0 }).observe(sentinel);
+
+    // The link for the section crossing the middle of the screen is current.
+    const list = nav.querySelector<HTMLElement>("[data-nav-links]")!;
+    const thumb = list.querySelector<HTMLElement>(".nav-thumb")!;
+    const links = [...list.querySelectorAll<HTMLAnchorElement>("a")];
+    const setCurrent = (id: string | null) => {
+      const link = links.find((l) => l.hash === `#${id}`);
+      links.forEach((l) => (l === link ? l.setAttribute("aria-current", "true") : l.removeAttribute("aria-current")));
+      if (link) {
+        thumb.style.width = `${link.offsetWidth}px`;
+        thumb.style.transform = `translateX(${link.offsetLeft}px)`;
+      }
+      thumb.style.opacity = link ? "1" : "0";
+    };
+    const middle = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) if (e.isIntersecting) setCurrent(e.target.id);
+      },
+      { rootMargin: "-45% 0px -55% 0px" },
+    );
+    document.querySelectorAll("main > section, main > div[id], footer").forEach((s) => middle.observe(s));
+  }
+</script>
+
+<style>
+  .nav-material {
+    background: color-mix(in srgb, var(--surface) 72%, transparent);
+    backdrop-filter: blur(24px) saturate(1.6);
+    -webkit-backdrop-filter: blur(24px) saturate(1.6);
+    box-shadow:
+      0 0 0 1px var(--line),
+      inset 0 1px 0 var(--highlight);
+    transition: box-shadow 0.6s var(--ease-omil);
+  }
+  .is-scrolled .nav-material {
+    box-shadow:
+      0 0 0 1px var(--line),
+      inset 0 1px 0 var(--highlight),
+      0 1px 2px rgb(var(--shadow-tint) / 0.05),
+      0 16px 36px -18px rgb(var(--shadow-tint) / 0.28);
+  }
+  .nav-thumb {
+    width: 0;
+    opacity: 0;
+    background: color-mix(in srgb, var(--ink) 7%, transparent);
+    transition:
+      transform 0.6s var(--ease-omil),
+      width 0.6s var(--ease-omil),
+      opacity 0.4s var(--ease-omil);
+  }
+  @media (prefers-reduced-transparency: reduce) {
+    .nav-material {
+      background: var(--surface);
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .nav-material,
+    .nav-thumb {
+      transition: none;
+    }
+  }
+</style>

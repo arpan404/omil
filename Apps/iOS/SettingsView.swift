@@ -111,19 +111,43 @@ struct SettingsView: View {
     }
 
     private var keyboardSection: some View {
-        Section {
-            KeyboardSetupSteps()
-            Button {
-                if let url = URL(string: UIApplication.openSettingsURLString) {
-                    UIApplication.shared.open(url)
+        Group {
+            Section {
+                Picker(selection: $coordinator.micSessionMinutes) {
+                    ForEach(SessionCoordinator.micSessionChoices, id: \.self) { minutes in
+                        Text(minutes == 60 ? "1 Hour" : minutes == 1 ? "1 Minute" : "\(minutes) Minutes").tag(minutes)
+                    }
+                } label: {
+                    Label { Text("Keep Mic Ready") } icon: { IconTile(symbol: "mic.fill", color: .tileRed) }
                 }
-            } label: {
-                RowLabel("Open Settings", symbol: "gear", color: .tileGray)
+                Toggle(isOn: $coordinator.returnAfterInsert) {
+                    Label { Text("Switch Back After Inserting") } icon: { IconTile(symbol: "globe", color: .tileBlue) }
+                }
+                .tint(.green)
+                if coordinator.micSessionEnds != nil {
+                    Button(role: .destructive) { coordinator.endMicSession() } label: {
+                        RowLabel("Turn Off Keyboard Mic Now", symbol: "mic.slash.fill", color: .tileGray)
+                    }
+                }
+            } header: {
+                Text("Keyboard")
+            } footer: {
+                Text("The first dictation from the Omil keyboard opens Omil for a moment. After that the mic stays ready, so the keyboard starts right away. Switching back returns you to your usual keyboard and language after each dictation. Put Omil last in your keyboard list so it switches to your main keyboard.")
             }
-        } header: {
-            Text("Keyboard")
-        } footer: {
-            Text("Full Access lets the keyboard read finished dictations from Omil. Nothing you type is collected.")
+            Section {
+                KeyboardSetupSteps()
+                Button {
+                    if let url = URL(string: UIApplication.openSettingsURLString) {
+                        UIApplication.shared.open(url)
+                    }
+                } label: {
+                    RowLabel("Open Settings", symbol: "gear", color: .tileGray)
+                }
+            } header: {
+                Text("Turn On the Keyboard")
+            } footer: {
+                Text("Full Access lets the keyboard talk to the Omil app to start dictation and insert your words. Nothing you type is collected.")
+            }
         }
     }
 
@@ -738,7 +762,9 @@ struct PrivacyView: View {
                 PrivacyRow(symbol: "person.crop.circle.badge.xmark", title: "No Account",
                            detail: "Omil doesn't need an account and has no cloud service.")
                 PrivacyRow(symbol: "keyboard", title: "Keyboard Reads Only Omil",
-                           detail: "The keyboard reads finished dictations from Omil. It doesn't record what you type.")
+                           detail: "The keyboard only starts and stops dictation in Omil and inserts the result. It doesn't record what you type.")
+                PrivacyRow(symbol: "mic.fill", title: "Mic Only While You Dictate",
+                           detail: "Between keyboard dictations the mic stays ready but nothing is kept or sent. It turns off after the time you choose.")
             }
         }
         .formStyle(.grouped)
