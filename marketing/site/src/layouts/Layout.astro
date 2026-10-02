@@ -1,16 +1,21 @@
 ---
+import geist from "@fontsource-variable/geist/files/geist-latin-wght-normal.woff2?url";
+import { DESCRIPTION, SITE_NAME, TITLE } from "../data/site";
 import "../styles/global.css";
 
 interface Props {
   title?: string;
   description?: string;
+  /** Keep the page out of search results (the 404 page). */
+  noindex?: boolean;
 }
 
-const {
-  title = "Omil: free, private dictation for your Mac",
-  description = "Hold Right Option, speak, and let go. Omil turns your voice into clean text in any app, on your own Mac. No account, no cloud, no subscription.",
-} = Astro.props;
-const og = new URL("/media/og.png", Astro.site ?? Astro.url).href;
+const { title = TITLE, description = DESCRIPTION, noindex = false } = Astro.props;
+const base = Astro.site ?? Astro.url;
+const canonical = new URL(Astro.url.pathname, base).href;
+// The link preview: 1200 x 630, rendered from og/og.html with `bun run og`.
+const og = new URL("/media/og.png", base).href;
+const ogAlt = "Omil. You think faster than you type. Free, private dictation for Mac.";
 ---
 
 <!doctype html>
@@ -20,15 +25,43 @@ const og = new URL("/media/og.png", Astro.site ?? Astro.url).href;
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{title}</title>
     <meta name="description" content={description} />
-    <link rel="canonical" href={new URL(Astro.url.pathname, Astro.site ?? Astro.url).href} />
-    <link rel="icon" type="image/png" href="/media/icon-64.png" />
+    <link rel="canonical" href={canonical} />
+    <meta name="robots" content={noindex ? "noindex" : "index, follow, max-image-preview:large, max-snippet:-1"} />
+
+    <!-- Icons and app name -->
+    <link rel="icon" href="/favicon.ico" sizes="32x32" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/media/icon-192.png" />
     <link rel="apple-touch-icon" href="/media/icon-180.png" />
+    <link rel="manifest" href="/site.webmanifest" />
+    <meta name="application-name" content={SITE_NAME} />
+    <meta name="apple-mobile-web-app-title" content={SITE_NAME} />
+    <meta name="color-scheme" content="light dark" />
     <meta name="theme-color" content="#fbfbfc" />
+
+    <!-- Link previews: Open Graph (Facebook, LinkedIn, iMessage, Slack, Discord) and X -->
     <meta property="og:type" content="website" />
+    <meta property="og:site_name" content={SITE_NAME} />
+    <meta property="og:locale" content="en_US" />
+    <meta property="og:url" content={canonical} />
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
     <meta property="og:image" content={og} />
+    <meta property="og:image:type" content="image/png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content={ogAlt} />
     <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={title} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={og} />
+    <meta name="twitter:image:alt" content={ogAlt} />
+
+    <!-- The headline's font, and the host asked for the latest release -->
+    <link rel="preload" as="font" type="font/woff2" href={geist} crossorigin />
+    <link rel="preconnect" href="https://api.github.com" crossorigin />
+
+    <slot name="head" />
+
     <script is:inline>
       // Resolve the theme before first paint: the saved choice, otherwise the system.
       (() => {
@@ -44,14 +77,24 @@ const og = new URL("/media/og.png", Astro.site ?? Astro.url).href;
         apply();
         media.addEventListener("change", apply);
         window.__applyTheme = apply;
+        // "js" lets the styles hide what the scripts will animate in. If one of those scripts
+        // never runs (a blocked or failed download), drop the class once the page has loaded,
+        // so everything shows as it does without JavaScript. Nothing may stay hidden.
         root.classList.add("js");
+        addEventListener("load", () =>
+          setTimeout(() => {
+            if (document.querySelector('[data-script]:not([data-script="ready"])')) root.classList.remove("js");
+          }, 600),
+        );
       })();
     </script>
   </head>
-  <body class="min-h-[100dvh] bg-canvas font-sans text-ink">
+  <body class="min-h-[100dvh] bg-canvas font-sans text-ink" data-script>
     <slot />
     <script>
       // Reveal on entry, once. Reduced motion is handled in CSS: nothing is hidden there.
+      // data-script="ready" tells the fail-safe in <head> that this script is running.
+      document.body.dataset.script = "ready";
       const seen = new IntersectionObserver(
         (entries) => {
           for (const entry of entries) {

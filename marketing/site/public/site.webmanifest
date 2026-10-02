@@ -1,0 +1,13 @@
+{
+  "name": "Omil",
+  "short_name": "Omil",
+  "description": "Free, private voice dictation for Mac.",
+  "start_url": "/",
+  "display": "browser",
+  "background_color": "#fbfbfc",
+  "theme_color": "#111113",
+  "icons": [
+    { "src": "/media/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/media/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

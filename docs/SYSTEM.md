@@ -1,282 +1,146 @@
 # How Omil works
 
-This document describes the system implemented in this repository. It covers
-the primary macOS path and the experimental iOS handoff.
-
-## Runtime overview
+The Mac app records, shows the UI, and types the result. A small server bundled inside it runs the models. An iPhone or iPad can use the same server over the local network.
 
 ```mermaid
 flowchart LR
     Input[Shortcut or record button] --> Controller[DictationController]
     Controller --> Capture[AudioCapture]
-    Capture --> Client[OmilCore server client]
-    Client --> API[Bundled Effect and Bun server]
-    API --> Speech[transcription CLI with the selected speech model]
-    API --> Cleanup[Cleanup pipeline]
-    Cleanup --> LLM[cleanup process with the selected model]
-    Cleanup --> Validator[Deterministic resolver and validator]
+    Capture --> Client[Server client]
+    Client --> API[Bundled server]
+    API --> Speech[whisper-cli]
+    API --> Cleanup[Cleanup rules]
+    Cleanup --> LLM[llama-server]
     Controller --> Insert[Accessibility insertion]
-    Insert --> Clipboard[Guarded clipboard fallback]
+    Insert --> Clipboard[Clipboard fallback]
 ```
 
-The macOS app is the user-facing process. It owns recording, UI state,
-shortcuts, insertion, and local history. A bundled server owns model downloads,
-transcription, and cleanup. The server calls Homebrew-installed
-transcription and cleanup binaries. Today those are `whisper-cli` and
-`llama-server`, from the `whisper.cpp` and `llama.cpp` packages. The speech
-and cleanup models are catalog entries, so another model can be added without
-changing this layout.
-
-There is no Swift inference fallback in the Mac app. If the server cannot
-transcribe or clean a recording, the app reports the failure and preserves any
-raw transcript that was already produced.
+The server calls two Homebrew tools: `whisper-cli` from `whisper.cpp` for speech, and `llama-server` from `llama.cpp` for cleanup. The app has no other way to transcribe. If the server fails, the app says so and keeps any raw transcript it already has.
 
 ## Startup
 
-1. `AppDelegate` creates one shared `DictationController` and starts the global
-   hotkey monitor.
-2. `LocalServerManager` creates `~/Library/Application Support/Omil/Server`.
-3. It creates a bearer token with `0600` permissions and selects free API and
-   cleanup-process ports.
-4. It launches the bundled `omil-server` executable on `127.0.0.1` and passes
-   the app process ID to it. If the user explicitly enables local-network
-   sharing, it binds to `0.0.0.0` instead.
-5. If `whisper-cli` or `llama-server` is missing, the app runs Homebrew to install
-   `whisper.cpp` or `llama.cpp`. If Homebrew is missing or fails, Engine shows
-   the official install page and a command to run in Terminal.
-6. The app polls `/v1/health`, reads the model catalog, prepares selected
-   weights when needed, and warms the cleanup model in the background.
-7. Closing the app terminates the managed server. The server also watches the
-   parent process and exits if the app disappears unexpectedly.
+1. `AppDelegate` creates one `DictationController` and starts the global shortcut monitor.
+2. `LocalServerManager` creates `~/Library/Application Support/Omil/Server`, writes a bearer token with `0600` permissions, and picks free ports.
+3. It launches `omil-server` on `127.0.0.1` and passes it the app's process ID.
+4. If `whisper-cli` or `llama-server` is missing, the app runs Homebrew to install it. If that fails, the Engine screen shows the install page and a command to run.
+5. The app polls `/v1/health`, reads the model catalog, downloads the selected weights if needed, and loads the cleanup model in the background.
 
-The Engine screen can expose the managed server to trusted devices on the same
-network. It displays a reachable endpoint and generated bearer token, supports
-copying both as one setup block, and can rotate the token. Turning sharing off
-restarts the server on loopback. A custom host, port, and token remain available
-as an advanced development override.
+Quitting the app stops the server. The server also watches the app's process and exits if it disappears.
 
-## Supported models
+## Models
 
-The Engine screen offers Whisper small Q8 and large-v3 turbo Q8 for speech,
-and Qwen3.5 0.8B, 2B, and 4B at Q4 for cleanup. The defaults are large-v3
-turbo Q8 and Qwen3.5 2B. Each client sends its model choice with a request.
-Selected weights download separately. Changing the cleanup model warms it in
-the background before the next recording.
+Speech: Whisper small Q8 or large-v3 turbo Q8. Cleanup: Qwen3.5 0.8B, 2B, or 4B at Q4. The defaults are large-v3 turbo Q8 and Qwen3.5 2B. Models are catalog entries, so adding one does not change anything else here.
 
-## Dictation lifecycle
+Each request names the model it wants. Weights download after you select a model. The server checks the file size, records a SHA-256 hash in a local manifest, and verifies the file against it on later starts. It also downloads a small Silero voice-detection model the first time it transcribes.
 
-The controller tracks the microphone phase separately from completed recordings:
+Speech runs once per recording. The cleanup model loads the first time Clean mode needs it and stays loaded. Switching models lets a running cleanup finish first. You can delete a downloaded model from the Engine screen, but not while it is in use.
 
-```text
-idle -> preparing -> recording -> ready
-             |             |
-             +-------------+-> failed
+## A dictation, step by step
 
-preparing or recording -> idle (cancel)
-```
+When recording starts, the app notes the focused field and its selection. `AudioCapture` converts the microphone input to 16 kHz mono 16-bit PCM. The pill gets a throttled level for its meter.
 
-Stopping releases the microphone immediately. Each stopped session keeps its
-own transcription task, destination, selection, cleanup mode, and writing style.
-The user can start another recording while older ones are transcribing or
-cleaning. The Dictate view lists pending recordings. Delivery waits for earlier
-sessions, even while a new recording is active, then revalidates the captured
-field before insertion.
+When recording stops:
 
-When recording starts, the app captures the focused accessibility element and
-its current selection. `AudioCapture` converts microphone input to 16 kHz,
-mono, 16-bit PCM. The floating pill receives a throttled audio level for its
-meter. An ordered forwarder drains every captured chunk into
-`ServerTranscriptionBackend` before the session ends.
+1. The app wraps the audio in a WAV and sends it to `POST /v1/transcribe`.
+2. The server filters low-frequency rumble and raises quiet speech. Near-silent audio returns an empty transcript. This is a high-pass filter and a level adjustment, not noise removal.
+3. Silero voice activity detection keeps the speech segments, and Whisper transcribes them.
+4. The server returns the transcript with timestamps and deletes the upload.
+5. The app sends the transcript, mode, dictionary, snippets, and writing style to `POST /v1/cleanup`. A device's own cleanup prompt, if set, applies to that request only.
+6. The app inserts the result once and saves it to history.
 
-Stopping performs the following work:
+Stopping frees the microphone at once, so you can record again while older recordings are still processing. Results are delivered in the order they were recorded.
 
-1. The backend wraps the buffered PCM in a WAV container.
-2. It sends the WAV to `POST /v1/transcribe` with the bearer token.
-3. The server removes low-frequency rumble from 16 kHz mono PCM uploads and
-   adjusts quiet speech levels when the frame levels vary like speech. It
-   returns an empty transcript for near-digital silence. This is a high-pass
-   filter and level adjustment, not general noise removal.
-4. For other audio, the transcription command uses Silero voice activity detection to keep
-   speech segments before the selected speech model transcribes them. Mac and
-   iOS send their own `sensitivity` value on every `/v1/transcribe` request.
-   The server defaults to balanced for older clients.
-5. The server returns the transcript and timestamped segments, then deletes the
-   temporary upload.
-6. The app sends the final transcript, cleanup mode, dictionary, snippets, and
-   app-category writing style to `POST /v1/cleanup`. An optional `systemPrompt`
-   from that device's Advanced settings guides full-text cleanup
-   for this request only; the server prompt remains the default for other requests.
-7. The app inserts the returned text once and records the result in history if
-   history is enabled.
+The server has one queue for speech and one for cleanup, each with a single worker. Requests from several devices run in arrival order. A queued request keeps the model and settings it arrived with. `GET /v1/queue` shows what is running and waiting.
 
-| Sensitivity | VAD threshold | Max gain | Minimum speech | Minimum silence | Speech padding |
+Each recording has its own ID. A cancelled or replaced recording cannot deliver a late result, and a result cannot be inserted twice.
+
+### Speech sensitivity
+
+Each device sends its own setting with every request.
+
+| Setting | VAD threshold | Max gain | Min speech | Min silence | Padding |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | Filter more noise | 0.65 | 2x | 250 ms | 100 ms | 30 ms |
 | Balanced | 0.50 | 3x | 250 ms | 100 ms | 30 ms |
 | Distant voice | 0.30 | 5x | 120 ms | 450 ms | 90 ms |
 
-Lower thresholds keep more quiet speech but can admit more background sound.
-Amplification cannot restore speech already buried beneath noise.
+A lower threshold keeps more quiet speech and lets in more background sound. Gain cannot recover speech that is buried in noise.
 
-The client sends one request identifier through both stages. Each request also
-contains its chosen model and a snapshot of its cleanup preferences. The server
-has separate FIFO, single-worker queues for transcription and cleanup work. Requests from
-multiple devices therefore run in arrival order for each inference resource,
-while transcription and cleanup can progress independently. A queued request
-keeps the model and preferences it arrived with even if another client changes
-the server defaults before that request starts. `GET /v1/queue` exposes active,
-pending, and completed work to authenticated clients.
+## Cleanup
 
-Each session has its own identifier. Callbacks check that identifier before
-changing UI state, so a cancelled or replaced session cannot deliver a late
-result. A commit sequence also prevents the same result from being inserted
-twice.
+Verbatim mode fixes whitespace, capitalization, and final punctuation, and expands snippets. It does not use the cleanup model.
 
-## Cleanup pipeline
+Clean mode runs rules first and the model second:
 
-Verbatim mode normalizes whitespace, capitalization, and final punctuation. It
-can also expand an explicit snippet. It does not start the cleanup model.
+1. The server splits the transcript into tokens and marks protected values, quoted text, fillers, and correction cues.
+2. Rules propose edits: remove fillers and repeated words, apply corrections and reversals such as "keep the original", and write numbers of ten or more as digits.
+3. A validator rejects edits that point at the wrong words, conflict with each other, change a negation, or change who the sentence is about.
+4. The accepted edits are applied and checked. If the check fails, the server drops the risky edits. If it still fails, it returns the verbatim text.
+5. Dictionary entries are substituted. Then one model call copyedits the whole text for grammar, spelling, capitalization, and punctuation. It sees up to 400 characters before the cursor and 200 after, as context only.
+6. A word diff checks the copyedit. If it changed a number, a negation, quoted text, or added content, the server keeps the text from step 4.
+7. The writing style and snippets are applied.
 
-Clean mode uses a hybrid pipeline:
+The response lists the accepted and rejected edits, the snippets used, and the final text. The app's Clean, Original, and Changes views are built from it.
 
-1. The server tokenizes the transcript and marks protected values, quoted text,
-   fillers, and possible correction cues.
-2. Deterministic rules propose filler removal, repeated-word removal,
-   corrections, reversals such as "keep the original," and number
-   normalization for quantities of ten or more.
-3. The validator rejects stale references, conflicting targets, ungrounded
-   replacements, type mismatches, negation changes, and subject-scope changes.
-4. A preservation check runs after accepted edits are rendered. If it fails,
-   the server drops risky repairs. It falls back to verbatim text if the reduced
-   edit set still fails.
-5. Confirmed personal dictionary forms are substituted over the remaining
-   tokens. One model call copyedits the full result for grammar, spelling,
-   capitalization, and punctuation. It receives at most 400 characters before
-   and 200 after the captured cursor as context when the field exposes them.
-   That text is never included in the result. A word diff rejects changed
-   numbers, negation, and quoted text. It also rejects unsupported content
-   changes; a larger term correction must match nearby field text. If the
-   copyedit fails validation, the structurally cleaned text is kept.
-6. The server applies the selected writing style and snippet expansions.
+## Typing the result
 
-The response includes accepted edits, rejected edits, abstentions, the rule
-version, applied snippet triggers, and the final text. The Mac app uses this
-data for its raw, cleaned, and diff views.
+`AXInserter` records the app, field, and selection when recording starts. Before inserting, it checks that the same field and selection are still active.
 
-## Model lifecycle
+- If they are, Omil replaces only that selection. Undo works while the inserted text is still there, and never overwrites other typing.
+- If direct insertion fails, Omil saves the clipboard, pastes, and restores the clipboard. It does not restore if you copied something else in the meantime.
+- If the field changed while Omil was working, the result stays in Omil until you insert it yourself.
+- Without Accessibility permission, the result stays in Omil for copying.
 
-The server has a catalog of speech and cleanup models. A selection is saved before
-its weights are downloaded. Model preparation downloads the selected file,
-checks its size, calculates a SHA-256 hash, and records that hash in a local
-manifest. Later starts verify the stored file against the manifest.
-The server also downloads a small internal Silero VAD model on the first
-non-silent transcription and checks its fixed SHA-256 hash. It does not appear
-in the selectable model catalog.
+## Data on disk
 
-Transcription runs once per completed recording. The cleanup process starts when clean mode
-needs a model and stays loaded for later requests. The runtime tracks loading,
-active uses, deferred unload requests, and failures. Switching cleanup models lets
-an active cleanup finish before the old process is released.
-
-Downloaded models can be removed from the Engine screen after confirmation.
-The server refuses to delete a model while its inference queue is busy or while
-that model is in use. It unloads an idle cleanup process before deleting its
-weight, then removes the corresponding manifest entry and lifecycle state.
-
-## Text insertion and recovery
-
-At recording start, `AXInserter` records the destination app, focused field,
-selection, and available field value. When dictation starts from Omil's window
-or menu bar, it can use the last active external app. Before insertion it checks
-that the same field and selection are still active, restoring that app's focus
-only if Omil is still frontmost.
-
-If the check succeeds, Omil replaces only the captured selection and stores an
-insertion receipt. Undo works only while the inserted range still contains
-Omil's text. It refuses to overwrite unrelated typing.
-
-If direct insertion fails, or the same focused field does not expose its
-selection, Omil saves the clipboard's current representations and sends a paste
-command. It restores those representations only when Omil still owns the
-clipboard change, so a newer user copy is never overwritten. Without
-Accessibility permission, the result stays in Omil for copying.
-
-If the destination changed while transcription was running, Omil keeps the
-result and requires an explicit insertion instead of sending text to the wrong
-field.
-
-## Local data
-
-The Mac app stores data under `~/Library/Application Support/Omil`:
+Everything is under `~/Library/Application Support/Omil`.
 
 | Data | Location |
 | --- | --- |
-| Dictation history | `history.json`, up to 200 entries when enabled |
-| Personal dictionary | `dictionary.json` |
+| History, up to 200 entries | `history.json` |
+| Dictionary | `dictionary.json` |
 | Snippets | `snippets.json` |
 | Model weights and manifest | `Server/models/` |
 | Selected models | `Server/selected-models.json` |
-| Server-wide custom cleanup prompt | `Server/system-prompt.md` |
+| Server-wide cleanup prompt | `Server/system-prompt.md` |
 | Server token and log | `Server/omil-token`, `Server/omil-server.log` |
 
-Theme, shortcut, cleanup, device cleanup prompt, server, and writing-style
-preferences use `UserDefaults`. Microphone audio is buffered in memory by the
-client. The server deletes its temporary WAV after each transcription request.
+Other preferences are in `UserDefaults`. Audio is held in memory by the app. The server deletes its temporary WAV after each request.
 
-The managed server accepts connections only from the local Mac by default.
-Every endpoint except `/v1/health` requires the bearer token. Enabling
-local-network sharing makes the server reachable on every Mac network
-interface; audio, text, and preferences then travel over that local network, so
-sharing should only be enabled on a trusted network. Rotating the token
-immediately invalidates previously copied credentials.
+## Network
 
-## iOS and keyboard path
+By default the server accepts connections only from the Mac itself. Every endpoint except `/v1/health` needs the bearer token.
 
-The iOS app is a thin client. The user enables local-network sharing in the Mac
-app and copies its endpoint and token into iOS. The iOS app then records audio
-and sends it to the same server managed by the Mac app. When a result is ready,
-the app writes it to an App Group `ResultStore` with a session identifier.
+Turning on local-network sharing in the Engine screen binds the server to every network interface. Audio and text then travel over that network, so only do this on a network you trust. The screen shows the address and token to copy to another device. Rotating the token cuts off devices that have the old one. Turning sharing off restarts the server on loopback.
 
-The keyboard extension never records audio or loads models (extensions have no
-microphone). Instead it drives the app through `KeyboardLink`
-(`Sources/OmilCore/KeyboardLink.swift`): two small JSON files in the App Group
-container plus Darwin notifications to wake the other side.
+## iPhone and iPad
 
-1. The first tap on the keyboard's mic opens the app with `omil://dictate`. The
-   app starts a mic session and begins listening right away; a screen tells the
-   user to go back with the system's back breadcrumb.
-2. With `UIBackgroundModes` `audio`, the audio engine keeps running in the
-   background for the chosen time (1, 5, 15 or 60 minutes after the last
-   dictation). Audio is routed to a dictation only while one is running;
-   between dictations it is dropped on the spot.
-3. While the session is live (the app refreshes a heartbeat every second), the
-   keyboard sends `start`, `stop`, `cancel` and `end` commands and shows the
-   live waveform, without leaving the current app. A stale heartbeat means the
-   app was suspended, so the next tap opens it again.
-4. Results started from the keyboard are marked `autoInsert` in the
-   `ResultStore`; the keyboard inserts them as soon as they're ready and
-   acknowledges the session, so a result is inserted once. Results from the
-   app itself wait for an Insert tap.
-5. iOS has no way to add a key to Apple's keyboard, so after inserting, Omil
-   can switch to the next keyboard (`advanceToNextInputMode`), which returns
-   the user to their usual keyboard and language.
+This path is experimental. It has not been tested on a physical device.
 
-A call or Siri interrupts the audio session; the app keeps what was said and
-ends the mic session. This path remains experimental until it has been
-validated on physical devices.
+The iOS app records audio and sends it to the Mac's server, using the address and token from the Engine screen. It writes each result to an App Group `ResultStore`.
 
-## Source map
+A keyboard extension cannot use the microphone, so the keyboard drives the app through `KeyboardLink`: two small JSON files in the App Group container, plus Darwin notifications to wake the other side.
 
-| Responsibility | Main code |
+1. The first tap on the keyboard's mic opens the app with `omil://dictate`. The app starts listening, and you return to your app with the system's back button.
+2. The app keeps the audio engine running in the background for 1, 5, 15, or 60 minutes after the last dictation. Audio is only kept while a dictation is running.
+3. While the app is alive, the keyboard sends `start`, `stop`, `cancel`, and `end`, and shows the live waveform. The app writes a heartbeat every second. If it goes stale, the next tap opens the app again.
+4. The keyboard inserts results it started as soon as they are ready, once. Results started in the app wait for an Insert tap.
+5. After inserting, Omil can switch back to your usual keyboard.
+
+A phone call or Siri ends the session. What was already said is kept.
+
+## Where the code is
+
+| Area | Files |
 | --- | --- |
-| Mac lifecycle and settings | `Apps/Mac/OmilMacApp.swift` |
-| Recording and delivery orchestration | `Apps/Mac/DictationController.swift` |
-| Managed server process | `Apps/Mac/LocalServerManager.swift` |
-| Audio capture and server clients | `Sources/OmilCore/AudioCapture.swift`, `Sources/OmilCore/ServerBackend.swift` |
-| Safe insertion and clipboard fallback | `Apps/Mac/AXInserter.swift`, `Apps/Mac/ClipboardInserter.swift` |
-| HTTP API and authentication | `server/src/Api.ts`, `server/src/Auth.ts` |
-| Transcription and model processes | `server/src/Whisper.ts`, `server/src/LlamaServer.ts` |
+| Mac app lifecycle and settings | `Apps/Mac/OmilMacApp.swift` |
+| Recording and delivery | `Apps/Mac/DictationController.swift` |
+| Server process | `Apps/Mac/LocalServerManager.swift` |
+| Audio capture and server client | `Sources/OmilCore/AudioCapture.swift`, `Sources/OmilCore/ServerBackend.swift` |
+| Insertion and clipboard fallback | `Apps/Mac/AXInserter.swift`, `Apps/Mac/ClipboardInserter.swift` |
+| HTTP API and auth | `server/src/Api.ts`, `server/src/Auth.ts` |
+| Speech and model processes | `server/src/Whisper.ts`, `server/src/LlamaServer.ts` |
 | Cleanup and validation | `server/src/QwenCleanup.ts`, `server/src/Cleanup.ts`, `server/src/Resolver.ts` |
-| Model downloads and runtime state | `server/src/Models.ts`, `server/src/ModelRuntime.ts` |
-| Inference scheduling | `server/src/InferenceQueue.ts`, `server/src/Api.ts` |
-| Mobile handoff | `Apps/iOS/SessionCoordinator.swift`, `Apps/Keyboard/KeyboardViewController.swift`, `Sources/OmilCore/KeyboardLink.swift` |
+| Model downloads and state | `server/src/Models.ts`, `server/src/ModelRuntime.ts` |
+| Queues | `server/src/InferenceQueue.ts` |
+| iOS and keyboard | `Apps/iOS/SessionCoordinator.swift`, `Apps/Keyboard/KeyboardViewController.swift`, `Sources/OmilCore/KeyboardLink.swift` |

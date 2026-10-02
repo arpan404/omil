@@ -1,0 +1,57 @@
+---
+import { faqs } from "../data/faq";
+import { DESCRIPTION, DOWNLOAD_URL, GITHUB_URL, RELEASED, SITE_NAME, SITE_URL, VERSION } from "../data/site";
+
+// Structured data (schema.org JSON-LD): what Omil is, in a form search engines and AI
+// assistants read directly. Every value comes from the same data the page shows. There are no
+// ratings or reviews here because Omil has none to report.
+const site = `${SITE_URL}/`;
+const graph = {
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "WebSite",
+      "@id": `${site}#website`,
+      url: site,
+      name: SITE_NAME,
+      description: DESCRIPTION,
+      inLanguage: "en",
+    },
+    {
+      "@type": "SoftwareApplication",
+      "@id": `${site}#app`,
+      name: SITE_NAME,
+      description: DESCRIPTION,
+      url: site,
+      image: `${site}media/og.png`,
+      applicationCategory: "UtilitiesApplication",
+      applicationSubCategory: "Dictation",
+      operatingSystem: "macOS 14 or later",
+      processorRequirements: "Apple silicon",
+      softwareVersion: VERSION,
+      ...(RELEASED ? { dateModified: RELEASED } : {}),
+      downloadUrl: DOWNLOAD_URL,
+      releaseNotes: `${GITHUB_URL}/releases`,
+      isAccessibleForFree: true,
+      inLanguage: "en",
+      offers: { "@type": "Offer", price: "0", priceCurrency: "USD", availability: "https://schema.org/InStock" },
+      featureList: [
+        "Hold Right Option, speak, and release to type into any app",
+        "Clean mode removes filler words and follows spoken corrections",
+        "Verbatim mode keeps every word",
+        "Personal dictionary and snippets",
+        "Searchable history of the last 200 dictations",
+        "Speech recognition and cleanup run on the Mac, with no account and no cloud",
+      ],
+      sameAs: [GITHUB_URL],
+    },
+    {
+      "@type": "FAQPage",
+      "@id": `${site}#faq`,
+      mainEntity: faqs.map((f) => ({ "@type": "Question", name: f.q, acceptedAnswer: { "@type": "Answer", text: f.a } })),
+    },
+  ],
+};
+---
+
+<script type="application/ld+json" is:inline set:html={JSON.stringify(graph)} />

@@ -52,15 +52,17 @@ const modes = [
           <span class="rounded-full bg-ink/[0.06] px-3 py-1 text-[13px] font-medium">Changes</span>
         </div>
         <div class="diff px-5 py-6 font-mono md:px-8 md:py-9">
-          <p class="flex gap-[1.2em]" aria-label={`Original: ${RAW_TEXT}`}>
+          <p class="flex gap-[1.2em]">
             <span class="text-rec select-none" aria-hidden="true">-</span>
-            <span aria-hidden="true">
+            <span>
+              <span class="sr-only">Original: </span>
               {numbered(original).map((r) => (r.marked ? <span class="mark mark-rec" style={`--n: ${r.n}`}>{r.text}</span> : <span>{r.text}</span>))}
             </span>
           </p>
-          <p class="mt-[0.9em] flex gap-[1.2em]" aria-label={`Cleaned: ${CLEAN_TEXT}`}>
+          <p class="mt-[0.9em] flex gap-[1.2em]">
             <span class="text-add select-none" aria-hidden="true">+</span>
-            <span aria-hidden="true">
+            <span>
+              <span class="sr-only">Cleaned: </span>
               {numbered(cleaned).map((r) => (r.marked ? <span class="mark mark-add" style={`--n: ${r.n}`}>{r.text}</span> : <span>{r.text}</span>))}
             </span>
           </p>

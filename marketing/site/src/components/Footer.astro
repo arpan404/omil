@@ -10,13 +10,13 @@ const words = ["Stop", "typing", "everything."];
 
 <footer>
   <section class="section">
-    <div class="shell relative isolate flex flex-col items-center text-center" data-finale>
+    <div class="shell relative isolate flex flex-col items-center text-center" data-finale data-script>
       <!-- The level meter again, on either side of the last pill. -->
       <canvas class="wave" data-finale-wave aria-hidden="true"></canvas>
       <Pill state="idle" size="lg" id="finale-pill" />
       <h2 class="display mt-10 max-w-[13ch] text-[2.85rem] sm:text-6xl md:mt-12 md:text-7xl lg:text-[6.25rem]" aria-label={words.join(" ")}>
         <span aria-hidden="true" class="inline-flex flex-wrap justify-center gap-x-[0.23em]">
-          {words.map((w) => <span class="said inline-block">{w}</span>)}
+          {words.map((w) => <><span class="said inline-block">{w}</span>{" "}</>)}
         </span>
       </h2>
       <div class="after mt-10 flex flex-col items-center gap-5 md:mt-14">
@@ -48,6 +48,7 @@ const words = ["Stop", "typing", "everything."];
 
   const finale = document.querySelector<HTMLElement>("[data-finale]");
   if (finale) {
+    finale.dataset.script = "ready";
     const pill = finale.querySelector<HTMLElement>("#finale-pill")!;
     const said = [...finale.querySelectorAll<HTMLElement>(".said")];
     const wave = mountWave(finale.querySelector<HTMLCanvasElement>("[data-finale-wave]")!, { anchor: "middle", quiet: 0.22 });
