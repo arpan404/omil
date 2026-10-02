@@ -30,7 +30,7 @@ const words: { t: string; drop?: boolean; clean?: string }[] = [
 const clean = "I think we should ship it on Thursday.";
 ---
 
-<section id="how" class="story" data-story data-state="0" data-clean={clean}>
+<section id="how" class="story" data-story data-script data-state="0" data-clean={clean}>
   <h2 class="sr-only">How it works</h2>
   <div class="pin">
     <div class="shell stage">
@@ -55,7 +55,7 @@ const clean = "I think we should ship it on Thursday.";
         </div>
         <!-- What is being said. -->
         <p class="spoken" data-spoken>
-          {words.map((w) => <span class:list={["tw", w.drop && "tw-drop"]} data-raw={w.t} data-clean={w.clean}>{w.t}</span>)}
+          {words.map((w) => <><span class:list={["tw", w.drop && "tw-drop"]} data-raw={w.t} data-clean={w.clean}>{w.t}</span>{" "}</>)}
         </p>
       </div>
     </div>
@@ -70,6 +70,7 @@ const clean = "I think we should ship it on Thursday.";
 
   const story = document.querySelector<HTMLElement>("[data-story]");
   if (story) {
+    story.dataset.script = "ready";
     const CLEAN = story.dataset.clean!;
     const rail = story.querySelector<HTMLElement>("[data-rail]")!;
     const chapters = [...story.querySelectorAll<HTMLElement>("[data-chapter]")];

@@ -1,28 +1,45 @@
 // Facts the page states. Keep them in line with the repository README.
-import { dmgOf, GITHUB_URL, LATEST_RELEASE_API } from "./release";
+import { dmgOf, GITHUB_URL, LATEST_RELEASE_API, type Release } from "./release";
 
 // The download buttons fetch the DMG itself. Its file name carries the version, so the latest
-// one is looked up when the site is built, and again in the browser on every visit
+// release is looked up when the site is built, and again in the browser on every visit
 // (Layout.astro), so a new release never waits for a site deploy. The fallback is the release
 // that was current when this was written.
-const FALLBACK_DMG = "https://github.com/arpan404/omil/releases/download/v0.1.6/Omil-0.1.6-7-macos-arm64.dmg";
+const FALLBACK = {
+  dmg: "https://github.com/arpan404/omil/releases/download/v0.1.6/Omil-0.1.6-7-macos-arm64.dmg",
+  version: "0.1.6",
+  published: undefined as string | undefined,
+};
 
-async function latestDmg(): Promise<string> {
+async function latestRelease(): Promise<typeof FALLBACK> {
   try {
     const res = await fetch(LATEST_RELEASE_API, {
       headers: { Accept: "application/vnd.github+json" },
       signal: AbortSignal.timeout(5000),
     });
-    if (!res.ok) return FALLBACK_DMG;
-    return dmgOf(await res.json()) ?? FALLBACK_DMG;
+    if (!res.ok) return FALLBACK;
+    const release = (await res.json()) as Release;
+    const dmg = dmgOf(release);
+    if (!dmg) return FALLBACK;
+    return { dmg, version: release.tag_name?.replace(/^v/, "") ?? FALLBACK.version, published: release.published_at };
   } catch {
-    return FALLBACK_DMG;
+    return FALLBACK;
   }
 }
 
-export const DOWNLOAD_URL = await latestDmg();
+const release = await latestRelease();
+export const DOWNLOAD_URL = release.dmg;
+/** The version and date of the release the site was built against (for structured data). */
+export const VERSION = release.version;
+export const RELEASED = release.published;
 export const SITE_URL = "https://omil.arpan.sh";
 export { GITHUB_URL };
+
+// How the page is described to search engines, link previews and AI assistants.
+export const SITE_NAME = "Omil";
+export const TITLE = "Omil: free, private voice dictation for Mac";
+export const DESCRIPTION =
+  "Omil is free voice dictation for Mac. Hold a key, speak, and clean text is typed into any app. It runs on your Mac: no account, no cloud, no subscription.";
 export const REQUIREMENTS = "Requires an Apple silicon Mac with macOS 14 or later.";
 
 export const RAW_TEXT = "Um, so I think we should, uh, ship it on Friday. No wait, Thursday.";

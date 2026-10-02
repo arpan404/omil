@@ -9,7 +9,8 @@
     "dev": "astro dev",
     "build": "astro build",
     "preview": "astro preview",
-    "astro": "astro"
+    "astro": "astro",
+    "og": "bash scripts/og.sh"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.3.0",

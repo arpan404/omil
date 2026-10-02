@@ -4,20 +4,23 @@ import DownloadButton from "./DownloadButton.astro";
 // The opening line of the story, dictated in front of the reader. The key at the bottom of the
 // screen goes down and the pill listens while the headline arrives word by word, as spoken.
 // The key comes up, the pill cleans up, the filler is struck and drops out, and the remaining
-// words slide into place (a FLIP over transforms only). "filler" marks what cleanup removes.
+// words slide into place (a FLIP over transforms only).
+//
+// The HTML holds only the finished sentence, so search engines, link previews and readers
+// without JavaScript get "You think faster than you type." The script adds the filler words
+// for the performance and takes them out again when it ends.
 ---
 
 <section class="hero relative">
   <div class="shell inner flex min-h-[100svh] flex-col items-center justify-center pt-24 pb-36 text-center md:pb-40" data-hero>
-    <h1 class="display headline text-[2.85rem] sm:text-6xl md:text-7xl lg:text-[5.75rem] xl:text-[6.25rem]" aria-label="You think faster than you type." data-headline>
-      <span aria-hidden="true" class="words">
-        <span class="w filler">Um,</span>
-        <span class="w"><span class="case"><span class="lo">y</span><span class="up">Y</span></span>ou</span>
-        <span class="w">think</span>
-        <span class="w">faster</span>
-        <span class="w">than</span>
-        <span class="w">you<span class="filler">,</span></span>
-        <span class="w filler">uh,</span>
+    <h1 class="display headline text-[2.85rem] sm:text-6xl md:text-7xl lg:text-[5.75rem] xl:text-[6.25rem]" data-headline data-script>
+      <span class="words">
+        {/* The spaces are real text, so the sentence reads correctly without styles. The flex layout ignores them. */}
+        <span class="w">You</span>{" "}
+        <span class="w">think</span>{" "}
+        <span class="w">faster</span>{" "}
+        <span class="w">than</span>{" "}
+        <span class="w">you</span>{" "}
         <span class="w">type.</span>
       </span>
     </h1>
@@ -39,8 +42,31 @@ import DownloadButton from "./DownloadButton.astro";
 
   const h = document.querySelector<HTMLElement>("[data-headline]");
   if (h) {
-    const words = [...h.querySelectorAll<HTMLElement>(".w")];
-    const fillers = [...h.querySelectorAll<HTMLElement>(".filler")];
+    h.dataset.script = "ready";
+    const line = h.querySelector<HTMLElement>(".words")!;
+    const clean = [...line.querySelectorAll<HTMLElement>(".w")];
+    const sentence = line.innerHTML;
+    let words = clean;
+    let fillers: HTMLElement[] = [];
+
+    /** The sentence as it is spoken: "Um, you think faster than you, uh, type." */
+    const speak = () => {
+      const el = (className: string, text: string) => Object.assign(document.createElement("span"), { className, textContent: text });
+      const [first, , , , you, last] = clean;
+      const y = el("case", "");
+      y.append(el("lo", "y"), el("up", "Y"));
+      first.replaceChildren(y, "ou");
+      const comma = el("filler", ",");
+      you.append(comma);
+      const um = el("w filler", "Um,");
+      const uh = el("w filler", "uh,");
+      first.before(um);
+      last.before(uh);
+      fillers = [um, comma, uh];
+      words = [...line.querySelectorAll<HTMLElement>(":scope > .w")];
+      // Screen readers hear the sentence once, not the performance.
+      h.setAttribute("aria-label", "You think faster than you type.");
+    };
     // If the headline loses a line, what follows it glides with the words.
     const follows = [...document.querySelectorAll<HTMLElement>("[data-follows]")];
     // The dock is the hero's only until the reader scrolls into the story.
@@ -65,14 +91,18 @@ import DownloadButton from "./DownloadButton.astro";
       await Promise.all(fillers.map((f) => fadeOut(f, 360)));
       await flip([...words, ...follows], () => h.classList.add("is-clean"), 850);
       dock(false, "done");
+      // Back to the plain sentence, which is what the page's HTML has said all along.
+      line.innerHTML = sentence;
+      line.querySelectorAll(".w").forEach((w) => w.classList.add("is-said"));
+      h.removeAttribute("aria-label");
       await wait(2600);
       if (dockPill() === "done") dock(false, "idle");
     };
 
-    if (reduceMotion()) {
-      words.forEach((w) => w.classList.add("is-said"));
-      h.classList.add("is-clean");
-    } else dictate();
+    if (!reduceMotion()) {
+      speak();
+      dictate();
+    }
   }
 
   // Leaving: the opening recedes as the story scrolls in.
@@ -109,15 +139,16 @@ import DownloadButton from "./DownloadButton.astro";
     justify-content: center;
     column-gap: 0.23em;
   }
-  .w {
+  .words :global(.w) {
     display: inline-block;
     position: relative;
   }
-  .filler {
+  /* The filler words are added by the script, so these rules reach them through :global. */
+  .words :global(.filler) {
     color: var(--faint);
   }
   /* The strike draws first, in the app's red. */
-  .filler::after {
+  .words :global(.filler)::after {
     content: "";
     position: absolute;
     left: -0.02em;
@@ -131,55 +162,45 @@ import DownloadButton from "./DownloadButton.astro";
     transition: transform 0.55s var(--ease-omil);
   }
   /* The stray comma just fades with the rest. */
-  .w .filler::after {
+  .words :global(.w .filler)::after {
     display: none;
   }
-  .is-struck .filler::after {
+  .is-struck .words :global(.filler)::after {
     transform: scaleX(1);
   }
-  .is-struck .w:nth-child(7)::after {
+  .is-struck .words :global(.w:nth-child(7))::after {
     transition-delay: 0.12s;
   }
-  .is-clean .filler {
+  .is-clean .words :global(.filler) {
     display: none;
   }
-  .case {
+  .words :global(.case) {
     display: inline-grid;
   }
-  .case > span {
+  .words :global(.case > span) {
     grid-area: 1 / 1;
     transition: opacity 0.3s var(--ease-omil);
   }
-  .up {
+  .words :global(.up) {
     opacity: 0;
   }
-  .is-clean .lo {
+  .is-clean .words :global(.lo) {
     opacity: 0;
   }
-  .is-clean .up {
-    opacity: 1;
-  }
-  /* Without JavaScript the headline is simply the clean sentence. */
-  :global(html:not(.js)) .filler {
-    display: none;
-  }
-  :global(html:not(.js)) .lo {
-    opacity: 0;
-  }
-  :global(html:not(.js)) .up {
+  .is-clean .words :global(.up) {
     opacity: 1;
   }
 
   @media (prefers-reduced-motion: no-preference) {
     /* Each word waits to be said. */
-    :global(.js) .w {
+    :global(.js) .words :global(.w) {
       opacity: 0;
       translate: 0 0.28em;
       transition:
         opacity 0.5s var(--ease-omil),
         translate 0.7s var(--ease-omil);
     }
-    :global(.js) .w.is-said {
+    :global(.js) .words :global(.w.is-said) {
       opacity: 1;
       translate: 0 0;
     }
@@ -197,12 +218,6 @@ import DownloadButton from "./DownloadButton.astro";
     to {
       opacity: 1;
       transform: none;
-    }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .filler::after,
-    .case > span {
-      transition: none;
     }
   }
 </style>

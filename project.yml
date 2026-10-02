@@ -19,8 +19,8 @@ settings:
     CODE_SIGN_STYLE: Automatic
     SWIFT_VERSION: "6.0"
     SWIFT_STRICT_CONCURRENCY: complete
-    MARKETING_VERSION: "0.1.6"
-    CURRENT_PROJECT_VERSION: "7"
+    MARKETING_VERSION: "0.1.7"
+    CURRENT_PROJECT_VERSION: "8"
 
 targets:
   OmilMac:
