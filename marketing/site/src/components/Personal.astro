@@ -1,298 +1,121 @@
 ---
 import { Icon } from "astro-icon/components";
-import Pill from "./Pill.astro";
 
-// Each tile shows its feature working, drawn in HTML with the app's own sample data
-// (the same snippets and corrections as the app renders in ../video).
+// The app's own sample snippets and corrections (the same data its windows show in ../video),
+// set as type: what you say, and what Omil writes.
 const snippets = [
-  { before: "See you at ten. ", say: "Sign off", after: "", types: "Thanks! Talk soon, Arpan" },
-  { before: "Send it to ", say: "my address", after: ".", types: "221B Baker Street, London NW1 6XE" },
-  { before: "Grab a slot on ", say: "calendar", after: ".", types: "cal.com/arpan/30min" },
+  { say: "sign off", types: "Thanks! Talk soon, Arpan" },
+  { say: "my address", types: "221B Baker Street, London NW1 6XE" },
+  { say: "calendar", types: "cal.com/arpan/30min" },
 ];
 const corrections = [
-  { heard: "cube and eighties", fixed: "Kubernetes" },
-  { heard: "oh mill", fixed: "Omil" },
   { heard: "our pan", fixed: "Arpan" },
+  { heard: "cube and eighties", fixed: "Kubernetes" },
   { heard: "post grass", fixed: "PostgreSQL" },
 ];
-const history = [
-  { text: "I think we should ship it on Thursday.", when: "10:42" },
-  { text: "Running ten minutes late. Start without me.", when: "10:41" },
-  { text: "Can you send me the release notes?", when: "9:58" },
-  { text: "Thanks! Talk soon, Arpan", when: "9:30" },
+const more = [
+  { title: "History", body: "Your last 200 dictations, searchable and replayable." },
+  { title: "No waiting", body: "Start the next recording while the last one is still cleaning up." },
+  { title: "Your prompt", body: "The cleanup instructions are plain text you can edit." },
 ];
 ---
 
 <section id="personal" class="section">
   <div class="shell">
-    <div class="max-w-[40rem]">
-      <h2 data-reveal class="title">Make it sound like you.</h2>
-      <p data-reveal style="--i: 1" class="lead mt-5">Your phrases, your names, your history. All of it stays on your Mac.</p>
-    </div>
+    <h2 data-reveal class="title max-w-[12ch]">Make it sound like you.</h2>
+    <p data-reveal style="--i: 1" class="lead mt-6 max-w-[38ch]">Teach it your phrases and your names once. All of it stays on your Mac.</p>
 
-    <div class="mt-12 grid gap-3 md:mt-16 md:grid-cols-12 md:gap-4">
-      <!-- Snippets: a spoken phrase becomes the text it stands for. -->
-      <article data-reveal class="tile cell flex min-w-0 flex-col md:col-span-7" data-snippets>
-        <div class="p-7 pb-0 md:p-10 md:pb-0">
-          <h3 class="text-[1.5rem] font-semibold tracking-[-0.03em]">Snippets</h3>
-          <p class="mt-2 max-w-[36ch] leading-relaxed text-muted">Say a short phrase and the whole text is typed. Sign-offs, addresses, links, anything you repeat.</p>
-        </div>
-        <div class="mt-auto p-3 pt-8 md:p-4 md:pt-10" aria-hidden="true">
-          <div class="card grid rounded-[1.25rem]">
-            {
-              snippets.map((s, i) => (
-                <div class:list={["ex px-5 py-5 md:px-6", i === 0 && "is-on"]}>
-                  <p class="flex items-center gap-2 text-[12.5px] font-medium text-muted">
-                    <Icon name="ph:waveform" class="size-4" />
-                    You say
-                  </p>
-                  <p class="mt-1.5 text-[17px] leading-snug tracking-[-0.012em] md:text-[19px]">
-                    {s.before}
-                    <span class="said">{s.say}</span>
-                    {s.after}
-                  </p>
-                  <p class="mt-5 flex items-center gap-2 border-t border-line pt-4 text-[12.5px] font-medium text-muted">
-                    <Icon name="ph:cursor-text" class="size-4" />
-                    Omil types
-                  </p>
-                  <p class="typed mt-1.5 text-[17px] leading-snug tracking-[-0.012em] md:text-[19px]">
-                    {s.before}
-                    <span class="font-semibold">{s.types}</span>
-                    {s.after}
-                  </p>
-                </div>
-              ))
-            }
-          </div>
-        </div>
+    <div class="pool mt-12 grid gap-4 md:mt-16 md:gap-5 lg:grid-cols-2">
+      <!-- Snippets: a spoken phrase, and the text it stands for. -->
+      <article data-reveal class="feature glass p-7 md:p-10">
+        <h3 class="text-[1.375rem] font-semibold tracking-[-0.025em]">Snippets</h3>
+        <p class="mt-1.5 max-w-[34ch] leading-relaxed text-muted">Say a short phrase and the whole text is typed.</p>
+        <ul class="examples mt-9 grid gap-6">
+          {
+            snippets.map((s, i) => (
+              <li class="example" style={`--n: ${i}`}>
+                <p class="text-muted">“{s.say}”</p>
+                <p class="result mt-1 flex items-baseline gap-[0.45em] font-medium">
+                  <Icon name="ph:arrow-bend-down-right" class="size-[0.8em] flex-none translate-y-[0.08em] text-faint" aria-hidden="true" />
+                  <span class="sr-only">types </span>
+                  {s.types}
+                </p>
+              </li>
+            ))
+          }
+        </ul>
       </article>
 
       <!-- Dictionary: what was heard, struck, and what it should have been. -->
-      <article data-reveal style="--i: 1" class="tile cell flex min-w-0 flex-col md:col-span-5">
-        <div class="p-7 pb-0 md:p-10 md:pb-0">
-          <h3 class="text-[1.5rem] font-semibold tracking-[-0.03em]">Dictionary</h3>
-          <p class="mt-2 max-w-[30ch] leading-relaxed text-muted">Teach it the names and terms it mishears, once.</p>
-        </div>
-        <div class="mt-auto p-3 pt-8 md:p-4 md:pt-10" aria-hidden="true">
-          <ul class="card rounded-[1.25rem] px-5 py-1.5 text-[15px] md:px-6">
-            {
-              corrections.map((c, i) => (
-                <li class="fix flex items-center gap-2.5 border-line py-3 not-last:border-b" style={`--n: ${i}`}>
-                  <span class="heard relative text-muted">{c.heard}</span>
-                  <Icon name="ph:arrow-right" class="arrow size-3.5 flex-none text-faint" />
-                  <span class="fixed-word font-semibold tracking-[-0.01em]">{c.fixed}</span>
-                </li>
-              ))
-            }
-          </ul>
-        </div>
-      </article>
-
-      <!-- History -->
-      <article data-reveal class="tile cell flex min-w-0 flex-col md:col-span-4">
-        <div class="vignette px-3 pt-3 md:px-4 md:pt-4" aria-hidden="true">
-          <div class="card fade-out h-full rounded-[1.25rem] rounded-b-none px-4 pt-3.5">
-            <div class="flex h-9 items-center gap-2 rounded-full bg-tile px-3.5 text-[13.5px] text-faint">
-              <Icon name="ph:magnifying-glass" class="size-4" />
-              Search
-            </div>
-            <ul class="mt-2 text-[13.5px]">
-              {
-                history.map((h, i) => (
-                  <li class="past flex items-center gap-3 border-line py-2.5 not-last:border-b" style={`--n: ${i}`}>
-                    <Icon name="ph:play-fill" class="size-3 flex-none text-faint" />
-                    <span class="min-w-0 flex-1 truncate">{h.text}</span>
-                    <span class="flex-none text-faint tabular-nums">{h.when}</span>
-                  </li>
-                ))
-              }
-            </ul>
-          </div>
-        </div>
-        <div class="p-7 pt-6 md:p-8 md:pt-7">
-          <h3 class="text-xl font-semibold tracking-[-0.025em]">History</h3>
-          <p class="mt-1.5 text-[15px] leading-relaxed text-muted">Your last 200 dictations, searchable and replayable.</p>
-        </div>
-      </article>
-
-      <!-- No waiting: one dictation cleaning up while the next is already being heard. -->
-      <article data-reveal style="--i: 1" class="tile cell flex min-w-0 flex-col md:col-span-4">
-        <div class="vignette px-3 pt-3 md:px-4 md:pt-4" aria-hidden="true">
-          <div class="desk queue flex h-full flex-col items-center justify-center gap-3 rounded-[1.25rem] md:rounded-[1.25rem]">
-            <div class="queued"><Pill state="cleaning" /></div>
-            <Pill state="listening" />
-          </div>
-        </div>
-        <div class="p-7 pt-6 md:p-8 md:pt-7">
-          <h3 class="text-xl font-semibold tracking-[-0.025em]">No waiting</h3>
-          <p class="mt-1.5 text-[15px] leading-relaxed text-muted">Start the next recording while the last one is still cleaning up.</p>
-        </div>
-      </article>
-
-      <!-- Your prompt: the opening of the cleanup prompt the app ships with. -->
-      <article data-reveal style="--i: 2" class="tile cell flex min-w-0 flex-col md:col-span-4">
-        <div class="vignette px-3 pt-3 md:px-4 md:pt-4" aria-hidden="true">
-          <div class="editor h-full overflow-hidden rounded-[1.25rem] px-5 pt-4 font-mono text-[12.5px] leading-[1.7]">
-            <span class="editor-lead">You edit a speech transcript so it reads as the speaker intended.</span> Return only the corrected transcript as plain text. Remove verbal fillers and false starts when their removal is clear.<span class="caret"></span>
-          </div>
-        </div>
-        <div class="p-7 pt-6 md:p-8 md:pt-7">
-          <h3 class="text-xl font-semibold tracking-[-0.025em]">Your prompt</h3>
-          <p class="mt-1.5 text-[15px] leading-relaxed text-muted">The cleanup instructions are plain text you can edit.</p>
-        </div>
+      <article data-reveal style="--i: 1" class="feature glass p-7 md:p-10">
+        <h3 class="text-[1.375rem] font-semibold tracking-[-0.025em]">Dictionary</h3>
+        <p class="mt-1.5 max-w-[34ch] leading-relaxed text-muted">Teach it the names and terms it mishears, once.</p>
+        <ul class="examples mt-9 grid gap-6">
+          {
+            corrections.map((c, i) => (
+              <li class="example" style={`--n: ${i}`}>
+                <p><s class="heard relative text-muted no-underline">{c.heard}</s></p>
+                <p class="result mt-1 flex items-baseline gap-[0.45em] font-medium">
+                  <Icon name="ph:arrow-bend-down-right" class="size-[0.8em] flex-none translate-y-[0.08em] text-faint" aria-hidden="true" />
+                  <span class="sr-only">becomes </span>
+                  {c.fixed}
+                </p>
+              </li>
+            ))
+          }
+        </ul>
       </article>
     </div>
+
+    <dl data-reveal-stagger class="mt-12 grid gap-x-12 gap-y-9 sm:grid-cols-3 md:mt-16 md:px-10">
+      {
+        more.map((m) => (
+          <div>
+            <dt class="text-[1.0625rem] font-semibold tracking-[-0.015em]">{m.title}</dt>
+            <dd class="mt-1.5 max-w-[30ch] leading-relaxed text-muted">{m.body}</dd>
+          </div>
+        ))
+      }
+    </dl>
   </div>
 </section>
 
-<script>
-  import { reduceMotion, whileVisible } from "../scripts/motion";
-
-  // Snippets: the examples take turns while the tile is on screen.
-  const tile = document.querySelector<HTMLElement>("[data-snippets]");
-  if (tile && !reduceMotion()) {
-    const examples = [...tile.querySelectorAll<HTMLElement>(".ex")];
-    let current = 0;
-    let timer: ReturnType<typeof setInterval> | undefined;
-    const next = () => {
-      examples[current].classList.remove("is-on");
-      current = (current + 1) % examples.length;
-      examples[current].classList.add("is-on");
-    };
-    whileVisible(tile, (visible) => {
-      clearInterval(timer);
-      if (visible) timer = setInterval(next, 4200);
-    });
-  }
-</script>
-
 <style>
-  .cell {
-    overflow: hidden;
+  .examples {
+    font-size: clamp(1.1875rem, 1rem + 0.7vw, 1.5625rem);
+    line-height: 1.25;
+    letter-spacing: -0.028em;
   }
-  .vignette {
-    height: 12.5rem;
-  }
-  /* A card that runs off the bottom of its tile fades out instead of being cut. */
-  .fade-out {
-    mask-image: linear-gradient(#000 55%, transparent 96%);
-    -webkit-mask-image: linear-gradient(#000 55%, transparent 96%);
-  }
-
-  /* Snippets: examples share one grid cell; the current one is shown. */
-  .ex {
-    grid-area: 1 / 1;
-  }
-  .said {
-    border-radius: 6px;
-    padding: 0.1em 0.3em;
-    margin: 0 -0.1em;
-    background: color-mix(in srgb, var(--ink) 9%, transparent);
-    box-decoration-break: clone;
-    -webkit-box-decoration-break: clone;
-  }
-  .editor {
-    background: var(--editor);
-    color: var(--editor-muted);
-    box-shadow: 0 0 0 1px var(--line);
-  }
-  .editor-lead {
-    color: var(--editor-ink);
-  }
-  .editor .caret {
-    background: var(--editor-ink);
-  }
-  .queue {
-    box-shadow: inset 0 0 0 1px var(--line);
-  }
-  .queued {
-    opacity: 0.72;
-    scale: 0.88;
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .ex:not(.is-on) {
-      display: none;
-    }
+  /* The misheard phrase is struck in the app's red, as cleanup strikes filler. */
+  .heard::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 55%;
+    height: 0.07em;
+    border-radius: 2px;
+    background: var(--rec);
+    transform-origin: left;
   }
   @media (prefers-reduced-motion: no-preference) {
-    .ex {
-      opacity: 0;
-      translate: 0 10px;
-      transition:
-        opacity 0.4s var(--ease-omil),
-        translate 0.4s var(--ease-omil);
-    }
-    .ex.is-on {
-      opacity: 1;
-      translate: 0 0;
-      transition-duration: 0.8s;
-      transition-delay: 0.3s;
-    }
-    /* What Omil types follows what was said. */
-    .ex .typed {
-      opacity: 0;
-      translate: 0 6px;
-    }
-    .ex.is-on .typed {
-      opacity: 1;
-      translate: 0 0;
-      transition:
-        opacity 0.7s var(--ease-omil) 1s,
-        translate 0.7s var(--ease-omil) 1s;
-    }
-
-    /* Dictionary: each misheard phrase is struck, then its correction arrives. */
+    /* On arrival each example plays once: said or struck first, then what Omil writes. */
     .heard::after {
-      content: "";
-      position: absolute;
-      left: 0;
-      right: 0;
-      top: 54%;
-      height: 1.5px;
-      border-radius: 2px;
-      background: var(--rec);
-      transform-origin: left;
       transition: transform 0.6s var(--ease-omil);
-      transition-delay: calc(700ms + var(--n) * 160ms);
+      transition-delay: calc(500ms + var(--n) * 180ms);
     }
-    .fixed-word,
-    .fix :global(.arrow) {
-      transition:
-        opacity 0.6s var(--ease-omil),
-        translate 0.6s var(--ease-omil);
-      transition-delay: calc(950ms + var(--n) * 160ms);
-    }
-    :global(.js) .cell:not(.is-in) .heard::after {
-      transform: scaleX(0);
-    }
-    :global(.js) .cell:not(.is-in) .fixed-word,
-    :global(.js) .cell:not(.is-in) .fix :global(.arrow) {
-      opacity: 0;
-      translate: -6px 0;
-    }
-
-    /* History: the rows arrive in order. */
-    .past {
+    .result {
       transition:
         opacity 0.7s var(--ease-omil),
         translate 0.7s var(--ease-omil);
-      transition-delay: calc(450ms + var(--n) * 90ms);
+      transition-delay: calc(750ms + var(--n) * 180ms);
     }
-    :global(.js) .cell:not(.is-in) .past {
+    :global(.js) .feature:not(.is-in) .heard::after {
+      transform: scaleX(0);
+    }
+    :global(.js) .feature:not(.is-in) .result {
       opacity: 0;
-      translate: 0 10px;
-    }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .heard::after {
-      content: "";
-      position: absolute;
-      left: 0;
-      right: 0;
-      top: 54%;
-      height: 1.5px;
-      background: var(--rec);
+      translate: -0.3em 0;
     }
   }
 </style>

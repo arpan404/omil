@@ -1,0 +1,425 @@
+---
+// The middle of the story, told by scrolling. The screen holds still (position: sticky) while
+// one sentence goes through a whole dictation: the key goes down, the words are said, the key
+// comes up and the filler is struck, and the clean sentence is typed at the cursor.
+// Scrolling back undoes it. The key and the pill are the page's dock (Dock.astro).
+// Without JavaScript it reads as four plain steps.
+const chapters = [
+  { title: "Hold Right Option.", body: "In any app, wherever your cursor is." },
+  { title: "Say it however it comes out.", body: "Pause, restart, change your mind halfway." },
+  { title: "Let go.", body: "Omil drops the filler and follows your correction." },
+  { title: "It’s typed where you were.", body: "No window to open, nothing to paste." },
+];
+// The sentence as spoken. "drop" is what cleanup removes; "clean" is a rewritten token.
+const words: { t: string; drop?: boolean; clean?: string }[] = [
+  { t: "Um,", drop: true },
+  { t: "so", drop: true },
+  { t: "I" },
+  { t: "think" },
+  { t: "we" },
+  { t: "should,", clean: "should" },
+  { t: "uh,", drop: true },
+  { t: "ship" },
+  { t: "it" },
+  { t: "on" },
+  { t: "Friday.", drop: true },
+  { t: "No", drop: true },
+  { t: "wait,", drop: true },
+  { t: "Thursday." },
+];
+const clean = "I think we should ship it on Thursday.";
+---
+
+<section id="how" class="story" data-story data-state="0" data-clean={clean}>
+  <h2 class="sr-only">How it works</h2>
+  <div class="pin">
+    <div class="shell stage">
+      <ol class="chapters">
+        <span class="rail" aria-hidden="true"><span class="rail-fill" data-rail></span></span>
+        {
+          chapters.map((c, i) => (
+            <li class:list={["chapter", i === 0 && "is-active"]} data-chapter>
+              <h3 class="chapter-t">{c.title}</h3>
+              <div class="chapter-b">
+                <p>{c.body}</p>
+              </div>
+            </li>
+          ))
+        }
+      </ol>
+
+      <div class="scene" aria-hidden="true">
+        <!-- Where the reader was typing: a caret, and later the sentence. -->
+        <div class="glass pane">
+          <p class="field" data-field><span data-typed></span><span class="caret"></span><span class="placeholder">Your cursor is here</span></p>
+        </div>
+        <!-- What is being said. -->
+        <p class="spoken" data-spoken>
+          {words.map((w) => <span class:list={["tw", w.drop && "tw-drop"]} data-raw={w.t} data-clean={w.clean}>{w.t}</span>)}
+        </p>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<script>
+  import { scroll } from "motion";
+  import { setDock } from "../scripts/dock";
+  import { EASE, fadeOut, flip, reduceMotion, riseIn, wait } from "../scripts/motion";
+
+  const story = document.querySelector<HTMLElement>("[data-story]");
+  if (story) {
+    const CLEAN = story.dataset.clean!;
+    const rail = story.querySelector<HTMLElement>("[data-rail]")!;
+    const chapters = [...story.querySelectorAll<HTMLElement>("[data-chapter]")];
+    const field = story.querySelector<HTMLElement>("[data-field]")!;
+    const typed = story.querySelector<HTMLElement>("[data-typed]")!;
+    const spoken = story.querySelector<HTMLElement>("[data-spoken]")!;
+    const words = [...spoken.querySelectorAll<HTMLElement>(".tw")];
+    const drops = words.filter((w) => w.classList.contains("tw-drop"));
+    const kept = words.filter((w) => !w.classList.contains("tw-drop"));
+
+    // The scene is always in one of five states, picked by how far the section has scrolled:
+    // 0 waiting, 1 key down, 2 speaking, 3 cleaned, 4 typed.
+    type State = 0 | 1 | 2 | 3 | 4;
+    let state: State = 0; // what the screen shows
+    let goal: State = 0; // where the scroll position says it should be
+    let pending: State | null = null; // a transition in flight
+    let count = 0; // words said so far, while speaking
+    let run = 0;
+
+    const settle = () => [field, spoken, ...words].forEach((el) => el.getAnimations().forEach((a) => a.cancel()));
+    const say = (n: number) => words.forEach((w, i) => w.classList.toggle("on", i < n));
+
+    /** Everything but the sentence: the key, the pill, the chapter, and the CSS hooks. */
+    const frame = (s: State, dock = true) => {
+      story.dataset.state = String(s);
+      if (dock) setDock(s === 1 || s === 2, s === 0 ? "idle" : s <= 2 ? "listening" : s === 3 ? "cleaning" : "done");
+      const chapter = s <= 1 ? 0 : s - 1;
+      chapters.forEach((c, i) => c.classList.toggle("is-active", i === chapter));
+    };
+    /** The sentence, exactly as state `s` has it. */
+    const text = (s: State) => {
+      const cleaned = s >= 3;
+      spoken.classList.remove("is-struck");
+      spoken.classList.toggle("is-clean", cleaned);
+      for (const w of words) w.textContent = (cleaned && w.dataset.clean) || w.dataset.raw!;
+      for (const d of drops) {
+        // A dropped word was faded out to leave; it must not stay faded when it comes back.
+        d.getAnimations().forEach((a) => a.cancel());
+        d.style.display = cleaned ? "none" : "";
+      }
+      say(s < 2 ? 0 : s === 2 ? count : words.length);
+      typed.textContent = s === 4 ? CLEAN : "";
+    };
+
+    /** One step between neighbouring states. A single step plays; a jump over several does not. */
+    const step = async (from: State, to: State, play: boolean, id: number) => {
+      if (!play || reduceMotion()) {
+        frame(to);
+        text(to);
+        return;
+      }
+      if (from === 2 && to === 3) {
+        // Let go: whatever was not yet said arrives, the filler is struck, then it leaves.
+        frame(3);
+        say(words.length);
+        spoken.classList.add("is-struck");
+        await wait(700);
+        if (id !== run) return;
+        await Promise.all(drops.map((d) => fadeOut(d, 300)));
+        if (id !== run) return;
+        await flip(kept, () => text(3), 650);
+      } else if (from === 3 && to === 2) {
+        frame(2);
+        await flip(kept, () => text(2), 550);
+      } else if (from === 3 && to === 4) {
+        // The clean sentence leaves the transcript and lands at the cursor.
+        const start = kept[0].getBoundingClientRect();
+        frame(4);
+        text(4);
+        const end = field.getBoundingClientRect();
+        field.animate([{ transform: `translate(${start.left - end.left}px, ${start.top - end.top}px)` }, { transform: "none" }], { duration: 800, easing: EASE });
+      } else {
+        frame(to);
+        text(to);
+        if (from === 4 && to === 3) kept.forEach((w, i) => riseIn(w, 500, i * 25));
+      }
+    };
+
+    const go = async (target: State) => {
+      if (target === goal) return;
+      goal = target;
+      const id = ++run;
+      if (pending !== null) {
+        // A new direction mid-transition: finish the old one at once.
+        settle();
+        state = pending;
+        pending = null;
+        frame(state);
+        text(state);
+      }
+      while (state !== goal && id === run) {
+        const next = (state + Math.sign(goal - state)) as State;
+        pending = next;
+        await step(state, next, Math.abs(goal - state) === 1, id);
+        if (id !== run) return;
+        state = next;
+        pending = null;
+      }
+    };
+
+    // The dock is the hero's until the story starts.
+    frame(0, false);
+    text(0);
+    scroll(
+      (p: number) => {
+        rail.style.transform = `scaleY(${p})`;
+        // The meter behind the page bows out as the story ends, before the dock scrolls away.
+        document.documentElement.toggleAttribute("data-story-over", p > 0.985);
+        // Words are said one by one across the speaking stretch of the scroll.
+        count = Math.max(0, Math.min(words.length, Math.ceil(((p - 0.16) / 0.32) * words.length)));
+        if (state === 2 && goal === 2 && pending === null) say(count);
+        go(p < 0.04 ? 0 : p < 0.16 ? 1 : p < 0.54 ? 2 : p < 0.78 ? 3 : 4);
+      },
+      { target: story, offset: ["start start", "end end"] },
+    );
+  }
+</script>
+
+<style>
+  /* ---------------------------------------------------------------- the pinned screen */
+
+  /* Without JavaScript the section is as tall as its content. With it, the section is a long
+     scroll and the screen inside sticks for its whole length. */
+  .pin {
+    position: relative;
+    padding-block: 5rem 9rem;
+  }
+  :global(.js) .story {
+    height: 440svh;
+  }
+  :global(.js) .pin {
+    position: sticky;
+    top: 0;
+    height: 100svh;
+    padding-block: 0;
+  }
+  .stage {
+    display: grid;
+    align-content: start;
+    gap: 1.75rem;
+    height: 100%;
+    padding-top: clamp(6rem, 16svh, 9rem);
+    padding-bottom: 8.5rem;
+  }
+  @media (min-width: 1024px) {
+    .stage {
+      grid-template-columns: minmax(0, 4fr) minmax(0, 7fr);
+      align-content: center;
+      align-items: center;
+      gap: 5rem;
+      padding-top: 4rem;
+      padding-bottom: 6rem;
+    }
+  }
+
+  /* ---------------------------------------------------------------- chapters */
+
+  .chapters {
+    position: relative;
+    display: grid;
+  }
+  .chapter-t {
+    font-size: 1.5rem;
+    font-weight: 580;
+    letter-spacing: -0.035em;
+    line-height: 1.12;
+    text-wrap: balance;
+  }
+  .chapter-b p {
+    padding-top: 0.5rem;
+    font-size: 1.0625rem;
+    line-height: 1.5;
+    color: var(--muted);
+  }
+  .rail {
+    display: none;
+  }
+  /* On small screens the chapters share one spot and take turns. */
+  @media (max-width: 1023.9px) {
+    :global(.js) .chapter {
+      grid-area: 1 / 1;
+      opacity: 0;
+      translate: 0 8px;
+      transition:
+        opacity 0.4s var(--ease-omil),
+        translate 0.6s var(--ease-omil);
+    }
+    :global(.js) .chapter.is-active {
+      opacity: 1;
+      translate: 0 0;
+      transition-delay: 0.15s;
+    }
+    .chapter {
+      padding-bottom: 1.25rem;
+    }
+  }
+  /* On wide screens they are a list beside the scene: the current one is dark and opens. */
+  @media (min-width: 1024px) {
+    .chapters {
+      gap: 1.375rem;
+      padding-left: 2rem;
+    }
+    .chapter-t {
+      font-size: 1.875rem;
+    }
+    .rail {
+      display: block;
+      position: absolute;
+      left: 0;
+      top: 0.25rem;
+      bottom: 0.25rem;
+      width: 2px;
+      border-radius: 2px;
+      background: var(--line-strong);
+      overflow: hidden;
+    }
+    .rail-fill {
+      position: absolute;
+      inset: 0;
+      background: var(--ink);
+      transform: scaleY(0);
+      transform-origin: top;
+    }
+    :global(.js) .chapter-t {
+      color: var(--faint);
+      transition: color 0.5s var(--ease-omil);
+    }
+    :global(.js) .chapter.is-active .chapter-t {
+      color: var(--ink);
+    }
+    :global(.js) .chapter-b {
+      display: grid;
+      grid-template-rows: 0fr;
+      opacity: 0;
+      transition:
+        grid-template-rows 0.6s var(--ease-omil),
+        opacity 0.4s var(--ease-omil);
+    }
+    :global(.js) .chapter-b > p {
+      min-height: 0;
+      overflow: hidden;
+    }
+    :global(.js) .chapter.is-active .chapter-b {
+      grid-template-rows: 1fr;
+      opacity: 1;
+    }
+  }
+
+  /* ---------------------------------------------------------------- the sentence */
+
+  .scene {
+    --pad: clamp(1.25rem, 0.7rem + 1.6vw, 2.25rem);
+    display: grid;
+    gap: clamp(1.5rem, 4.5svh, 3rem);
+  }
+  /* The text field in some app: a pane of glass. What is said floats below it, on the page. */
+  .pane {
+    padding: calc(var(--pad) * 0.9) var(--pad);
+  }
+  .spoken {
+    padding-inline: var(--pad);
+  }
+  .field,
+  .spoken {
+    font-size: clamp(1.375rem, 0.8rem + 2.05vw, 2.5rem);
+    font-weight: 560;
+    letter-spacing: -0.036em;
+    line-height: 1.16;
+  }
+  /* Both lines keep their full height, so nothing on the screen moves as they fill and empty. */
+  .field {
+    min-height: 2.32em;
+    transform-origin: 0 0;
+  }
+  .spoken {
+    display: flex;
+    flex-wrap: wrap;
+    align-content: flex-start;
+    column-gap: 0.25em;
+    min-height: 3.48em;
+    color: var(--muted);
+    transition:
+      color 0.5s var(--ease-omil),
+      opacity 0.25s var(--ease-omil);
+  }
+  .spoken.is-clean {
+    color: var(--ink);
+  }
+  .placeholder {
+    color: var(--faint);
+    opacity: 0.7;
+    transition: opacity 0.3s var(--ease-omil);
+  }
+  .field .caret {
+    margin-right: 0.12em;
+  }
+  [data-state="4"] .placeholder {
+    display: none;
+  }
+  [data-state="4"] .spoken {
+    opacity: 0;
+  }
+  .tw {
+    display: inline-block;
+    position: relative;
+  }
+  :global(.js) .tw {
+    opacity: 0;
+    translate: 0 0.3em;
+    transition:
+      opacity 0.45s var(--ease-omil),
+      translate 0.6s var(--ease-omil),
+      color 0.4s var(--ease-omil);
+  }
+  :global(.js) .tw.on {
+    opacity: 1;
+    translate: 0 0;
+  }
+  /* Dropped words are struck in the app's red before they leave. */
+  .tw-drop::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 55%;
+    height: 0.065em;
+    border-radius: 99px;
+    background: var(--rec);
+    transform: scaleX(0);
+    transform-origin: left;
+    transition: transform 0.5s var(--ease-omil);
+  }
+  .is-struck .tw-drop {
+    color: var(--faint);
+  }
+  .is-struck .tw-drop::after {
+    transform: scaleX(1);
+  }
+  .is-struck .tw:not(.tw-drop) {
+    color: var(--ink);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .chapter,
+    .chapter-t,
+    .chapter-b,
+    .tw,
+    .tw-drop::after,
+    .spoken {
+      transition: none !important;
+    }
+  }
+</style>

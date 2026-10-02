@@ -1,0 +1,144 @@
+---
+import { Icon } from "astro-icon/components";
+import Pill from "./Pill.astro";
+
+// The key under the reader's finger and the pill on their screen, on a pane of glass. It sits
+// at the bottom of the window, where the pill sits on a Mac, from the first screen to the end
+// of the story: it is the last thing in the wrapper around both, held up by position: sticky,
+// so it leaves with the story. Behind it, across the whole screen, is the same level meter the
+// pill shows (src/scripts/wave.ts). Scripts drive both through src/scripts/dock.ts.
+---
+
+<div class="anchor behind" aria-hidden="true">
+  <canvas class="wave" data-dock-wave></canvas>
+</div>
+
+<div class="anchor" aria-hidden="true">
+  <div class="dock" data-dock>
+    <div class="shelf glass">
+      <span class="keycap" data-dock-key>
+        <span class="keycap-top">
+          <Icon name="ph:option" class="size-5 self-end" />
+          <span class="mt-auto self-end text-[9.5px] font-medium tracking-wide text-muted">option</span>
+        </span>
+      </span>
+      <Pill id="dock-pill" state="idle" size="lg" />
+    </div>
+  </div>
+</div>
+
+<script>
+  import { attachWave } from "../scripts/dock";
+  import { mountWave } from "../scripts/wave";
+
+  const canvas = document.querySelector<HTMLCanvasElement>("[data-dock-wave]");
+  if (canvas) attachWave(mountWave(canvas, { anchor: "bottom", quiet: 0.16 }));
+</script>
+
+<style>
+  .anchor {
+    --lift: clamp(1rem, 3.5svh, 2.25rem);
+    position: sticky;
+    bottom: var(--lift);
+    z-index: 10;
+    height: 0;
+    pointer-events: none;
+  }
+  /* The meter sits behind the text and grows from the bottom edge of the window. It fades out
+     towards the sides, and when the story is over (Story.astro sets data-story-over). */
+  .behind {
+    z-index: -1;
+  }
+  .wave {
+    position: absolute;
+    left: 50%;
+    bottom: calc(-1 * var(--lift));
+    width: 100vw;
+    height: 42svh;
+    translate: -50% 0;
+    color: var(--ink);
+    opacity: var(--wave);
+    mask-image: linear-gradient(to right, transparent, #000 14%, #000 86%, transparent);
+    -webkit-mask-image: linear-gradient(to right, transparent, #000 14%, #000 86%, transparent);
+    transition: opacity 0.6s var(--ease-omil);
+  }
+  :global([data-story-over]) .wave {
+    opacity: 0;
+  }
+  .dock {
+    position: absolute;
+    inset: auto 0 0 0;
+    display: flex;
+    justify-content: center;
+  }
+  .shelf {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.625rem 0.875rem 0.625rem 0.625rem;
+    border-radius: 1.5rem;
+  }
+  /* Here the pill takes only the room its current state needs, so the pair stays centred and
+     the key sits right beside it. */
+  .dock :global(.pill--lg) {
+    --s: 1.3;
+    width: auto;
+  }
+  /* The key: a base and a cap. Pressing moves the cap, nothing else. */
+  .keycap {
+    width: 58px;
+    height: 58px;
+    border-radius: 15px;
+    padding: 2px 2px 6px;
+    background: linear-gradient(color-mix(in srgb, var(--tile) 80%, var(--ink) 8%), color-mix(in srgb, var(--tile) 66%, var(--ink) 16%));
+    box-shadow:
+      0 0 0 1px var(--line-strong),
+      0 12px 22px -12px rgb(var(--shadow-tint) / 0.4);
+  }
+  .keycap-top {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    padding: 7px 8px 6px;
+    border-radius: 13px;
+    background: var(--surface);
+    box-shadow:
+      0 0 0 1px var(--line),
+      inset 0 1px 0 var(--highlight);
+    color: var(--ink);
+    transition: transform 0.25s var(--ease-soft);
+  }
+  .keycap.is-down .keycap-top {
+    transform: translateY(4px);
+    transition-duration: 0.1s;
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    :global(.js) .dock {
+      animation: dock-in 1.1s var(--ease-omil) 0.2s both;
+    }
+    :global(.js) .wave {
+      animation: wave-in 1.6s var(--ease-omil) 0.1s backwards;
+    }
+  }
+  @keyframes dock-in {
+    from {
+      opacity: 0;
+      transform: translateY(18px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  @keyframes wave-in {
+    from {
+      opacity: 0;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .keycap-top,
+    .wave {
+      transition: none;
+    }
+  }
+</style>

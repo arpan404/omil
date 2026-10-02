@@ -1,18 +1,20 @@
 // Facts the page states. Keep them in line with the repository README.
-// The download buttons fetch the DMG itself. Its file name carries the version, so the
-// latest one is looked up when the site is built; the fallback is the current release.
+import { dmgOf, GITHUB_URL, LATEST_RELEASE_API } from "./release";
+
+// The download buttons fetch the DMG itself. Its file name carries the version, so the latest
+// one is looked up when the site is built, and again in the browser on every visit
+// (Layout.astro), so a new release never waits for a site deploy. The fallback is the release
+// that was current when this was written.
 const FALLBACK_DMG = "https://github.com/arpan404/omil/releases/download/v0.1.6/Omil-0.1.6-7-macos-arm64.dmg";
 
 async function latestDmg(): Promise<string> {
   try {
-    const res = await fetch("https://api.github.com/repos/arpan404/omil/releases/latest", {
+    const res = await fetch(LATEST_RELEASE_API, {
       headers: { Accept: "application/vnd.github+json" },
       signal: AbortSignal.timeout(5000),
     });
     if (!res.ok) return FALLBACK_DMG;
-    const release = (await res.json()) as { assets?: { name: string; browser_download_url: string }[] };
-    const dmg = release.assets?.find((a) => a.name.endsWith(".dmg"));
-    return dmg?.browser_download_url ?? FALLBACK_DMG;
+    return dmgOf(await res.json()) ?? FALLBACK_DMG;
   } catch {
     return FALLBACK_DMG;
   }
@@ -20,7 +22,7 @@ async function latestDmg(): Promise<string> {
 
 export const DOWNLOAD_URL = await latestDmg();
 export const SITE_URL = "https://omil.arpan.sh";
-export const GITHUB_URL = "https://github.com/arpan404/omil";
+export { GITHUB_URL };
 export const REQUIREMENTS = "Requires an Apple silicon Mac with macOS 14 or later.";
 
 export const RAW_TEXT = "Um, so I think we should, uh, ship it on Friday. No wait, Thursday.";
