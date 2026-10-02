@@ -3,6 +3,7 @@ import { Icon } from "astro-icon/components";
 import { DOWNLOAD_URL } from "../data/site";
 
 // The one download action. Every instance points at the DMG itself and downloads it directly.
+// Layout.astro repoints data-download links at the newest release on every visit.
 interface Props {
   size?: "sm" | "md" | "lg";
   /** The nav uses the short label; everywhere else says what it downloads. */
@@ -14,7 +15,7 @@ const sizeClass = size === "sm" ? "btn-sm" : size === "lg" ? "btn-lg" : "";
 const iconClass = size === "sm" ? "size-3.5" : size === "lg" ? "size-5" : "size-[18px]";
 ---
 
-<a href={DOWNLOAD_URL} download class:list={["btn btn-primary", sizeClass, className]}>
+<a href={DOWNLOAD_URL} download data-download class:list={["btn btn-primary", sizeClass, className]}>
   <Icon name="ph:apple-logo-fill" class={iconClass} aria-hidden="true" />
   {short ? "Download" : "Download for Mac"}
 </a>

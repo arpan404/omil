@@ -10,23 +10,23 @@ const words = ["Stop", "typing", "everything."];
 
 <footer>
   <section class="section">
-    <div class="shell">
-      <div class="desk flex flex-col items-center px-6 py-20 text-center md:py-28" data-finale>
-        <Pill state="idle" size="lg" id="finale-pill" />
-        <h2 class="display mt-9 max-w-[13ch] text-[2.85rem] sm:text-6xl md:mt-11 md:text-7xl lg:text-[5.5rem]" aria-label={words.join(" ")}>
-          <span aria-hidden="true" class="inline-flex flex-wrap justify-center gap-x-[0.23em]">
-            {words.map((w) => <span class="said inline-block">{w}</span>)}
-          </span>
-        </h2>
-        <div class="after mt-10 flex flex-col items-center gap-5 md:mt-12">
-          <DownloadButton size="lg" />
-          <p class="max-w-[34ch] text-[13.5px] leading-relaxed text-muted sm:max-w-none">{REQUIREMENTS} Free, with no account.</p>
-        </div>
+    <div class="shell relative isolate flex flex-col items-center text-center" data-finale>
+      <!-- The level meter again, on either side of the last pill. -->
+      <canvas class="wave" data-finale-wave aria-hidden="true"></canvas>
+      <Pill state="idle" size="lg" id="finale-pill" />
+      <h2 class="display mt-10 max-w-[13ch] text-[2.85rem] sm:text-6xl md:mt-12 md:text-7xl lg:text-[6.25rem]" aria-label={words.join(" ")}>
+        <span aria-hidden="true" class="inline-flex flex-wrap justify-center gap-x-[0.23em]">
+          {words.map((w) => <span class="said inline-block">{w}</span>)}
+        </span>
+      </h2>
+      <div class="after mt-10 flex flex-col items-center gap-5 md:mt-14">
+        <DownloadButton size="lg" />
+        <p class="max-w-[34ch] text-[13.5px] leading-relaxed text-muted sm:max-w-none">{REQUIREMENTS} Free, with no account.</p>
       </div>
     </div>
   </section>
 
-  <div class="shell mt-10 md:mt-14">
+  <div class="shell mt-28 md:mt-44">
     <div class="flex flex-col items-center justify-between gap-6 border-t border-line py-8 text-[13.5px] text-muted sm:flex-row">
       <div class="flex items-center gap-2.5">
         <img src="/media/icon-64.png" alt="" width="20" height="20" class="size-5 rounded-[5px]" />
@@ -44,17 +44,20 @@ const words = ["Stop", "typing", "everything."];
 
 <script>
   import { onceVisible, reduceMotion, wait } from "../scripts/motion";
+  import { mountWave } from "../scripts/wave";
 
   const finale = document.querySelector<HTMLElement>("[data-finale]");
   if (finale) {
     const pill = finale.querySelector<HTMLElement>("#finale-pill")!;
     const said = [...finale.querySelectorAll<HTMLElement>(".said")];
+    const wave = mountWave(finale.querySelector<HTMLCanvasElement>("[data-finale-wave]")!, { anchor: "middle", quiet: 0.22 });
     if (reduceMotion()) pill.dataset.state = "done";
     else
       onceVisible(
         finale,
         async () => {
           pill.dataset.state = "listening";
+          wave.setLive(true);
           await wait(650);
           for (const word of said) {
             word.classList.add("is-said");
@@ -62,6 +65,7 @@ const words = ["Stop", "typing", "everything."];
           }
           await wait(250);
           pill.dataset.state = "cleaning";
+          wave.setLive(false);
           await wait(800);
           pill.dataset.state = "done";
           finale.classList.add("is-done");
@@ -72,6 +76,21 @@ const words = ["Stop", "typing", "everything."];
 </script>
 
 <style>
+  /* Centred on the pill, the full width of the window, fading out towards the sides. */
+  .wave {
+    position: absolute;
+    left: 50%;
+    top: 29px;
+    z-index: -1;
+    width: 100vw;
+    height: 15rem;
+    translate: -50% -50%;
+    color: var(--ink);
+    opacity: var(--wave);
+    mask-image: linear-gradient(to right, transparent, #000 16%, #000 84%, transparent);
+    -webkit-mask-image: linear-gradient(to right, transparent, #000 16%, #000 84%, transparent);
+    pointer-events: none;
+  }
   @media (prefers-reduced-motion: no-preference) {
     :global(.js) .said {
       opacity: 0;

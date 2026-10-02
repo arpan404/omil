@@ -64,5 +64,36 @@ const og = new URL("/media/og.png", Astro.site ?? Astro.url).href;
       );
       document.querySelectorAll("[data-reveal], [data-reveal-stagger]").forEach((el) => seen.observe(el));
     </script>
+    <script>
+      import { dmgOf, LATEST_RELEASE_API } from "../data/release";
+
+      // Always download the newest release. The links already carry the DMG that was newest when
+      // the site was built; ask GitHub for the current one and repoint them. The answer is kept
+      // for ten minutes so a visit makes one request, and any failure leaves the built link.
+      const links = document.querySelectorAll<HTMLAnchorElement>("a[data-download]");
+      const point = (url: string) => links.forEach((a) => (a.href = url));
+      const KEY = "omil-latest-dmg";
+      const saved = (() => {
+        try {
+          const { url, at } = JSON.parse(sessionStorage.getItem(KEY) ?? "{}");
+          return typeof url === "string" && Date.now() - at < 600_000 ? url : undefined;
+        } catch {
+          return undefined;
+        }
+      })();
+      if (saved) point(saved);
+      else if (links.length)
+        fetch(LATEST_RELEASE_API, { headers: { Accept: "application/vnd.github+json" } })
+          .then((res) => (res.ok ? res.json() : null))
+          .then((release) => {
+            const url = dmgOf(release);
+            if (!url) return;
+            point(url);
+            try {
+              sessionStorage.setItem(KEY, JSON.stringify({ url, at: Date.now() }));
+            } catch {}
+          })
+          .catch(() => {});
+    </script>
   </body>
 </html>

@@ -2,7 +2,8 @@
 import { Icon } from "astro-icon/components";
 import { attaches, CLEAN_TEXT, diffTokens, RAW_TEXT } from "../data/site";
 
-// The same diff the app's Changes tab draws (TranscriptDiff + GitDiffView), built at compile time.
+// The same sentence, as the app's Changes view shows it (TranscriptDiff + GitDiffView): the
+// diff is built at compile time with the app's tokenizer and shown on a pane of glass.
 const tokens = diffTokens(RAW_TEXT, CLEAN_TEXT);
 type Run = { text: string; marked: boolean };
 /** Joins tokens into runs of marked and unmarked text. Spaces stay outside the highlight. */
@@ -31,7 +32,6 @@ const numbered = (list: Run[]) => {
   let n = 0;
   return list.map((r) => ({ ...r, n: r.marked ? n++ : -1 }));
 };
-const tabs = ["Clean", "Original", "Changes"] as const;
 const modes = [
   { title: "Clean", body: "Drops the filler, follows your corrections and fixes grammar. The default." },
   { title: "Verbatim", body: "Keeps every word, for quotes, names and code. Switch any time." },
@@ -39,129 +39,62 @@ const modes = [
 ---
 
 <section id="cleanup" class="section">
-  <div class="shell grid items-center gap-12 lg:grid-cols-[minmax(0,7fr)_minmax(0,5fr)] lg:gap-20">
-    <div class="lg:order-2">
-      <h2 data-reveal class="title">It writes what you meant.</h2>
-      <p data-reveal style="--i: 1" class="lead mt-5 max-w-[36ch]">
-        Say it the way it comes out. Omil keeps the sentence you were reaching for, and the Changes view shows exactly what it did.
-      </p>
-      <dl data-reveal style="--i: 2" class="mt-10 grid gap-6 border-t border-line pt-7 sm:grid-cols-2 lg:mt-12">
-        {
-          modes.map((m) => (
-            <div>
-              <dt class="font-semibold tracking-[-0.015em]">{m.title}</dt>
-              <dd class="mt-1.5 text-[15px] leading-relaxed text-muted">{m.body}</dd>
-            </div>
-          ))
-        }
-      </dl>
-    </div>
+  <div class="shell">
+    <h2 data-reveal class="title max-w-[13ch]">It writes what you meant.</h2>
+    <p data-reveal style="--i: 1" class="lead mt-6 max-w-[42ch]">
+      Say it the way it comes out. Omil keeps the sentence you were reaching for, and its Changes view shows exactly what it did.
+    </p>
 
-    <!-- The app's Last Transcript card, with its three views. -->
-    <div data-reveal="scale" style="--i: 1" class="card rounded-[1.75rem] p-2" data-transcript-card>
-      <div class="flex items-center justify-between gap-4 py-2 pr-2 pl-4 max-[26rem]:pl-2 md:pl-5">
-        <span class="text-[15px] font-semibold tracking-[-0.015em] whitespace-nowrap max-[26rem]:sr-only">Last transcript</span>
-        <div role="tablist" aria-label="Transcript version" class="tabs relative flex rounded-full bg-tile p-[3px] ring-1 ring-line max-[26rem]:flex-1">
-          <span class="thumb pointer-events-none absolute top-[3px] bottom-[3px] left-0 rounded-full bg-surface shadow-[0_1px_2px_rgb(var(--shadow-tint)/0.14),0_0_0_1px_var(--line)]" aria-hidden="true"></span>
-          {
-            tabs.map((t, i) => (
-              <button
-                type="button"
-                role="tab"
-                id={`tab-${t}`}
-                aria-controls={`panel-${t}`}
-                aria-selected={i === 2 ? "true" : "false"}
-                tabindex={i === 2 ? 0 : -1}
-                class="relative rounded-full px-3 py-1.5 text-[13px] font-medium text-muted transition-colors duration-300 hover:text-ink aria-selected:text-ink max-[26rem]:flex-1 sm:px-3.5"
-              >
-                {t}
-              </button>
-            ))
-          }
+    <div data-reveal="scale" style="--i: 2" class="pool mt-12 md:mt-16">
+      <div class="glass">
+        <div class="flex items-center justify-between gap-4 border-b border-line px-5 py-3.5 md:px-8 md:py-4">
+          <span class="text-[15px] font-semibold tracking-[-0.015em]">Last transcript</span>
+          <span class="rounded-full bg-ink/[0.06] px-3 py-1 text-[13px] font-medium">Changes</span>
         </div>
-      </div>
-
-      <div class="panels mt-1 grid min-h-[12.5rem] items-center rounded-[1.25rem] bg-tile p-3 md:min-h-[13.5rem] md:p-4">
-        <p role="tabpanel" id="panel-Clean" aria-labelledby="tab-Clean" hidden class="panel px-3 text-[1.375rem] leading-snug font-medium tracking-[-0.022em] text-balance md:px-4 md:text-[1.75rem]">
-          {CLEAN_TEXT}
-        </p>
-        <p role="tabpanel" id="panel-Original" aria-labelledby="tab-Original" hidden class="panel px-3 text-[1.375rem] leading-snug font-medium tracking-[-0.022em] text-balance text-muted md:px-4 md:text-[1.75rem]">
-          {RAW_TEXT}
-        </p>
-        <div role="tabpanel" id="panel-Changes" aria-labelledby="tab-Changes" class="panel diff space-y-2 font-mono text-[13.5px] leading-[1.75] md:text-[15px]">
-          <p class="flex gap-3.5 rounded-[0.875rem] bg-rec/[0.07] px-4 py-3.5 md:px-5 md:py-4" aria-label={`Original: ${RAW_TEXT}`}>
+        <div class="diff px-5 py-6 font-mono md:px-8 md:py-9">
+          <p class="flex gap-[1.2em]" aria-label={`Original: ${RAW_TEXT}`}>
             <span class="text-rec select-none" aria-hidden="true">-</span>
             <span aria-hidden="true">
               {numbered(original).map((r) => (r.marked ? <span class="mark mark-rec" style={`--n: ${r.n}`}>{r.text}</span> : <span>{r.text}</span>))}
             </span>
           </p>
-          <p class="flex gap-3.5 rounded-[0.875rem] bg-add/[0.08] px-4 py-3.5 md:px-5 md:py-4" aria-label={`Cleaned: ${CLEAN_TEXT}`}>
+          <p class="mt-[0.9em] flex gap-[1.2em]" aria-label={`Cleaned: ${CLEAN_TEXT}`}>
             <span class="text-add select-none" aria-hidden="true">+</span>
             <span aria-hidden="true">
               {numbered(cleaned).map((r) => (r.marked ? <span class="mark mark-add" style={`--n: ${r.n}`}>{r.text}</span> : <span>{r.text}</span>))}
             </span>
           </p>
         </div>
-      </div>
-
-      <div class="flex items-center gap-2 px-4 pt-3 pb-2 text-[13px] text-muted md:px-5">
-        <Icon name="ph:check-circle-fill" class="size-4 text-add" aria-hidden="true" />
-        Inserted into focused field
+        <div class="flex items-center gap-2 border-t border-line px-5 py-3.5 text-[13.5px] text-muted md:px-8">
+          <Icon name="ph:check-circle-fill" class="size-4 text-add" aria-hidden="true" />
+          Inserted into focused field
+        </div>
       </div>
     </div>
+
+    <dl data-reveal class="mt-12 grid max-w-[46rem] gap-x-14 gap-y-8 sm:grid-cols-2 md:mt-16">
+      {
+        modes.map((m) => (
+          <div>
+            <dt class="text-[1.0625rem] font-semibold tracking-[-0.015em]">{m.title}</dt>
+            <dd class="mt-1.5 leading-relaxed text-muted">{m.body}</dd>
+          </div>
+        ))
+      }
+    </dl>
   </div>
 </section>
 
-<script>
-  import { reduceMotion } from "../scripts/motion";
-
-  for (const root of document.querySelectorAll<HTMLElement>("[data-transcript-card]")) {
-    const list = root.querySelector<HTMLElement>(".tabs")!;
-    const thumb = list.querySelector<HTMLElement>(".thumb")!;
-    const tabs = [...root.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
-    const place = (tab: HTMLButtonElement) => {
-      thumb.style.width = `${tab.offsetWidth}px`;
-      thumb.style.transform = `translateX(${tab.offsetLeft}px)`;
-    };
-    const select = (tab: HTMLButtonElement) => {
-      place(tab);
-      for (const t of tabs) {
-        const on = t === tab;
-        t.setAttribute("aria-selected", String(on));
-        t.tabIndex = on ? 0 : -1;
-        const panel = root.querySelector<HTMLElement>(`#${t.getAttribute("aria-controls")}`)!;
-        if (on && panel.hidden) {
-          panel.hidden = false;
-          if (!reduceMotion()) panel.animate([{ opacity: 0, transform: "translateY(8px)" }, { opacity: 1, transform: "none" }], { duration: 500, easing: "cubic-bezier(0.16, 1, 0.3, 1)" });
-        } else if (!on) panel.hidden = true;
-      }
-    };
-    tabs.forEach((tab, i) => {
-      tab.addEventListener("click", () => select(tab));
-      tab.addEventListener("keydown", (e) => {
-        const step = e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0;
-        if (!step) return;
-        e.preventDefault();
-        const next = tabs[(i + step + tabs.length) % tabs.length];
-        select(next);
-        next.focus();
-      });
-    });
-    const current = () => tabs.find((t) => t.getAttribute("aria-selected") === "true") ?? tabs[0];
-    place(current());
-    // Fonts can swap after first layout; keep the thumb under its tab.
-    document.fonts?.ready.then(() => place(current()));
-    new ResizeObserver(() => place(current())).observe(list);
-  }
-</script>
-
 <style>
-  .panels > .panel {
-    grid-area: 1 / 1;
+  .diff {
+    font-size: clamp(0.875rem, 0.64rem + 0.95vw, 1.3125rem);
+    line-height: 1.7;
+    letter-spacing: -0.01em;
   }
-  /* Highlights: struck words in the app's red, the result in its green. */
+  /* Highlights: removed words in the app's red, added ones in its green. */
   .mark {
-    border-radius: 4px;
+    border-radius: 0.25em;
+    padding: 0.1em 0;
     box-decoration-break: clone;
     -webkit-box-decoration-break: clone;
     background-repeat: no-repeat;
@@ -174,11 +107,6 @@ const modes = [
     background-image: linear-gradient(color-mix(in srgb, var(--add) 20%, transparent), color-mix(in srgb, var(--add) 20%, transparent));
   }
   @media (prefers-reduced-motion: no-preference) {
-    .thumb {
-      transition:
-        transform 0.55s var(--ease-omil),
-        width 0.55s var(--ease-omil);
-    }
     /* On arrival the highlights paint across the removed words in reading order. */
     :global(.js) [data-reveal]:not(.is-in) .mark {
       background-size: 0% 100%;

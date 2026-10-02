@@ -8,7 +8,9 @@
 
 /* Omil's Graphite palette. Monochrome; red and green only where the app uses them
    (recording, and removed/added text in the diff).
-   Shape: tiles are 32px (24px on phones), cards inside them 20px, controls are pills. */
+   The page is a quiet canvas with a few large panes of frosted glass floating on it, one or
+   two to a section and never nested. Glass is 28px (24px on phones); controls are pills.
+   The background motif is the product's own: its level meter, drawn across the screen. */
 @theme {
   --font-sans: "Geist Variable", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "Geist Mono Variable", ui-monospace, monospace;
@@ -26,9 +28,6 @@
   --color-rec: var(--rec);
   --color-add: var(--add);
   --color-pill: var(--pill);
-
-  --radius-tile: 2rem;
-  --radius-card: 1.25rem;
 
   --ease-omil: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-soft: cubic-bezier(0.32, 0.72, 0, 1);
@@ -52,15 +51,17 @@
   --pill: rgb(14 14 16 / 0.9);
   --shadow-tint: 24 24 32;
   --highlight: rgb(255 255 255 / 0.8);
-  /* The "desk": the soft backdrop behind product visuals, like a Mac's desktop. */
-  --desk:
-    radial-gradient(110% 80% at 0% 0%, #fafafc 0%, transparent 62%),
-    radial-gradient(90% 75% at 100% 100%, #d6d9e1 0%, transparent 66%),
-    linear-gradient(180deg, #edeef2 0%, #e3e5ea 100%);
-  /* The cleanup prompt is shown as a dark editor in both themes. */
-  --editor: #17171a;
-  --editor-ink: #f1f1f3;
-  --editor-muted: #9a9aa3;
+  --grain: 0.05;
+  /* The page: Omil's level meter drawn large (see wave.ts), and soft pools of cool grey
+     behind the glass. */
+  --wave: 0.085;
+  --pool-a: rgb(186 194 212 / 0.6);
+  --pool-b: rgb(214 218 228 / 0.75);
+  /* Frosted glass (a web approximation: translucent fill, backdrop blur, a lit top edge). */
+  --glass: linear-gradient(135deg, rgb(255 255 255 / 0.74), rgb(255 255 255 / 0.44));
+  --glass-solid: #ffffff;
+  --glass-edge: 0 0 0 1px rgb(17 17 19 / 0.06), inset 0 0 0 1px rgb(255 255 255 / 0.55), inset 0 1px 0 rgb(255 255 255 / 0.95);
+  --glass-shadow: 0 1px 2px rgb(24 24 32 / 0.04), 0 28px 56px -28px rgb(24 24 32 / 0.22);
 }
 
 [data-theme="dark"] {
@@ -80,13 +81,14 @@
   --pill: rgb(44 44 48 / 0.92);
   --shadow-tint: 0 0 0;
   --highlight: rgb(255 255 255 / 0.06);
-  --desk:
-    radial-gradient(110% 80% at 0% 0%, #26272c 0%, transparent 62%),
-    radial-gradient(90% 75% at 100% 100%, #0c0c0e 0%, transparent 66%),
-    linear-gradient(180deg, #1a1b1e 0%, #131416 100%);
-  --editor: #0e0e10;
-  --editor-ink: #ececee;
-  --editor-muted: #8b8b94;
+  --grain: 0.07;
+  --wave: 0.1;
+  --pool-a: rgb(120 132 168 / 0.2);
+  --pool-b: rgb(255 255 255 / 0.05);
+  --glass: linear-gradient(135deg, rgb(255 255 255 / 0.095), rgb(255 255 255 / 0.035));
+  --glass-solid: #18181b;
+  --glass-edge: 0 0 0 1px rgb(255 255 255 / 0.09), inset 0 1px 0 rgb(255 255 255 / 0.13);
+  --glass-shadow: 0 28px 56px -28px rgb(0 0 0 / 0.7);
 }
 
 html {
@@ -100,6 +102,18 @@ html {
 }
 body {
   overflow-x: clip;
+}
+
+/* A fine grain over the whole page, so the canvas reads as a material and not a flat fill.
+   One fixed layer that never repaints; it takes no clicks. */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  pointer-events: none;
+  opacity: var(--grain);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.5 0 0 0 0 0.5 0 0 0 0 0.5 0 0 0 1.4 -0.2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 
 ::selection {
@@ -133,11 +147,11 @@ body {
     }
   }
   .section {
-    padding-top: 7rem;
+    padding-top: 7.5rem;
   }
   @media (min-width: 768px) {
     .section {
-      padding-top: 11rem;
+      padding-top: 13rem;
     }
   }
 
@@ -171,51 +185,42 @@ body {
 
   /* ---------------------------------------------------------------- materials */
 
-  /* A tile: a flat, quiet block of the page. Product visuals sit on these. */
-  .tile {
-    background: var(--tile);
+  /* Frosted glass, for the few surfaces that float above the page. An approximation in CSS:
+     a translucent fill, a backdrop blur, a lit edge. Solid where transparency is unwanted. */
+  .glass {
+    background: var(--glass);
+    box-shadow: var(--glass-edge), var(--glass-shadow);
+    backdrop-filter: blur(22px) saturate(1.7);
+    -webkit-backdrop-filter: blur(22px) saturate(1.7);
     border-radius: 1.5rem;
-  }
-  .desk {
-    background: var(--desk);
-    border-radius: 1.5rem;
-    box-shadow: inset 0 0 0 1px var(--line);
   }
   @media (min-width: 768px) {
-    .tile,
-    .desk {
-      border-radius: var(--radius-tile);
+    .glass {
+      border-radius: 1.75rem;
     }
   }
-  /* Fine grain over a desk, so the gradient reads as a material. A static image, not a filter. */
-  .grain::before {
+  @media (prefers-reduced-transparency: reduce) {
+    .glass {
+      background: var(--glass-solid);
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+    }
+  }
+  /* Soft pools of light behind a piece of glass, so it has something to frost. */
+  .pool {
+    position: relative;
+    isolation: isolate;
+  }
+  .pool::before {
     content: "";
     position: absolute;
-    inset: 0;
+    inset: -28% -12%;
     z-index: -1;
-    border-radius: inherit;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.5 0 0 0 0 0.5 0 0 0 0 0.5 0 0 0 0.5 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-    opacity: 0.22;
-    mix-blend-mode: overlay;
+    /* Both fade to nothing well inside the box, so no edge ever shows. */
+    background:
+      radial-gradient(ellipse 30% 38% at 34% 42%, var(--pool-a), transparent),
+      radial-gradient(ellipse 30% 40% at 66% 58%, var(--pool-b), transparent);
     pointer-events: none;
-  }
-  /* A card: something that floats above a tile or the page. A hairline, a top highlight and
-     a soft shadow tinted to the page. */
-  .card {
-    background: var(--surface);
-    border-radius: var(--radius-card);
-    box-shadow:
-      0 0 0 1px var(--line),
-      inset 0 1px 0 var(--highlight),
-      0 1px 2px rgb(var(--shadow-tint) / 0.04),
-      0 12px 32px -16px rgb(var(--shadow-tint) / 0.16);
-  }
-  .floating {
-    box-shadow:
-      0 0 0 1px var(--line-strong),
-      0 2px 4px rgb(var(--shadow-tint) / 0.04),
-      0 24px 48px -20px rgb(var(--shadow-tint) / 0.22),
-      0 56px 110px -40px rgb(var(--shadow-tint) / 0.32);
   }
 
   /* ---------------------------------------------------------------- buttons */

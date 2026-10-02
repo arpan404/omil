@@ -35,7 +35,7 @@ const faqs = [
 ---
 
 <section id="faq" class="section">
-  <div class="shell grid gap-10 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] lg:gap-20">
+  <div class="shell pool grid gap-10 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] lg:gap-20">
     <div class="lg:sticky lg:top-28 lg:self-start">
       <h2 data-reveal class="title">Questions</h2>
       <p data-reveal style="--i: 1" class="lead mt-5 max-w-[30ch]">
@@ -45,10 +45,10 @@ const faqs = [
     </div>
 
     <!-- Without JavaScript every answer is open. With it, they open one at a time on a grid-row transition. -->
-    <div data-reveal style="--i: 1" class="border-t border-line" data-faq>
+    <div data-reveal style="--i: 1" class="glass px-6 py-2 md:px-9 md:py-3" data-faq>
       {
         faqs.map((f, i) => (
-          <div class="item border-b border-line">
+          <div class="item border-line not-last:border-b">
             <h3>
               <button type="button" id={`faq-q-${i}`} aria-controls={`faq-a-${i}`} aria-expanded="true" class="group flex w-full cursor-pointer items-center justify-between gap-6 py-5 text-left text-[1.0625rem] font-medium tracking-[-0.012em] md:py-6 md:text-[1.1875rem]">
                 {f.q}
