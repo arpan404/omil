@@ -120,6 +120,37 @@ final class InsertionRebaseTests: XCTestCase {
     }
 }
 
+final class InsertionContextTests: XCTestCase {
+    func testOutputFarFromTheCursorDoesNotChangeTheContext() {
+        let prompt = "$ "
+        let before = String(repeating: "old output\n", count: 50) + prompt
+        let after = String(repeating: "new output\n", count: 20) + before
+        let cursorBefore = CFRange(location: (before as NSString).length, length: 0)
+        let cursorAfter = CFRange(location: (after as NSString).length, length: 0)
+        XCTAssertNotEqual(before.hashValue, after.hashValue)
+        XCTAssertEqual(
+            InsertionContext.hash(of: before, around: cursorBefore),
+            InsertionContext.hash(of: after, around: cursorAfter)
+        )
+    }
+
+    func testTextNextToTheCursorChangesTheContext() {
+        let range = CFRange(location: 5, length: 0)
+        XCTAssertNotEqual(
+            InsertionContext.hash(of: "Hello world", around: range),
+            InsertionContext.hash(of: "Hellx world", around: range)
+        )
+    }
+
+    func testFallsBackToTheWholeValueWithoutAValidCursor() {
+        XCTAssertEqual(InsertionContext.hash(of: "abc", around: nil), "abc".hashValue)
+        XCTAssertEqual(
+            InsertionContext.hash(of: "abc", around: CFRange(location: 9, length: 0)),
+            "abc".hashValue
+        )
+    }
+}
+
 final class ClipboardInserterTests: XCTestCase {
     func testRestoresRichClipboardContentsAfterPaste() {
         let pasteboard = NSPasteboard(name: NSPasteboard.Name("OmilPasteTests.\(UUID().uuidString)"))
