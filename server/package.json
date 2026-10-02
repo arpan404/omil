@@ -1,6 +1,6 @@
 {
   "name": "omil-server",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "private": true,
   "description": "Omil inference core: Whisper transcription + Qwen cleanup over a LAN API. Swift apps are thin clients.",
   "type": "module",
