@@ -35,6 +35,22 @@ enum InsertionRebase {
     }
 }
 
+/// Change detection looks only at the text around the cursor, so output
+/// elsewhere in a large field (a terminal buffer, a chat log) does not make
+/// the captured cursor stale.
+enum InsertionContext {
+    static let radius = 200
+
+    static func hash(of value: String, around range: CFRange?) -> Int {
+        let ns = value as NSString
+        guard let range, range.location >= 0, range.length >= 0,
+              range.location + range.length <= ns.length else { return value.hashValue }
+        let start = max(0, range.location - radius)
+        let end = min(ns.length, range.location + range.length + radius)
+        return ns.substring(with: NSRange(location: start, length: end - start)).hashValue
+    }
+}
+
 // MARK: - AXInserter
 //
 // Direct focused-field insertion via Accessibility: captures the destination
@@ -52,8 +68,15 @@ final class AXInserter: TextDestination, @unchecked Sendable {
         var selectedRange: CFRange?
         var valueHash: Int?
         var valueSnapshot: String?
+        /// False when the host rejects AXSelectedText writes (terminals,
+        /// Messages); those fields can only receive a paste at the cursor.
+        var directlyWritable: Bool
     }
 
+    /// The app Omil will deliver to, kept even when its focused field could
+    /// not be identified. `pastesWithoutField` is true only when the user was
+    /// working in that app at recording start, so a blind paste is expected.
+    private var app: (pid: pid_t, bundleId: String?, pastesWithoutField: Bool)?
     private var target: CapturedTarget?
     private var committedSequences = Set<Int>()
     private let lock = NSLock()
@@ -62,12 +85,17 @@ final class AXInserter: TextDestination, @unchecked Sendable {
 
     var capturedBundleId: String? {
         lock.lock(); defer { lock.unlock() }
-        return target?.bundleId
+        return app?.bundleId
     }
 
     var capturedPID: pid_t? {
         lock.lock(); defer { lock.unlock() }
-        return target?.pid
+        return app?.pid
+    }
+
+    var hasCapturedField: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return target != nil
     }
 
     var capturedContext: ServerCleanupContext? {
@@ -97,25 +125,31 @@ final class AXInserter: TextDestination, @unchecked Sendable {
         captureTarget(pid: application?.processIdentifier, bundleId: application?.bundleIdentifier)
     }
 
+    /// Remembers the app even when no field is found, so delivery can still
+    /// paste into it. Returns true only when a text field was captured.
     @discardableResult
-    func captureTarget(pid: pid_t?, bundleId: String?) -> Bool {
+    func captureTarget(pid: pid_t?, bundleId: String?, pastesWithoutField: Bool = false) -> Bool {
         lock.lock()
         target = nil
+        app = pid.map { ($0, bundleId, pastesWithoutField) }
         lock.unlock()
-        guard isTrusted else { return false }
-        guard let pid else { return false }
-        let appEl = AXUIElementCreateApplication(pid)
-        AXUIElementSetMessagingTimeout(appEl, 1)
-        var focused: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(appEl, axAttr(.focusedUIElement), &focused) == .success,
-              let el = focused, CFGetTypeID(el) == AXUIElementGetTypeID() else { return false }
-        let element = (el as! AXUIElement)
-        AXUIElementSetMessagingTimeout(element, 1)
-        // Only text-ish roles.
-        var role: CFTypeRef?
-        AXUIElementCopyAttributeValue(element, axAttr(.role), &role)
-        let roleStr = (role as? String) ?? ""
-        guard ["AXTextField", "AXTextArea", "AXComboBox"].contains(roleStr) else { return false }
+        guard isTrusted, let pid else { return false }
+        return captureField(pid: pid, bundleId: bundleId)
+    }
+
+    /// Captures the field focused now. Delivery calls this after bringing the
+    /// target app forward when the field could not be found at recording start.
+    @discardableResult
+    func recaptureField() -> Bool {
+        lock.lock()
+        let app = self.app
+        lock.unlock()
+        guard isTrusted, let app else { return false }
+        return captureField(pid: app.pid, bundleId: app.bundleId)
+    }
+
+    private func captureField(pid: pid_t, bundleId: String?) -> Bool {
+        guard let element = Self.focusedElement(pid: pid), Self.isTextInput(element) else { return false }
         var selText: CFTypeRef?
         AXUIElementCopyAttributeValue(element, axAttr(.selectedText), &selText)
         var rangeValue: CFTypeRef?
@@ -129,14 +163,68 @@ final class AXInserter: TextDestination, @unchecked Sendable {
         }
         var value: CFTypeRef?
         AXUIElementCopyAttributeValue(element, axAttr(.value), &value)
+        let text = value as? String
         lock.lock()
         target = CapturedTarget(
             pid: pid, bundleId: bundleId,
             element: element, selectedText: selText as? String,
-            selectedRange: range, valueHash: (value as? String)?.hashValue,
-            valueSnapshot: value as? String)
+            selectedRange: range, valueHash: text.map { InsertionContext.hash(of: $0, around: range) },
+            valueSnapshot: text,
+            directlyWritable: Self.isSettable(element, .selectedText))
         lock.unlock()
         return true
+    }
+
+    /// The element receiving key events in `pid`. Asks the system-wide element
+    /// first, which reports focus regardless of which app or display is active,
+    /// then the app itself. Chromium and Electron apps answer "no value" until
+    /// their accessibility tree exists, so a miss asks Electron to build it
+    /// and retries briefly.
+    private static func focusedElement(pid: pid_t) -> AXUIElement? {
+        let system = AXUIElementCreateSystemWide()
+        AXUIElementSetMessagingTimeout(system, 1)
+        let appEl = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(appEl, 1)
+        for attempt in 0..<3 {
+            if let element = copyElement(system, .focusedUIElement) {
+                var owner: pid_t = 0
+                if AXUIElementGetPid(element, &owner) == .success, owner == pid { return element }
+            }
+            if let element = copyElement(appEl, .focusedUIElement) { return element }
+            if attempt == 0 {
+                AXUIElementSetAttributeValue(appEl, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+            }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        return nil
+    }
+
+    private static func copyElement(_ parent: AXUIElement, _ attribute: NSAccessibility.Attribute) -> AXUIElement? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(parent, axAttr(attribute), &value) == .success,
+              let value, CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
+        let element = value as! AXUIElement
+        AXUIElementSetMessagingTimeout(element, 1)
+        return element
+    }
+
+    private static func isSettable(_ element: AXUIElement, _ attribute: NSAccessibility.Attribute) -> Bool {
+        var settable = DarwinBoolean(false)
+        return AXUIElementIsAttributeSettable(element, axAttr(attribute), &settable) == .success && settable.boolValue
+    }
+
+    /// Text roles, plus anything that accepts a selected-text write or exposes
+    /// an editable value with a cursor (web editors often report AXGroup).
+    private static func isTextInput(_ element: AXUIElement) -> Bool {
+        var role: CFTypeRef?
+        AXUIElementCopyAttributeValue(element, axAttr(.role), &role)
+        if ["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"].contains(role as? String ?? "") {
+            return true
+        }
+        if isSettable(element, .selectedText) { return true }
+        var range: CFTypeRef?
+        return isSettable(element, .value)
+            && AXUIElementCopyAttributeValue(element, axAttr(.selectedTextRange), &range) == .success
     }
 
     func capturePrecondition() -> SelectionPrecondition {
@@ -183,12 +271,12 @@ final class AXInserter: TextDestination, @unchecked Sendable {
         AXUIElementCopyAttributeValue(current.element, axAttr(.selectedText), &selectedText)
         current.selectedRange = range
         current.selectedText = selectedText as? String
-        current.valueHash = expected.hashValue
+        current.valueHash = InsertionContext.hash(of: expected, around: range)
         current.valueSnapshot = expected
         target = current
         return SelectionPrecondition(
             selectedText: current.selectedText, rangeLocation: range.location,
-            rangeLength: 0, surroundingHash: expected.hashValue
+            rangeLength: 0, surroundingHash: current.valueHash
         )
     }
 
@@ -220,27 +308,33 @@ final class AXInserter: TextDestination, @unchecked Sendable {
 
     func revalidate(precondition: SelectionPrecondition) -> DestinationCheck {
         lock.lock(); defer { lock.unlock() }
-        guard let t = target else { return .stale(reason: "no captured destination") }
+        guard let app else { return .stale(reason: "no captured destination") }
         // Focus may have moved to another app.
-        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == t.pid else {
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == app.pid else {
             return .stale(reason: "frontmost app changed; result retained for explicit insertion")
         }
-        let appEl = AXUIElementCreateApplication(t.pid)
-        AXUIElementSetMessagingTimeout(appEl, 1)
-        var focused: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(appEl, axAttr(.focusedUIElement), &focused) == .success,
-              let focused, CFGetTypeID(focused) == AXUIElementGetTypeID(),
-              CFEqual(focused, t.element) else {
+        // The app is still in front but its field was never identified:
+        // a paste lands wherever its cursor is.
+        guard let t = target else {
+            return app.pastesWithoutField ? .pasteOnly : .stale(reason: "no text field found; result retained")
+        }
+        // A focus query that fails cannot show the field changed, and the
+        // app is still in front, so paste rather than drop the result.
+        guard let focused = Self.focusedElement(pid: t.pid) else { return .pasteOnly }
+        guard CFEqual(focused, t.element) else {
             return .stale(reason: "focused field changed; result retained")
         }
+        // A paste goes to the live cursor, so only direct writes need the
+        // cursor and its surrounding text to match the capture.
+        guard t.directlyWritable, t.selectedRange != nil else { return .pasteOnly }
         if let originalHash = t.valueHash {
             var value: CFTypeRef?
             guard AXUIElementCopyAttributeValue(t.element, axAttr(.value), &value) == .success,
-                  (value as? String)?.hashValue == originalHash else {
+                  let text = value as? String,
+                  InsertionContext.hash(of: text, around: t.selectedRange) == originalHash else {
                 return .stale(reason: "field text changed; result retained")
             }
         }
-        guard t.selectedRange != nil else { return .pasteOnly }
         var rangeValue: CFTypeRef?
         guard AXUIElementCopyAttributeValue(t.element, axAttr(.selectedTextRange), &rangeValue) == .success,
               let rv = rangeValue, CFGetTypeID(rv) == AXValueGetTypeID() else {

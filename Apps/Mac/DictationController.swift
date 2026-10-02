@@ -1080,6 +1080,8 @@ final class DictationController: ObservableObject {
         let target = recentTargetApp.target(for: source)
         let targetPID = target?.processIdentifier
         let targetBundleID = target?.bundleIdentifier
+        let targetIsFrontmost = targetPID != nil
+            && targetPID == NSWorkspace.shared.frontmostApplication?.processIdentifier
         let captureAX = AXInserter()
         ax = captureAX
         phase = .preparing
@@ -1090,7 +1092,9 @@ final class DictationController: ObservableObject {
             // A target app can take seconds to answer Accessibility queries.
             // Keep that work off the key event and Omil's main thread.
             let (axOk, capturedPrecondition) = await Task.detached(priority: .userInitiated) {
-                let ok = captureAX.captureTarget(pid: targetPID, bundleId: targetBundleID)
+                let ok = captureAX.captureTarget(
+                    pid: targetPID, bundleId: targetBundleID, pastesWithoutField: targetIsFrontmost
+                )
                 return (ok, captureAX.capturePrecondition())
             }.value
             guard startAttempt == attempt, phase == .preparing else { return }
@@ -1106,7 +1110,7 @@ final class DictationController: ObservableObject {
             recoveryBuffer = RecoveryAudioBuffer()
             statusMessage = !axTrusted
                 ? "Accessibility access is needed to insert into other apps. The transcript will stay in Omil."
-                : axOk ? "Preparing microphone" : "No text field selected. Transcript stays in Omil."
+                : axOk || targetPID != nil ? "Preparing microphone" : "No app to insert into. Transcript stays in Omil."
             let sessionID = session.sessionId
             do {
                 try await session.start(backend: backend)
@@ -1366,7 +1370,11 @@ final class DictationController: ObservableObject {
         let clipboard = self.clipboard
         let (outcome, pasteReceipt) = await Task.detached(priority: .userInitiated) {
             var deliveryPrecondition = initialPrecondition
-            if let rebased = destination.rebaseAfterOmilInsertions(intervening) {
+            if !destination.hasCapturedField, destination.recaptureField() {
+                // The field was only found now that its app is in front. It
+                // already holds any earlier deliveries, so no rebase is needed.
+                deliveryPrecondition = destination.capturePrecondition()
+            } else if let rebased = destination.rebaseAfterOmilInsertions(intervening) {
                 deliveryPrecondition = rebased
             } else if let rebased = destination.rebaseAfterOmilAppendPastes(appendPastes) {
                 deliveryPrecondition = rebased
