@@ -107,6 +107,9 @@ final class DictationController: ObservableObject {
     @Published var speechSensitivity: SpeechSensitivity = .balanced {
         didSet { UserDefaults.standard.set(speechSensitivity.rawValue, forKey: "omil.speechSensitivity") }
     }
+    @Published var dictationLanguage: DictationLanguage = .english {
+        didSet { UserDefaults.standard.set(dictationLanguage.rawValue, forKey: "omil.dictationLanguage") }
+    }
     @Published var history: [HistoryEntry] = []
     @Published private(set) var recoveryRecordings: [RecoveryRecording] = []
     @Published private(set) var audioRetentionDays = 7
@@ -271,6 +274,10 @@ final class DictationController: ObservableObject {
         if let raw = UserDefaults.standard.string(forKey: "omil.speechSensitivity"),
            let saved = SpeechSensitivity(rawValue: raw) {
             speechSensitivity = saved
+        }
+        if let raw = UserDefaults.standard.string(forKey: "omil.dictationLanguage"),
+           let saved = DictationLanguage(rawValue: raw) {
+            dictationLanguage = saved
         }
         historyEnabled = UserDefaults.standard.object(forKey: "omil.historyEnabled") as? Bool ?? true
         audioRetentionDays = UserDefaults.standard.object(forKey: "omil.audioRetentionDays") as? Int ?? 7
@@ -1011,7 +1018,8 @@ final class DictationController: ObservableObject {
             style: style,
             modelId: ServerCatalog.llmIdForFile[llmFile],
             systemPrompt: activePromptOverride,
-            context: context
+            context: context,
+            language: dictationLanguage.rawValue
         )
     }
 
@@ -1022,6 +1030,7 @@ final class DictationController: ObservableObject {
             config: serverConfig,
             modelId: ServerCatalog.whisperIdForFile[whisperFile],
             sensitivity: speechSensitivity,
+            language: dictationLanguage.rawValue,
             verifiesBeforeRecording: false
         )
     }
@@ -1553,7 +1562,8 @@ final class DictationController: ObservableObject {
         let transcriber = ServerTranscriptionBackend(
             config: serverConfig,
             modelId: ServerCatalog.whisperIdForFile[whisperFile],
-            sensitivity: speechSensitivity
+            sensitivity: speechSensitivity,
+            language: dictationLanguage.rawValue
         )
         recordingSource = .app
         phase = .processing

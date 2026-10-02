@@ -30,6 +30,7 @@ public actor ServerTranscriptionBackend: TranscriptionBackend {
     private let config: ServerConfig
     private let modelId: String?
     private let sensitivity: SpeechSensitivity
+    private let language: String?
     private let verifiesBeforeRecording: Bool
     private var pcm = Data()
     private var sampleRate = 16_000.0
@@ -42,12 +43,14 @@ public actor ServerTranscriptionBackend: TranscriptionBackend {
         locale: String = "en-US",
         modelId: String? = nil,
         sensitivity: SpeechSensitivity = .balanced,
+        language: String? = nil,
         verifiesBeforeRecording: Bool = true
     ) {
         self.config = config
         self.locale = locale
         self.modelId = modelId
         self.sensitivity = sensitivity
+        self.language = language
         self.verifiesBeforeRecording = verifiesBeforeRecording
     }
 
@@ -211,7 +214,7 @@ public actor ServerTranscriptionBackend: TranscriptionBackend {
 
     private func transcribe(wav: Data, requestId: String?) async throws -> ServerTranscript {
         var queryItems = [
-            URLQueryItem(name: "language", value: config.language),
+            URLQueryItem(name: "language", value: language ?? config.language),
             URLQueryItem(name: "sensitivity", value: sensitivity.rawValue)
         ]
         if let modelId { queryItems.append(URLQueryItem(name: "model", value: modelId)) }
@@ -329,6 +332,8 @@ public struct ServerCleanupClient: Sendable {
     public var modelId: String?
     public var systemPrompt: String?
     public var context: ServerCleanupContext?
+    /// Language tag of the transcript, such as "ne-Latn" for romanized Nepali.
+    public var language: String?
 
     public init(
         config: ServerConfig,
@@ -337,7 +342,8 @@ public struct ServerCleanupClient: Sendable {
         style: WritingStyle = .automatic,
         modelId: String? = nil,
         systemPrompt: String? = nil,
-        context: ServerCleanupContext? = nil
+        context: ServerCleanupContext? = nil,
+        language: String? = nil
     ) {
         self.config = config
         self.dictionary = dictionary
@@ -346,6 +352,7 @@ public struct ServerCleanupClient: Sendable {
         self.modelId = modelId
         self.systemPrompt = systemPrompt
         self.context = context
+        self.language = language
     }
 
     public func clean(
@@ -374,6 +381,7 @@ public struct ServerCleanupClient: Sendable {
         ]
         if let modelId { body["model"] = modelId }
         if let systemPrompt { body["systemPrompt"] = systemPrompt }
+        if let language { body["language"] = language }
         if let context {
             body["context"] = ["before": context.before, "after": context.after]
         }

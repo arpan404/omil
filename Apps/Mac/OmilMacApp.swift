@@ -641,6 +641,15 @@ struct SettingsView: View {
                     .labelsHidden()
                     .fixedSize()
                 }
+                SettingsRow(title: "Language", detail: controller.dictationLanguage.detail) {
+                    OmilPickerField(
+                        title: "Language",
+                        selection: $controller.dictationLanguage,
+                        options: DictationLanguage.allCases,
+                        label: { $0.title }
+                    )
+                    .frame(width: 180)
+                }
                 SettingsRow(title: "Speech sensitivity", detail: controller.speechSensitivity.detail) {
                     OmilPickerField(
                         title: "Speech sensitivity",

@@ -16,6 +16,7 @@ import {
   acquireLlama, likelyLlmModel, llamaRuntime, liveLlmModel, unloadLlama,
 } from "./LlamaServer"
 import { cleanWithQwen } from "./QwenCleanup"
+import { romanizeTranscript, wantsNepaliRoman } from "./NepaliRoman"
 import { MODELS, modelSpec } from "./Config"
 import {
   loadPrompt, resolveCleanupPrompt, savePrompt, resetPrompt, saveSelection, type ModelSelection,
@@ -351,7 +352,7 @@ export const makeRouter = (ctx: ApiContext) =>
         return yield* json({ error: msg }, needsModels ? 503 : 500)
       }
       const queued = outcome.right
-      const t = queued.value
+      const t = wantsNepaliRoman(language) ? romanizeTranscript(queued.value) : queued.value
       return yield* json({
         text: t.text,
         segments: t.segments,
@@ -376,6 +377,7 @@ export const makeRouter = (ctx: ApiContext) =>
         context?: { before?: string; after?: string }
         model?: string
         systemPrompt?: string
+        language?: string
       }
       if (!body.text || typeof body.text !== "string") return yield* json({ error: "missing text" }, 400)
       if (body.text.length > 200_000) return yield* json({ error: "text too long" }, 413)
@@ -403,6 +405,7 @@ export const makeRouter = (ctx: ApiContext) =>
         dictionary: body.dictionary,
         snippets: body.snippets,
         style: body.style,
+        language: typeof body.language === "string" ? body.language : undefined,
         context: body.context && typeof body.context === "object" ? {
           before: typeof body.context.before === "string" ? body.context.before.slice(-400) : "",
           after: typeof body.context.after === "string" ? body.context.after.slice(0, 200) : "",

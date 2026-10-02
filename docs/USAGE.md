@@ -13,12 +13,14 @@ The Engine screen is where you pick models. Speech: Whisper small Q8 or large-v3
 ## Settings worth knowing
 
 - Settings → General → Floating pill: Off, While dictating, or Always. Always keeps a draggable Start control on screen. Right-click the pill to hide it without stopping the recording.
+- Language: English, Nepali (Roman), or Nepali (Devanagari). Nepali (Roman) is for Nepali mixed with English, typed in Roman letters like "ma bholi office janchhu". Use the large-v3 turbo speech model for Nepali.
 - Speech sensitivity: Balanced is the default. Distant voice keeps quieter speech. Filter more noise ignores more background sound. Mac and iPhone each have their own setting.
 - If you start dictation from the Omil window or the menu bar, the text goes to the last field you used in another app. If that field is gone, the text stays in Omil.
 
 ## Current limits
 
-- English only.
+- The iPhone app is English only.
+- Nepali has only been tested with synthetic speech. Romanized spelling follows fixed rules, so some words may be spelled differently from how you type them.
 - Installing the speech tools needs Homebrew and an internet connection. The first run also downloads the model weights.
 - The iOS app and keyboard have not been checked on a device: recording, handoff, background behavior, latency, and power use are all untested.
 - Speech tests use synthetic audio. No evaluation with human speech has been run.

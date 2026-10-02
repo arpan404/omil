@@ -7,7 +7,8 @@ import { resolve as resolveDeterministic } from "./Resolver"
 import { type LlamaHandle } from "./LlamaServer"
 import { ModelError } from "./Models"
 import { applyWritingStyle, expandSnippets, type WritingStyle } from "./Personalization"
-import { PROSE_SYSTEM_PROMPT, proposeProseCleanup, validateProseCleanup, type CleanupContext, type WordChange } from "./ProseCleanup"
+import { wantsNepaliRoman } from "./NepaliRoman"
+import { PROSE_SYSTEM_PROMPT, proposeProseCleanup, salvageCopyedit, validateProseCleanup, type CleanupContext, type WordChange } from "./ProseCleanup"
 
 interface CleanedResult {
   readonly snapshotId: string
@@ -31,6 +32,8 @@ interface CleanupInput {
   readonly snippets?: Record<string, string>
   readonly style?: WritingStyle
   readonly context?: CleanupContext
+  /** BCP 47 tag of the transcript, such as "en" or "ne-Latn". */
+  readonly language?: string
 }
 
 interface StructuralPass {
@@ -123,15 +126,24 @@ export const cleanWithQwen = (
     // One full-text model call fixes grammar and spelling, then a word diff
     // rejects changes to meaning-bearing content before any result reaches the client.
     let proseChanges: WordChange[] = []
-    const prose = yield* proposeProseCleanup(handle, text, input.dictionary ?? {}, input.context, systemPrompt).pipe(
+    const options = { nepaliRoman: wantsNepaliRoman(input.language ?? "") }
+    const prose = yield* proposeProseCleanup(handle, text, input.dictionary ?? {}, input.context, systemPrompt, options).pipe(
       Effect.catchAll((error) => {
         abstentions.push({ reason: "modelUnavailable", detail: `copyedit: ${error.reason}`, tokenIds: [] })
         return Effect.succeed(text)
       }),
     )
-    const checked = validateProseCleanup(text, prose, input.dictionary, input.context)
+    let edited = prose
+    let checked = validateProseCleanup(text, prose, input.dictionary, input.context, options)
+    // A small model often makes one unsafe edit among good ones in romanized
+    // Nepali; keep the good ones instead of discarding the whole copyedit.
+    if (!checked.ok && options.nepaliRoman) {
+      abstentions.push({ reason: "unsafeProseRewrite", detail: `${checked.reason}; unsafe words restored`, tokenIds: [] })
+      edited = salvageCopyedit(text, prose, input.dictionary, input.context, options)
+      checked = validateProseCleanup(text, edited, input.dictionary, input.context, options)
+    }
     if (checked.ok) {
-      text = prose
+      text = edited
       proseChanges = checked.changes
     } else {
       abstentions.push({ reason: "unsafeProseRewrite", detail: checked.reason, tokenIds: [] })

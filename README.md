@@ -12,7 +12,7 @@ Speech recognition and text cleanup run on your Mac. No account or subscription 
 2. Open Omil and follow the setup steps to download the speech models and grant permissions.
 3. Place your cursor in a text field, hold Right Option, and start speaking.
 
-Requires an Apple silicon Mac with macOS 14 or later. Currently supports English only. Initial setup requires Homebrew and an internet connection.
+Requires an Apple silicon Mac with macOS 14 or later. Supports English and Nepali on the Mac, and English on iPhone. Initial setup requires Homebrew and an internet connection.
 
 ## Features
 

@@ -86,6 +86,12 @@ struct ServerClientTests {
         #expect(SpeechSensitivity.allCases.map(\.rawValue) == ["strict", "balanced", "distant"])
         #expect(SpeechSensitivity.distant.detail.contains("quieter"))
     }
+
+    @Test func dictationLanguagesUseTheServerLanguageTags() {
+        // server/src/NepaliRoman.ts matches "ne-Latn" case-insensitively.
+        #expect(DictationLanguage.allCases.map(\.rawValue) == ["en", "ne-Latn", "ne"])
+        #expect(DictationLanguage.nepaliRoman.title == "Nepali (Roman)")
+    }
 }
 
 @Suite("Server catalog consistency")
