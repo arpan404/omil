@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Omil App Store screenshot studio</title>
+<style>
+  @font-face{font-family:Geist;src:url(Geist.woff2);font-weight:100 900}
+  *{box-sizing:border-box}body{margin:0;padding:32px;background:#fbfbfc;color:#111113;font-family:Geist,system-ui,sans-serif}
+  header{max-width:1200px;margin:0 auto 32px}h1{font-weight:580;letter-spacing:-.05em;font-size:40px;margin:16px 0}
+  p{line-height:1.6;color:#5d5d66}button,a{font:inherit}button{border:0;border-radius:999px;padding:12px 20px;background:#111113;color:white;cursor:pointer}
+  button:focus-visible,a:focus-visible{outline:2px solid #111113;outline-offset:4px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:24px;max-width:1200px;margin:auto}
+  canvas{display:block;width:100%;height:auto;border-radius:12px;box-shadow:0 1px 3px #11111318}
+  h2{font-size:15px;font-weight:550}article button{background:#eeeef1;color:#111113;margin-top:12px}
+  .platform{max-width:1200px;margin:48px auto 20px;font-size:22px;letter-spacing:-.03em}#status{min-height:24px}
+</style>
+<header>
+  <a href="https://omil.arpan.sh/" style="color:inherit">Omil</a>
+  <h1>App Store screenshot studio.</h1>
+  <p>Real app captures, fictional dictation, and the website's Graphite palette and Geist type.<br>Edit <code>screens.json</code> to change the copy. PNG exports are opaque and use Apple's accepted dimensions.</p>
+  <button id="export-all" disabled>Export all 10 screenshots</button>
+  <p id="status" role="status">Loading fonts and captures…</p>
+</header>
+<main id="studio"></main>
+<script type="module">
+const screens=await fetch('screens.json').then(r=>r.json());
+await document.fonts.load('580 100px Geist');
+const icon=await loadImage('icon.png');
+const outputs=[];
+function loadImage(url){return new Promise((resolve,reject)=>{const img=new Image();img.onload=()=>resolve(img);img.onerror=reject;img.src=url})}
+function roundRect(ctx,x,y,w,h,r){ctx.beginPath();ctx.roundRect(x,y,w,h,r)}
+function text(ctx,str,x,y,font,color){ctx.font=font;ctx.fillStyle=color;ctx.fillText(str,x,y)}
+function wrap(ctx,str,maxWidth){const lines=[];let line='';for(const word of str.split(' ')){const candidate=line?line+' '+word:word;if(ctx.measureText(candidate).width>maxWidth&&line){lines.push(line);line=word}else line=candidate}if(line)lines.push(line);return lines}
+function draw(kind,s,shot){
+  const phone=kind==='iphone',w=phone?1320:2064,h=phone?2868:2752;
+  const canvas=document.createElement('canvas');canvas.width=w;canvas.height=h;
+  const ctx=canvas.getContext('2d',{alpha:false});const dark=s.theme==='dark';
+  const ink=dark?'#f5f5f6':'#111113',muted=dark?'#a3a3ab':'#5d5d66';
+  ctx.fillStyle=dark?'#0a0a0b':'#fbfbfc';ctx.fillRect(0,0,w,h);
+  // The product's level meter is the only background motif, as on the website.
+  ctx.fillStyle=dark?'#ffffff0c':'#11111309';
+  for(let i=0;i<80;i++){const level=36+Math.round((.5+.25*Math.sin(i*.21+1.3)+.25*Math.sin(i*.083+4.1))*250);roundRect(ctx,(w-80*22)/2+i*22,h*.65-level/2,8,level,4);ctx.fill()}
+  const margin=phone?100:150,brandY=phone?125:125;
+  ctx.save();roundRect(ctx,margin,brandY-52,64,64,16);ctx.clip();ctx.drawImage(icon,margin,brandY-52,64,64);ctx.restore();
+  text(ctx,'Omil',margin+84,brandY,'580 44px Geist',ink);
+  ctx.textBaseline='top';
+  let size=phone?119:150;const maxWidth=w-margin*2;
+  while(s.headline.some(line=>{ctx.font=`580 ${size}px Geist`;return ctx.measureText(line).width>maxWidth})&&size>70)size--;
+  const headingY=phone?240:235,lineHeight=size*1.04;
+  ctx.font=`580 ${size}px Geist`;ctx.fillStyle=ink;ctx.letterSpacing='-4px';
+  s.headline.forEach((line,i)=>ctx.fillText(line,margin,headingY+i*lineHeight));ctx.letterSpacing='0px';
+  const detailY=headingY+s.headline.length*lineHeight+(phone?38:36);
+  ctx.font=`400 ${phone?40:49}px Geist`;ctx.fillStyle=muted;
+  const detailLines=wrap(ctx,s.detail,maxWidth-30);
+  if(detailLines.length>2)throw new Error(`Detail overflows: ${kind}/${s.id}`);
+  detailLines.forEach((line,i)=>ctx.fillText(line,margin,detailY+i*(phone?54:65)));
+  const sw=phone?900:1410,sh=sw*shot.height/shot.width;
+  const x=(w-sw)/2,y=phone?770:680,r=phone?90:38,rim=phone?18:20;
+  if(y+sh>h-115)throw new Error(`Device overflows: ${kind}/${s.id}`);
+  ctx.save();ctx.shadowColor=dark?'#000000a0':'#18182030';ctx.shadowBlur=70;ctx.shadowOffsetY=30;
+  roundRect(ctx,x-rim,y-rim,sw+rim*2,sh+rim*2,r+rim);ctx.fillStyle=dark?'#2c2c30':'#202024';ctx.fill();ctx.restore();
+  ctx.save();roundRect(ctx,x,y,sw,sh,r);ctx.clip();ctx.drawImage(shot,x,y,sw,sh);ctx.restore();
+  ctx.textAlign='center';text(ctx,'Requires your own Mac • Free, with no account',w/2,h-65,`400 ${phone?27:32}px Geist`,muted);
+  ctx.textAlign='left';return canvas;
+}
+async function save(output){
+  const blob=await new Promise(resolve=>output.canvas.toBlob(resolve,'image/png'));
+  const response=await fetch(`/export/${output.kind}/${output.id}.png`,{method:'POST',headers:{'Content-Type':'image/png'},body:blob});
+  if(!response.ok)throw new Error(await response.text());return response.json();
+}
+function download(output){output.canvas.toBlob(blob=>{const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`omil-${output.kind}-${output.id}.png`;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)},'image/png')}
+for(const kind of ['iphone','ipad']){
+  const label=document.createElement('h2');label.className='platform';label.textContent=kind==='iphone'?'iPhone · 1320 × 2868':'iPad · 2064 × 2752';document.querySelector('#studio').append(label);
+  const grid=document.createElement('div');grid.className='grid';document.querySelector('#studio').append(grid);
+  for(const s of screens){const shot=await loadImage(`../screenshots/raw/${kind}/${s.id}.png`);const canvas=draw(kind,s,shot);const output={kind,id:s.id,canvas};outputs.push(output);
+    const card=document.createElement('article');card.append(canvas);const name=document.createElement('h2');name.textContent=s.headline.join(' ');card.append(name);const button=document.createElement('button');button.textContent='Download PNG';button.onclick=()=>download(output);card.append(button);grid.append(card);
+  }
+}
+window.exportAll=async()=>{const saved=[];for(const output of outputs)saved.push(await save(output));document.querySelector('#status').textContent='All 10 screenshots exported to release/app-store/screenshots.';return saved};
+window.screenshotChecks=()=>outputs.map(o=>({platform:o.kind,id:o.id,width:o.canvas.width,height:o.canvas.height,opaque:o.canvas.getContext('2d').getImageData(0,0,1,1).data[3]===255}));
+const button=document.querySelector('#export-all');button.disabled=false;button.onclick=()=>window.exportAll().catch(e=>document.querySelector('#status').textContent=e.message);
+document.querySelector('#status').textContent='10 screenshots ready. Download individual PNGs or export the full set.';
+</script>
+</html>

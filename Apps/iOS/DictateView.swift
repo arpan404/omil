@@ -16,7 +16,7 @@ struct DictateView: View {
     @ObservedObject var coordinator: SessionCoordinator
     @Environment(\.omil) private var colors
     @Environment(\.scenePhase) private var scenePhase
-    @State private var version: TranscriptVersion = .clean
+    @State private var version: TranscriptVersion = DebugLaunch.transcriptVersion ?? .clean
     @State private var showSettings = DebugLaunch.screen != nil && DebugLaunch.screen != "history"
     @State private var showConnection = false
     @State private var showHistory = DebugLaunch.screen == "history"
@@ -99,7 +99,7 @@ struct DictateView: View {
                 } else {
                     recordingStart = nil
                 }
-                if new == .ready { version = .clean }
+                if new == .ready { version = DebugLaunch.transcriptVersion ?? .clean }
             }
             .onChange(of: coordinator.audioLevel) { _, level in
                 guard isRecording else { return }

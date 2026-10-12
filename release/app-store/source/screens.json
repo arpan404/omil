@@ -1,0 +1,52 @@
+[
+  {
+    "id": "01-dictate",
+    "headline": [
+      "You think faster",
+      "than you type."
+    ],
+    "detail": "Speak on iPhone or iPad. Your Mac cleans up the words.",
+    "capture": "result",
+    "theme": "light"
+  },
+  {
+    "id": "02-changes",
+    "headline": [
+      "Your words.",
+      "With the edits visible."
+    ],
+    "detail": "Compare the original, the cleanup, and every change.",
+    "capture": "changes",
+    "theme": "light"
+  },
+  {
+    "id": "03-history",
+    "headline": [
+      "A thought worth",
+      "coming back to."
+    ],
+    "detail": "Search recent dictations. Copy, revisit, or delete.",
+    "capture": "history",
+    "theme": "light"
+  },
+  {
+    "id": "04-privacy",
+    "headline": [
+      "Your Mac.",
+      "Your words."
+    ],
+    "detail": "Local processing. No account. No subscription.",
+    "capture": "privacy",
+    "theme": "dark"
+  },
+  {
+    "id": "05-appearance",
+    "headline": [
+      "Make room",
+      "for your own style."
+    ],
+    "detail": "Choose a theme. Follow the light, or go dark.",
+    "capture": "appearance",
+    "theme": "light"
+  }
+]

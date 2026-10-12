@@ -67,6 +67,7 @@ struct RootView: View {
 ///                            shown when the keyboard opens the app)
 ///   -OmilDictateFile PATH    dictate a 16 kHz mono WAV through the real
 ///                            pipeline instead of the microphone
+///   -OmilTranscriptVersion Changes  select the transcript diff for screenshots
 enum DebugLaunch {
     private static func value(_ flag: String) -> String? {
         #if DEBUG
@@ -81,6 +82,9 @@ enum DebugLaunch {
     static var demo: String? { value("-OmilDemo") }
     static var isDemo: Bool { demo != nil }
     static var dictateFile: String? { value("-OmilDictateFile") }
+    static var transcriptVersion: TranscriptVersion? {
+        value("-OmilTranscriptVersion").flatMap(TranscriptVersion.init(rawValue:))
+    }
 
     static var settingsPath: [SettingsRoute] {
         screen.flatMap(SettingsRoute.init(rawValue:)).map { [$0] } ?? []

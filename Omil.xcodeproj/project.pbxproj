@@ -22,6 +22,7 @@
 		20DC695B0350A941669542DA /* OmilMacApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE8761062032A3B86123D949 /* OmilMacApp.swift */; };
 		28A21821B78FAD474062E12B /* RecentTargetApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 244A391BBADE6B5BB0FE41E8 /* RecentTargetApp.swift */; };
 		2A4D314ED740EB9FC04BDF40 /* KeyboardSessionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81695CA0B85E8774FC540C39 /* KeyboardSessionView.swift */; };
+		3032A6C067E6D3C60FB7C3E1 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = E64EE06B03775A890479F42A /* PrivacyInfo.xcprivacy */; };
 		30B4B3C2F9DEAB2AF13DDD24 /* OmilIOSApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 049BF89C8C48F72E25AB3907 /* OmilIOSApp.swift */; };
 		3DD7D2771DDD8E6CD3669B1E /* OmilCore in Frameworks */ = {isa = PBXBuildFile; productRef = 4D8C289D65ECE23772F2D649 /* OmilCore */; };
 		3ED974A0AAC5D47FECA54B2C /* DictateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51DEA5C6A858C916BE54C55B /* DictateView.swift */; };
@@ -41,6 +42,7 @@
 		A13375DF34A15ED13C6BF065 /* DiffUtilTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18A4150AE36033E556680B69 /* DiffUtilTests.swift */; };
 		A440BA01828D7F2EA3516236 /* ClipboardInserter.swift in Sources */ = {isa = PBXBuildFile; fileRef = D848F1CE08AE5D255D009732 /* ClipboardInserter.swift */; };
 		A57A1BC73285B4EA4B3D02F6 /* DictationController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C59DC022BA72956BFC5C9C30 /* DictationController.swift */; };
+		AD9ED026AFFCDE85E13CE2F0 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 614EC0FDC3DF20FF8186CD73 /* PrivacyInfo.xcprivacy */; };
 		AFB127F15462B24B9A2774AC /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 95C9B641D58FC29E10C96E1B /* Assets.xcassets */; };
 		B32BF2822752F3E3EED6D0CF /* UpdateControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9BA197997461D7F34825C15F /* UpdateControllerTests.swift */; };
 		B4C9102AE5A80146488DCADC /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE202A64F423446B4433191B /* Theme.swift */; };
@@ -115,6 +117,7 @@
 		50628AF477C94770CF6BE552 /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
 		51DEA5C6A858C916BE54C55B /* DictateView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DictateView.swift; sourceTree = "<group>"; };
 		5375B1ADDA9DDC49673F5CAB /* omil */ = {isa = PBXFileReference; lastKnownFileType = folder; name = omil; path = .; sourceTree = SOURCE_ROOT; };
+		614EC0FDC3DF20FF8186CD73 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		64FCC9C1613278E5136ECA1D /* InstallationFlow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InstallationFlow.swift; sourceTree = "<group>"; };
 		67247A6F6A7142F80F113B7D /* Feedback.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Feedback.swift; sourceTree = "<group>"; };
 		7F2749EF7E70116A221AF4C5 /* OmilMacTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = OmilMacTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -145,6 +148,7 @@
 		DF17778EAD3976E826B5BAFB /* omil-server */ = {isa = PBXFileReference; path = "omil-server"; sourceTree = "<group>"; };
 		E09BC10233CD55A62306C100 /* KeyboardViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardViewController.swift; sourceTree = "<group>"; };
 		E41CC6A8072238F3190BA40E /* HotkeyManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotkeyManager.swift; sourceTree = "<group>"; };
+		E64EE06B03775A890479F42A /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		E7557DAADC69C7908E846801 /* Feedback.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Feedback.swift; sourceTree = "<group>"; };
 		F4DCAF2CE1730C11FA35C09A /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		F585EC6FEE21EAF6F6F4EE95 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -198,6 +202,7 @@
 				32F5F8B299D38A27AE4030E4 /* Info.plist */,
 				E09BC10233CD55A62306C100 /* KeyboardViewController.swift */,
 				AB5D151E8AAC531F356B19AA /* OmilKeyboard.entitlements */,
+				E64EE06B03775A890479F42A /* PrivacyInfo.xcprivacy */,
 			);
 			path = Keyboard;
 			sourceTree = "<group>";
@@ -292,6 +297,7 @@
 				049BF89C8C48F72E25AB3907 /* OmilIOSApp.swift */,
 				50628AF477C94770CF6BE552 /* OnboardingView.swift */,
 				B439700B4A7E66A0789A19C1 /* Pairing.swift */,
+				614EC0FDC3DF20FF8186CD73 /* PrivacyInfo.xcprivacy */,
 				B5BF80D997AFF8047BD7C73E /* SessionCoordinator.swift */,
 				F4DCAF2CE1730C11FA35C09A /* SettingsView.swift */,
 				AE202A64F423446B4433191B /* Theme.swift */,
@@ -372,6 +378,7 @@
 			buildConfigurationList = 727E6E11503D3965D5BCCA3C /* Build configuration list for PBXNativeTarget "OmilKeyboard" */;
 			buildPhases = (
 				29826DEA7C6A0EA7438CA41F /* Sources */,
+				34B81CFB6E2D588F82F5D0D9 /* Resources */,
 				408CB5F8DC8D005E2D2BC036 /* Frameworks */,
 			);
 			buildRules = (
@@ -467,6 +474,15 @@
 			buildActionMask = 2147483647;
 			files = (
 				AFB127F15462B24B9A2774AC /* Assets.xcassets in Resources */,
+				AD9ED026AFFCDE85E13CE2F0 /* PrivacyInfo.xcprivacy in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		34B81CFB6E2D588F82F5D0D9 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				3032A6C067E6D3C60FB7C3E1 /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

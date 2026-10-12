@@ -1,0 +1,73 @@
+---
+import Layout from "./Layout.astro";
+import ThemeSwitch from "../components/ThemeSwitch.astro";
+import { policyUpdated, type PolicyPageData } from "../data/policies";
+interface Props { page: PolicyPageData; slug: string; }
+const { page, slug } = Astro.props;
+const links = [
+  ["privacy", "Privacy"], ["security", "Security"],
+  ["terms", "Terms"], ["support", "Support"],
+];
+---
+
+<Layout title={`${page.title} | Omil`} description={page.summary}>
+  <header class="shell flex items-center justify-between py-7 md:py-9">
+    <a href="/" class="flex items-center gap-2.5 text-lg font-semibold tracking-tight" aria-label="Omil home">
+      <img src="/media/icon-64.png" alt="" width="28" height="28" class="rounded-[7px]" />
+      Omil
+    </a>
+    <div class="flex items-center gap-5 text-sm">
+      <a href="/support/" class="hover:text-muted">Get help</a>
+      <ThemeSwitch />
+    </div>
+  </header>
+  <main class="shell pb-20">
+    <div class="max-w-3xl pb-12 pt-10 md:pb-16 md:pt-20">
+      <p class="mb-5 font-mono text-xs text-muted">Updated {policyUpdated}</p>
+      <h1 class="display text-5xl sm:text-6xl md:text-7xl">{page.title}</h1>
+      <p class="lead mt-6 max-w-[52ch]">{page.summary}</p>
+    </div>
+    <div class="policy-grid border-t border-line pt-9 md:pt-12">
+      <nav aria-label="On this page" class="contents-nav">
+        <p class="mb-4 font-mono text-xs text-muted">On this page</p>
+        <ul class="flex flex-col gap-3 text-sm">
+          {page.sections.map(([id, title]) => <li><a href={`#${id}`} class="text-muted hover:text-ink">{title}</a></li>)}
+        </ul>
+      </nav>
+      <article class="policy-copy">
+        {page.sections.map(([id, title, paragraphs]) => (
+          <section id={id}>
+            <h2>{title}</h2>
+            {paragraphs.map(text => <p>{text}</p>)}
+          </section>
+        ))}
+        <div class="mt-12 flex flex-wrap gap-x-6 gap-y-3 border-t border-line pt-7 text-sm">
+          <a class="underline underline-offset-4" href="https://github.com/arpan404/omil/issues">Contact support on GitHub</a>
+          <a class="underline underline-offset-4" href="https://github.com/arpan404">Developer profile</a>
+          {slug === "terms" && <a class="underline underline-offset-4" href="https://www.apple.com/legal/internet-services/itunes/dev/stdeula/">Apple standard EULA</a>}
+          {slug === "terms" && <a class="underline underline-offset-4" href="https://github.com/arpan404/omil/blob/main/LICENSE">MIT License</a>}
+        </div>
+      </article>
+    </div>
+  </main>
+  <footer class="shell flex flex-wrap items-center justify-between gap-6 border-t border-line py-8 text-sm text-muted">
+    <span>© {new Date().getFullYear()} Omil</span>
+    <nav aria-label="Policies and support" class="flex flex-wrap gap-x-6 gap-y-3">
+      {links.map(([path, label]) => <a href={`/${path}/`} aria-current={path === slug ? "page" : undefined} class="hover:text-ink">{label}</a>)}
+    </nav>
+  </footer>
+</Layout>
+
+<style>
+  .policy-grid { display: grid; grid-template-columns: 15rem minmax(0, 43rem); gap: 5rem; }
+  .contents-nav { position: sticky; top: 2rem; align-self: start; }
+  .policy-copy section + section { margin-top: 2.75rem; }
+  .policy-copy h2 { font-size: 1.35rem; font-weight: 580; letter-spacing: -.03em; line-height: 1.25; }
+  .policy-copy p { margin-top: 1rem; font-size: 1rem; line-height: 1.8; color: var(--muted); text-wrap: pretty; }
+  @media (max-width: 850px) {
+    .policy-grid { grid-template-columns: minmax(0, 1fr); gap: 2.5rem; }
+    .contents-nav { position: static; padding-bottom: 2rem; border-bottom: 1px solid var(--line); }
+    .contents-nav ul { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+  }
+  @media (max-width: 420px) { .contents-nav ul { grid-template-columns: 1fr; gap: .7rem; } }
+</style>

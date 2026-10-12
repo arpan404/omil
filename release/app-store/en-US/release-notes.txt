@@ -1,0 +1,1 @@
+Initial iPhone and iPad release with Mac-powered English dictation, Clean and Verbatim modes, transcript comparison, a personal dictionary, local history, themes, and the Omil keyboard.

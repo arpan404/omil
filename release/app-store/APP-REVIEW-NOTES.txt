@@ -1,0 +1,27 @@
+Omil is a free iPhone and iPad companion to the Omil Mac dictation engine. It has no account, subscription, advertising, or in-app purchases. English is the supported mobile dictation language.
+
+HARDWARE AND SETUP
+The default engine requires an Apple silicon Mac running macOS 14 or later, with Omil for Mac installed and its speech models downloaded. Mac download: https://omil.arpan.sh/. Enable sharing in the Mac app's Engine screen, choose Pair iPhone, and scan its code using the mobile app. Manual host, port, and token entry is available for devices that cannot scan codes. The devices must be on a mutually reachable trusted network. Optional Tailscale is configured separately by the user and is not required for local use.
+
+CORE TEST STEPS
+1. Complete setup and grant microphone access when prompted. Camera access is optional for scanning the pairing code.
+2. Tap the record button, speak an English sentence, and stop recording. The paired Mac transcribes and cleans it up.
+3. Switch between Clean, Original, and Changes. Copy or share the result.
+4. Open History to search, delete a transcript, or clear history. Open Settings for the dictionary, speech sensitivity, appearance, and privacy links.
+
+MICROPHONE AND KEYBOARD
+The keyboard extension does not record audio itself. The containing app handles the microphone and communicates through an App Group. A user-enabled microphone session can continue in the background for the chosen duration, with the system microphone indicator visible. The user can end it in Omil settings. Audio between dictations is neither kept nor sent by Omil. Full Access enables app/keyboard communication; no typed activity is sent to a developer-operated endpoint.
+
+NETWORK SECURITY EXCEPTION
+The iOS app permits HTTP for Tailscale IPv4 addresses in 100.64.0.0/10, and declares local networking. The user-owned Mac engine uses a bearer token. Tailscale encrypts tailnet transport separately; local HTTP itself is not encrypted. The app does not disable App Transport Security globally.
+
+PRIVACY
+Audio and text sent to the default engine are processed on the user's paired Mac. The developer does not receive dictation through a hosted service. History stays in the app's own container. The App Group carries current session state and results. The app has no tracking, advertising, or analytics SDK.
+
+SUPPORT AND POLICIES
+https://omil.arpan.sh/support/
+https://omil.arpan.sh/privacy/
+https://omil.arpan.sh/security/
+https://omil.arpan.sh/terms/
+
+Do not paste this document for submission until the issues in READINESS.md are resolved. The current keyboard requires changes under guideline 4.4.1. Arrange a review-accessible Mac setup or obtain review guidance from Apple before submitting; the development screenshot fixtures are not a shipped reviewer demo. Enter the developer's real review contact details in App Store Connect. No personal pairing token is included here.

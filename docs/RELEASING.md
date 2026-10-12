@@ -48,6 +48,10 @@ This writes a signed IPA and `OmilIOS.xcarchive` to a new folder under `.build/d
 
 For registered test devices, set `IOS_EXPORT_METHOD=release-testing`.
 
+The [App Store package](../release/app-store/README.md) contains iPhone and iPad screenshots, editable layouts, listing text, review instructions, and privacy answers. Read its [readiness report](../release/app-store/READINESS.md) before submitting. The current keyboard needs review-related behavior changes, and an App Store export needs distribution profiles for both the app and keyboard. The current API key can read the account but cannot create those profiles.
+
+The website serves the privacy policy at `/privacy/`, terms at `/terms/`, security guidance at `/security/`, and support at `/support/`. Confirm these pages are live before entering their URLs in App Store Connect. The exporter verifies the privacy manifest in both bundles and the app's export-compliance declaration.
+
 ## Publishing a Mac release
 
 Set the version and bump the build number, then commit and push:

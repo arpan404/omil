@@ -1,0 +1,1 @@
+Test first-launch setup, microphone and camera permission prompts, manual pairing, local Wi-Fi and Tailscale connections, Clean and Verbatim dictation, transcript changes, history deletion, themes, and keyboard insertion. Report device model, OS version, app version, and reproduction steps. Remove pairing tokens and personal dictation from screenshots and logs.

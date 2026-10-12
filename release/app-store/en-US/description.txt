@@ -1,0 +1,23 @@
+Your voice on iPhone and iPad. Your Mac does the work.
+
+Omil turns speech into text using the models running on your own Mac. Record in the app, review the result, and copy or share it wherever you need it. No account, subscription, or developer-hosted speech service.
+
+REQUIRES YOUR OWN MAC
+The Mac engine requires an Apple silicon Mac with macOS 14 or later and Omil installed. Initial Mac setup needs Homebrew and an internet connection to download the speech and cleanup models. Connect your iPhone or iPad on your local network, or use your own Tailscale connection. Mobile dictation is designed for English.
+
+SPEAK, THEN CHOOSE YOUR WORDS
+Use Clean mode to remove filler words and tidy phrasing, or Verbatim to keep your original wording. Switch between the cleaned transcript, original text, and a view of the changes before you copy or share.
+
+WORDS THAT SOUND LIKE YOU
+Add names and specialized terms to your personal dictionary. Choose the speech sensitivity that suits how and where you speak. Customize appearance with the built-in themes and light or dark mode.
+
+YOUR RECENT DICTATIONS
+Search recent transcripts, revisit a result, or delete entries. History stays on your device, and you can clear it when you choose.
+
+THE OMIL KEYBOARD
+The included keyboard can insert completed dictation into compatible apps. Dictation uses the Omil app for microphone recording and requires Keyboard Full Access to communicate with it. iOS shows when the microphone is active. Secure text fields and some apps may use the system keyboard instead.
+
+PRIVACY YOU CONTROL
+With the Mac engine selected, audio and text go to the Mac you pair with. The iOS app has no advertising or analytics SDK and does not track you across apps. Local HTTP connections need a trusted network; optional Tailscale provides encrypted connections between your devices. Copying or sharing a transcript gives it to the destination you choose.
+
+Install Omil for Mac and read the setup guide at omil.arpan.sh. Review your transcript before sending it.

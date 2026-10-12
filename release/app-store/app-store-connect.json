@@ -1,0 +1,30 @@
+{
+  "platform": "IOS",
+  "devices": [
+    "iPhone",
+    "iPad"
+  ],
+  "bundleIdentifier": "sh.arpan.omil.ios",
+  "keyboardBundleIdentifier": "sh.arpan.omil.ios.keyboard",
+  "primaryLocale": "en-US",
+  "version": "0.1.9",
+  "build": "11",
+  "primaryCategory": "PRODUCTIVITY",
+  "suggestedPrice": "Free",
+  "marketingURL": "https://omil.arpan.sh/",
+  "supportURL": "https://omil.arpan.sh/support/",
+  "privacyPolicyURL": "https://omil.arpan.sh/privacy/",
+  "termsURL": "https://omil.arpan.sh/terms/",
+  "securityURL": "https://omil.arpan.sh/security/",
+  "copyright": "2026 Arpan Bhandari",
+  "publishAutomatically": false,
+  "status": "prepared-assets-not-submitted",
+  "metadataCharacterCounts": {
+    "name": 23,
+    "subtitle": 21,
+    "promotional-text": 154,
+    "keywords": 81,
+    "description": 2023,
+    "release-notes": 185
+  }
+}

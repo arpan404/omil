@@ -30,7 +30,7 @@ You can start a new recording while the previous one is being processed.
 - [How Omil works](docs/SYSTEM.md)
 - [Build and publish releases](docs/RELEASING.md)
 
-iPhone and iPad support is experimental and has not been tested on a physical device. It is not included in the Mac download.
+iPhone and iPad support is experimental and is not included in the Mac download. The iPhone app has been tested on a physical device over Tailscale; physical iPad validation and App Store submission are still pending. [App Store release assets](release/app-store/README.md) include screenshots, listing copy, and the remaining submission requirements.
 
 ## License
 
