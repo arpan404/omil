@@ -173,6 +173,12 @@ struct SettingsView: View {
             NavigationLink(value: SettingsRoute.privacy) {
                 Label { Text("Privacy") } icon: { IconTile(symbol: "hand.raised.fill", color: .tileBlue) }
             }
+            Link(destination: URL(string: "https://omil.arpan.sh/support/")!) {
+                RowLabel("Help and Support", symbol: "questionmark.circle", color: .tileBlue)
+            }
+            Link(destination: URL(string: "https://omil.arpan.sh/terms/")!) {
+                RowLabel("Terms of Use", symbol: "doc.text", color: .tileGray)
+            }
             Button {
                 dismiss()
                 withAnimation(Motion.page) { onboarded = false }
@@ -758,13 +764,22 @@ struct PrivacyView: View {
             }
             Section {
                 PrivacyRow(symbol: "laptopcomputer", title: "Processed on Your Mac",
-                           detail: "Audio travels only to your Mac over your local network.")
+                           detail: "With the Mac engine selected, audio and text go to the Mac you pair with over your local network or Tailscale. Omil has no developer-hosted speech service.")
                 PrivacyRow(symbol: "person.crop.circle.badge.xmark", title: "No Account",
                            detail: "Omil doesn't need an account and has no cloud service.")
                 PrivacyRow(symbol: "keyboard", title: "Keyboard Reads Only Omil",
                            detail: "The keyboard only starts and stops dictation in Omil and inserts the result. It doesn't record what you type.")
                 PrivacyRow(symbol: "mic.fill", title: "Mic Only While You Dictate",
                            detail: "Between keyboard dictations the mic stays ready but nothing is kept or sent. It turns off after the time you choose.")
+            }
+            Section {
+                Text("Dictation history stays on this device. You can delete individual entries or clear history from the History screen. Sharing or copying a transcript sends it to the app or destination you choose.")
+                    .font(.footnote)
+                    .foregroundStyle(colors.muted)
+                Link("Read the Privacy Policy", destination: URL(string: "https://omil.arpan.sh/privacy/")!)
+                Link("Security and Network Access", destination: URL(string: "https://omil.arpan.sh/security/")!)
+            } header: {
+                Text("Your Data")
             }
         }
         .formStyle(.grouped)

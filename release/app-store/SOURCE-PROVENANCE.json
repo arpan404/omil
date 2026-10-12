@@ -1,0 +1,71 @@
+{
+  "captureTool": "xcrun simctl io screenshot",
+  "fixture": "DebugLaunch with fictional English dictation and no personal credentials",
+  "appSourceBranch": "prep/ios-app-store-artifacts",
+  "captureDevices": {
+    "iphone": "iPhone 17 Pro Max, iOS 26.5",
+    "ipad": "iPad Pro 13-inch (M5), iPadOS 26.5"
+  },
+  "exports": [
+    {
+      "file": "screenshots/iphone/01-dictate.png",
+      "width": 1320,
+      "height": 2868,
+      "sha256": "8d49e98978dd3b65c3c02d229ed28c84aade337e86ec16ca04cb6e738724b88c"
+    },
+    {
+      "file": "screenshots/iphone/02-changes.png",
+      "width": 1320,
+      "height": 2868,
+      "sha256": "322213b33ba34d29a830f0afef91aa318fc9c8682eec98d0c50b583ac8a0a52e"
+    },
+    {
+      "file": "screenshots/iphone/03-history.png",
+      "width": 1320,
+      "height": 2868,
+      "sha256": "7edd5b6cfdc852a09d0508b72a97f098e115d79d1192679020f3af8385202bf2"
+    },
+    {
+      "file": "screenshots/iphone/04-privacy.png",
+      "width": 1320,
+      "height": 2868,
+      "sha256": "b89c0baec760f523c791a414647f20682a194a3268aab726d7e0bfcfe6848950"
+    },
+    {
+      "file": "screenshots/iphone/05-appearance.png",
+      "width": 1320,
+      "height": 2868,
+      "sha256": "2d22acb7dc58d2865af7330037d190173ccd77120ca6169c1ab50a9011054892"
+    },
+    {
+      "file": "screenshots/ipad/01-dictate.png",
+      "width": 2064,
+      "height": 2752,
+      "sha256": "ed56077a720bf31de3f6243c648b20300c81bc7cd6438379ee2950b8f0a9a7d2"
+    },
+    {
+      "file": "screenshots/ipad/02-changes.png",
+      "width": 2064,
+      "height": 2752,
+      "sha256": "78c1d4265c51244fa0981b759d252a68ceda318a62326cc35c1856b38d52a0a8"
+    },
+    {
+      "file": "screenshots/ipad/03-history.png",
+      "width": 2064,
+      "height": 2752,
+      "sha256": "8208f2ee4c24a21bfae4cb3dcfcf74b1554ed635aca0a8a0427bc76f429c4e3c"
+    },
+    {
+      "file": "screenshots/ipad/04-privacy.png",
+      "width": 2064,
+      "height": 2752,
+      "sha256": "f873ab08928496e55f7833d15b2014088d06d8a032538b4777a521664d368305"
+    },
+    {
+      "file": "screenshots/ipad/05-appearance.png",
+      "width": 2064,
+      "height": 2752,
+      "sha256": "f25408e0facfe9ccb2a20c7c486c7aa09d8a755fd0df0c90cb99634cd57150a7"
+    }
+  ]
+}

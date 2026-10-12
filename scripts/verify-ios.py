@@ -27,6 +27,17 @@ def verify(root, team, method):
         require(f'TeamIdentifier={team}' in signing, 'Wrong certificate team')
         info = plistlib.loads((bundle / 'Info.plist').read_bytes())
         require(info['CFBundleIdentifier'] == bundle_id, 'Unexpected bundle ID')
+        privacy_path = bundle / 'PrivacyInfo.xcprivacy'
+        require(privacy_path.is_file(), 'Missing bundled privacy manifest')
+        privacy = plistlib.loads(privacy_path.read_bytes())
+        require(privacy.get('NSPrivacyTracking') is False, 'Unexpected tracking declaration')
+        defaults_reasons = next((entry.get('NSPrivacyAccessedAPITypeReasons', [])
+            for entry in privacy.get('NSPrivacyAccessedAPITypes', [])
+            if entry.get('NSPrivacyAccessedAPIType') == 'NSPrivacyAccessedAPICategoryUserDefaults'), [])
+        require('1C8F.1' in defaults_reasons, 'Missing App Group UserDefaults reason')
+        if bundle_id == ids[0]:
+            require('CA92.1' in defaults_reasons, 'Missing app-local UserDefaults reason')
+            require(info.get('ITSAppUsesNonExemptEncryption') is False, 'Missing export-compliance declaration')
         versions.append((info['CFBundleShortVersionString'], info['CFBundleVersion']))
         profile = plistlib.loads(subprocess.check_output([
             'security', 'cms', '-D', '-i', str(bundle / 'embedded.mobileprovision')]))
